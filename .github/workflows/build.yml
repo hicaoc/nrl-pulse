@@ -72,7 +72,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
-          ./node_modules/.bin/tauri signer sign --password "" \
+          KEY=$(echo -n "$TAURI_SIGNING_PRIVATE_KEY" | tr -d '\n\r')
+          TAURI_SIGNING_PRIVATE_KEY="$KEY" ./node_modules/.bin/tauri signer sign --password "" \
             src-tauri/target/x86_64-pc-windows-msvc/release/nrl-pulse.exe
 
       - uses: actions/upload-artifact@v4
@@ -137,7 +138,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
-          ./node_modules/.bin/tauri signer sign --password "" \
+          KEY=$(echo -n "$TAURI_SIGNING_PRIVATE_KEY" | tr -d '\n\r')
+          TAURI_SIGNING_PRIVATE_KEY="$KEY" ./node_modules/.bin/tauri signer sign --password "" \
             src-tauri/target/x86_64-unknown-linux-gnu/release/nrl-pulse
 
       - uses: actions/upload-artifact@v4
@@ -212,9 +214,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
-          ./node_modules/.bin/tauri signer sign --password "" \
+          KEY=$(echo -n "$TAURI_SIGNING_PRIVATE_KEY" | tr -d '\n\r')
+          TAURI_SIGNING_PRIVATE_KEY="$KEY" ./node_modules/.bin/tauri signer sign --password "" \
             src-tauri/target/aarch64-apple-darwin/release/nrl-pulse
-          ./node_modules/.bin/tauri signer sign --password "" \
+          TAURI_SIGNING_PRIVATE_KEY="$KEY" ./node_modules/.bin/tauri signer sign --password "" \
             src-tauri/target/x86_64-apple-darwin/release/nrl-pulse
 
       - uses: actions/upload-artifact@v4
