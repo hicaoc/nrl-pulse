@@ -70,10 +70,11 @@ jobs:
       - name: Sign Windows binary
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
           echo "$TAURI_SIGNING_PRIVATE_KEY" > /tmp/sign.key
-          ./node_modules/.bin/tauri signer sign \
-            -k /tmp/sign.key --password "" \
+          TAURI_SIGNING_PRIVATE_KEY_PATH=/tmp/sign.key \
+          ./node_modules/.bin/tauri signer sign --password "" \
             src-tauri/target/x86_64-pc-windows-msvc/release/nrl-pulse.exe
           rm -f /tmp/sign.key
 
@@ -137,10 +138,11 @@ jobs:
       - name: Sign Linux binary
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
           echo "$TAURI_SIGNING_PRIVATE_KEY" > /tmp/sign.key
-          ./node_modules/.bin/tauri signer sign \
-            -k /tmp/sign.key --password "" \
+          TAURI_SIGNING_PRIVATE_KEY_PATH=/tmp/sign.key \
+          ./node_modules/.bin/tauri signer sign --password "" \
             src-tauri/target/x86_64-unknown-linux-gnu/release/nrl-pulse
           rm -f /tmp/sign.key
 
@@ -214,11 +216,14 @@ jobs:
       - name: Sign macOS binaries
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
           echo "$TAURI_SIGNING_PRIVATE_KEY" > /tmp/sign.key
-          ./node_modules/.bin/tauri signer sign -k /tmp/sign.key --password "" \
+          TAURI_SIGNING_PRIVATE_KEY_PATH=/tmp/sign.key \
+          ./node_modules/.bin/tauri signer sign --password "" \
             src-tauri/target/aarch64-apple-darwin/release/nrl-pulse
-          ./node_modules/.bin/tauri signer sign -k /tmp/sign.key --password "" \
+          TAURI_SIGNING_PRIVATE_KEY_PATH=/tmp/sign.key \
+          ./node_modules/.bin/tauri signer sign --password "" \
             src-tauri/target/x86_64-apple-darwin/release/nrl-pulse
           rm -f /tmp/sign.key
 
