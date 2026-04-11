@@ -174,12 +174,12 @@ jobs:
         with:
           path: artifacts
 
-      - name: Rename artifacts
+      - name: Collect artifacts
         run: |
-          mv artifacts/nrl-pulse-windows/nrl-pulse.exe artifacts/nrl-pulse-windows.exe
-          mv artifacts/nrl-pulse-linux/nrl-pulse      artifacts/nrl-pulse-linux
-          mv artifacts/nrl-pulse-mac-arm/nrl-pulse    artifacts/nrl-pulse-mac-arm
-          mv artifacts/nrl-pulse-mac-x64/nrl-pulse    artifacts/nrl-pulse-mac-x64
+          cp artifacts/nrl-pulse-windows/nrl-pulse.exe nrl-pulse-windows.exe
+          cp artifacts/nrl-pulse-linux/nrl-pulse       nrl-pulse-linux
+          cp artifacts/nrl-pulse-mac-arm/nrl-pulse     nrl-pulse-mac-arm
+          cp artifacts/nrl-pulse-mac-x64/nrl-pulse     nrl-pulse-mac-x64
 
       - name: Create or update Release
         uses: softprops/action-gh-release@v2
@@ -190,7 +190,7 @@ jobs:
           prerelease: false
           make_latest: true
           files: |
-            artifacts/nrl-pulse-windows.exe
-            artifacts/nrl-pulse-linux
-            artifacts/nrl-pulse-mac-arm
-            artifacts/nrl-pulse-mac-x64
+            nrl-pulse-windows.exe
+            nrl-pulse-linux
+            nrl-pulse-mac-arm
+            nrl-pulse-mac-x64
