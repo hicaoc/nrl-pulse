@@ -207,14 +207,20 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: ./node_modules/.bin/tauri build --target x86_64-apple-darwin --no-bundle
 
-      - name: Sign macOS binaries
+      - name: Sign macOS ARM binary
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
           ./node_modules/.bin/tauri signer sign --password "" \
             src-tauri/target/aarch64-apple-darwin/release/nrl-pulse
-          TAURI_SIGNING_PRIVATE_KEY="$KEY" ./node_modules/.bin/tauri signer sign --password "" \
+
+      - name: Sign macOS x64 binary
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          ./node_modules/.bin/tauri signer sign --password "" \
             src-tauri/target/x86_64-apple-darwin/release/nrl-pulse
 
       - uses: actions/upload-artifact@v4
