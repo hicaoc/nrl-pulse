@@ -1,7 +1,7 @@
 .PHONY: build build-win build-linux build-mac build-mac-x64 build-all dev-backend bump bump-minor bump-major
 
 CARGO_ENV = . "$(HOME)/.cargo/env" &&
-TAURI     = $(CARGO_ENV) pnpm build && ./node_modules/.bin/tauri build
+TAURI     = $(CARGO_ENV) vp build && ./node_modules/.bin/tauri build
 
 # 检测当前操作系统
 OS := $(shell uname -s)
