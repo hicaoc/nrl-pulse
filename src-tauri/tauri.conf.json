@@ -29,7 +29,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY0RTZGQTdCNDExNkY1M0UKUldRKzlSWkJlL3JtWkk2eUlLNExwTmxabnB1TmcyVDVZbG9NRnpyMmN5L3R4VXFXbXJWcnZSOXIK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU1OTQ0QjBGRUM5RUREQzEKUldUQjNaN3NEMHVVNVNqeHJwMU9JK0tLcHpiSEwvMDdydVRxMjBTV1NsSWFITVcwNnExMGYxMWwK",
       "endpoints": [
         "https://github.com/hicaoc/nrl-pulse/releases/latest/download/latest.json"
       ]
