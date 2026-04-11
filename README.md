@@ -1,55 +1,83 @@
 # NRL Pulse
 
-基于 `Vue 3 + TypeScript + Tauri 2 + Rust` 的跨平台 NRL 桌面通话程序骨架，面向 Windows、macOS、Linux。
+业余无线电 / 应急通信桌面客户端，基于 NRL2 协议实现全双工语音调度。支持 Windows、macOS、Linux。
 
-## 当前已落地
+![NRL Pulse](src-tauri/icons/icon-128.png)
 
-- 现代化桌面控制台 UI，适合继续扩展实时在线台站、波形、电平、房间状态
-- `Pinia` 运行时状态仓库
-- `Tauri command + event` 双向通信骨架
-- Rust 侧运行时状态中心与定时实时推送
-- `NRL2` 协议包模型雏形，便于对照 `nrlnanny` 继续迁移
-- Rust 侧 `G.711 A-law` 编解码实现
-- Rust 侧 `UDP session / heartbeat / receive loop` 骨架
-- 本地运行时配置读写，支持服务器、端口、呼号、SSID
+---
 
-## 目录结构
+## 功能
 
-- `src/`：Vue 3 前端
-- `src-tauri/src/runtime.rs`：桌面端运行时状态中心
-- `src-tauri/src/nrl.rs`：NRL2 协议结构定义与编解码起点
-- `src-tauri/src/g711.rs`：G.711 A-law 编解码
-- `src-tauri/src/udp.rs`：UDP 会话、心跳、接收循环
-- `src-tauri/src/config.rs`：本地配置持久化
-- `src-tauri/src/lib.rs`：Tauri 命令入口
+### 语音通信
 
-## 建议开发路线
+- **全双工**：接收与发射互不干扰，可同时收听对方语音
+- **PTT 发射**：短按切换发射状态，长按（320ms）持续发射，松开停止
+- **键盘热键**：可自定义 PTT 触发键（默认 Space）
+- **PTT 悬浮窗**：独立小窗口，始终置顶，方便单手操作
+- **G.711 A-law** 语音编解码，160 样本帧（20ms）
+- **自动重采样**：优先使用设备原生 8000 Hz，不支持时自动重采样
 
-1. 把 `nrlnanny` 中剩余协议字段和 `AT` 指令迁到 `src-tauri/src/nrl.rs`
-2. 把 `udp.rs` 的接收分发接到真实 voice/text/control 处理器
-3. 补 `audio/` 模块，接入麦克风采集、播放、录音、jitter buffer
-4. 用真实设备枚举替换当前默认输入输出设备名
-5. 最后把 UI 面板接到真实 runtime 数据，而不是当前模拟状态
+### 实时状态
 
-## 从 nrlnanny 可直接参考的模块
+- 当前发言台站呼号实时显示
+- 接收 / 发射电平表、频谱可视化（28 频段）
+- 网络质量指标：延迟、抖动、丢包率、队列帧数、上下行码率
+- 连接状态：连接中 / 已连接 / 重连恢复中 / 离线
 
-- `/home/caocheng/ham/nrlnanny/decode.go`
-- `/home/caocheng/ham/nrlnanny/udpclient.go`
-- `/home/caocheng/ham/nrlnanny/g711.go`
-- `/home/caocheng/ham/nrlnanny/monitor.go`
-- `/home/caocheng/ham/nrlnanny/micPlay_windows.go`
-- `/home/caocheng/ham/nrlnanny/micPlay_linux.go`
+### 调度消息
 
-## 本地启动
+- 收发文本调度消息，支持 Ctrl+Enter 快捷发送
+- 消息历史记录（最近 40 条）
 
-先安装 Node.js、Rust、Tauri 依赖后执行：
+### 在线设备
 
-```bash
-npm install
-npm run tauri dev
-```
+- 显示当前群组在线台站列表
+- 支持多群组切换
 
-## 说明
+### 设备与配置
 
-当前环境里没有 `cargo`，所以我这次没有办法直接替你做 Rust 编译校验。前端依赖也还未安装，因此这次交付是工程骨架与代码落地，不是已编译产物。
-# nrl-desktop
+- 自动检测默认音频输入 / 输出设备
+- 可调抖动缓冲（Jitter Buffer）
+- AGC / 降噪状态显示
+- 本地配置持久化（服务器、端口、呼号、SSID、音量、PTT 键）
+
+### 平台账号
+
+- 平台账号登录 / 退出
+- 自动恢复上次登录会话
+- 服务器列表拉取与切换
+
+### 其他
+
+- 中文 / English 双语界面，一键切换
+- AT 状态同步（下发本地 AT 状态到远端节点）
+- 运行日志面板（设备初始化、连接事件、语音会话记录）
+- 录音开关
+
+---
+
+## 下载
+
+在 [Releases](../../releases) 页面下载对应平台的可执行文件：
+
+| 平台 | 文件 |
+| --- | --- |
+| Windows | `nrl-pulse-windows.exe` |
+| Linux | `nrl-pulse-linux` |
+| macOS Apple Silicon | `nrl-pulse-mac-arm` |
+| macOS Intel | `nrl-pulse-mac-x64` |
+
+---
+
+## 快速上手
+
+1. 下载并运行对应平台的文件
+2. 点击**登录**，填写平台账号连接服务器
+3. 选择群组，点击**连接**建立语音会话
+4. 按空格键（或自定义热键）开始 PTT 发射
+
+---
+
+## 协议
+
+基于 **NRL2** 语音调度协议，UDP 传输，G.711 A-law 编码，20ms 帧长。
