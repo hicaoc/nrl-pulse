@@ -63,7 +63,22 @@ jobs:
         env:
           CFLAGS: "-Wno-declaration-after-statement"
           CXXFLAGS: "-Wno-declaration-after-statement"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: pnpm build && ./node_modules/.bin/tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle
+
+      - name: Sign Windows binary
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          cargo tauri signer sign \
+            -k "$TAURI_SIGNING_PRIVATE_KEY" \
+            src-tauri/target/x86_64-pc-windows-msvc/release/nrl-pulse.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nrl-pulse-windows-sig
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/nrl-pulse.exe.sig
 
       - uses: actions/upload-artifact@v4
         with:
@@ -112,12 +127,28 @@ jobs:
         run: pnpm install
 
       - name: Build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: pnpm build && ./node_modules/.bin/tauri build --target x86_64-unknown-linux-gnu --no-bundle
+
+      - name: Sign Linux binary
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          cargo tauri signer sign \
+            -k "$TAURI_SIGNING_PRIVATE_KEY" \
+            src-tauri/target/x86_64-unknown-linux-gnu/release/nrl-pulse
 
       - uses: actions/upload-artifact@v4
         with:
           name: nrl-pulse-linux
           path: src-tauri/target/x86_64-unknown-linux-gnu/release/nrl-pulse
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nrl-pulse-linux-sig
+          path: src-tauri/target/x86_64-unknown-linux-gnu/release/nrl-pulse.sig
 
   build-mac:
     name: macOS (ARM + Intel)
@@ -165,10 +196,25 @@ jobs:
         run: pnpm install
 
       - name: Build ARM
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: pnpm build && ./node_modules/.bin/tauri build --target aarch64-apple-darwin --no-bundle
 
       - name: Build Intel x86_64
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: ./node_modules/.bin/tauri build --target x86_64-apple-darwin --no-bundle
+
+      - name: Sign macOS binaries
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          cargo tauri signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" \
+            src-tauri/target/aarch64-apple-darwin/release/nrl-pulse
+          cargo tauri signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" \
+            src-tauri/target/x86_64-apple-darwin/release/nrl-pulse
 
       - uses: actions/upload-artifact@v4
         with:
@@ -177,8 +223,18 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
+          name: nrl-pulse-mac-arm-sig
+          path: src-tauri/target/aarch64-apple-darwin/release/nrl-pulse.sig
+
+      - uses: actions/upload-artifact@v4
+        with:
           name: nrl-pulse-mac-x64
           path: src-tauri/target/x86_64-apple-darwin/release/nrl-pulse
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nrl-pulse-mac-x64-sig
+          path: src-tauri/target/x86_64-apple-darwin/release/nrl-pulse.sig
 
   release:
     name: Release
@@ -203,10 +259,49 @@ jobs:
 
       - name: Collect artifacts
         run: |
-          cp artifacts/nrl-pulse-windows/nrl-pulse.exe nrl-pulse-windows.exe
-          cp artifacts/nrl-pulse-linux/nrl-pulse       nrl-pulse-linux
-          cp artifacts/nrl-pulse-mac-arm/nrl-pulse     nrl-pulse-mac-arm
-          cp artifacts/nrl-pulse-mac-x64/nrl-pulse     nrl-pulse-mac-x64
+          cp artifacts/nrl-pulse-windows/nrl-pulse.exe      nrl-pulse-windows.exe
+          cp artifacts/nrl-pulse-windows-sig/nrl-pulse.exe.sig nrl-pulse-windows.exe.sig
+          cp artifacts/nrl-pulse-linux/nrl-pulse            nrl-pulse-linux
+          cp artifacts/nrl-pulse-linux-sig/nrl-pulse.sig    nrl-pulse-linux.sig
+          cp artifacts/nrl-pulse-mac-arm/nrl-pulse          nrl-pulse-mac-arm
+          cp artifacts/nrl-pulse-mac-arm-sig/nrl-pulse.sig  nrl-pulse-mac-arm.sig
+          cp artifacts/nrl-pulse-mac-x64/nrl-pulse          nrl-pulse-mac-x64
+          cp artifacts/nrl-pulse-mac-x64-sig/nrl-pulse.sig  nrl-pulse-mac-x64.sig
+
+      - name: Generate latest.json
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          BASE="https://github.com/hicaoc/nrl-pulse/releases/download/${VERSION}"
+          WIN_SIG=$(cat nrl-pulse-windows.exe.sig)
+          LIN_SIG=$(cat nrl-pulse-linux.sig)
+          MAC_ARM_SIG=$(cat nrl-pulse-mac-arm.sig)
+          MAC_X64_SIG=$(cat nrl-pulse-mac-x64.sig)
+          cat > latest.json << EOF
+          {
+            "version": "${VERSION}",
+            "notes": "See release notes at ${BASE}",
+            "pub_date": "${DATE}",
+            "platforms": {
+              "windows-x86_64": {
+                "url": "${BASE}/nrl-pulse-windows.exe",
+                "signature": "${WIN_SIG}"
+              },
+              "linux-x86_64": {
+                "url": "${BASE}/nrl-pulse-linux",
+                "signature": "${LIN_SIG}"
+              },
+              "darwin-aarch64": {
+                "url": "${BASE}/nrl-pulse-mac-arm",
+                "signature": "${MAC_ARM_SIG}"
+              },
+              "darwin-x86_64": {
+                "url": "${BASE}/nrl-pulse-mac-x64",
+                "signature": "${MAC_X64_SIG}"
+              }
+            }
+          }
+          EOF
 
       - name: Create or update Release
         uses: softprops/action-gh-release@v2
@@ -221,3 +316,4 @@ jobs:
             nrl-pulse-linux
             nrl-pulse-mac-arm
             nrl-pulse-mac-x64
+            latest.json

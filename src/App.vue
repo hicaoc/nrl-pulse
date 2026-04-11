@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
+  checkUpdate,
   closePttWindow,
+  downloadAndInstallUpdate,
   flog,
   onChatMessage,
   openPttWindow,
   startPttWindowDrag,
   togglePttWindow,
 } from "@/lib/tauri";
+import type { UpdateInfo } from "@/lib/tauri";
 import { usePlatformStore } from "@/stores/platform";
 import { useRuntimeStore } from "@/stores/runtime";
 import type { ChatMessageEvent } from "@/types";
@@ -23,6 +26,10 @@ const draftMessage = ref("");
 const pttKeyDraft = ref("Space");
 const showSettings = ref(false);
 const showLogs = ref(false);
+const updateInfo = ref<UpdateInfo | null>(null);
+const updateDownloading = ref(false);
+const updateProgress = ref(0);
+const updateTotal = ref(0);
 const showLogin = ref(false);
 const loginError = ref("");
 const listeningPttKey = ref(false);
@@ -130,6 +137,10 @@ const messages = {
     ptt: "PTT",
     txActive: "发射中",
     txIdle: "待发射",
+    updateAvailable: (v: string) => `发现新版本 ${v}，点击更新`,
+    updateDownloading: "下载中...",
+    updateNone: "当前已是最新版本",
+    checkUpdate: "检查更新",
     mute: "静音",
     recording: "录音",
     roomWithOnline: (name: string, onlineCount: number, totalCount: number) =>
@@ -229,6 +240,10 @@ const messages = {
     ptt: "PTT",
     txActive: "Transmitting",
     txIdle: "Standby",
+    updateAvailable: (v: string) => `New version ${v} available, click to update`,
+    updateDownloading: "Downloading...",
+    updateNone: "You are on the latest version",
+    checkUpdate: "Check for Updates",
     mute: "Mute",
     recording: "Record",
     roomWithOnline: (name: string, onlineCount: number, totalCount: number) =>
@@ -532,8 +547,34 @@ onMounted(async () => {
   }, 120);
   if (!isPttWindow) {
     void openPttWindow();
+    // 启动后静默检查更新
+    setTimeout(async () => {
+      const info = await checkUpdate();
+      if (info.available) updateInfo.value = info;
+    }, 3000);
   }
 });
+
+async function doUpdate() {
+  updateDownloading.value = true;
+  updateProgress.value = 0;
+  updateTotal.value = 0;
+  await downloadAndInstallUpdate((downloaded, total) => {
+    updateProgress.value = downloaded;
+    updateTotal.value = total ?? 0;
+  });
+  updateDownloading.value = false;
+}
+
+async function manualCheckUpdate() {
+  updateInfo.value = null;
+  const info = await checkUpdate();
+  if (info.available) {
+    updateInfo.value = info;
+  } else {
+    alert(t.value.updateNone);
+  }
+}
 
 onBeforeUnmount(() => {
   if (isPttWindow) {
@@ -652,8 +693,29 @@ watch(
         <button class="ghost-btn" :disabled="runtime.busy" @click="showSettings = !showSettings">
           {{ showSettings ? t.closeSettings : t.openSettings }}
         </button>
+        <button class="ghost-btn" @click="manualCheckUpdate">
+          {{ t.checkUpdate }}
+        </button>
       </nav>
     </header>
+
+    <!-- 更新提示横幅 -->
+    <transition name="drawer-fade">
+      <div v-if="updateInfo" class="update-banner">
+        <span>{{ t.updateAvailable(updateInfo.version ?? "") }}</span>
+        <button
+          class="update-banner-btn"
+          :disabled="updateDownloading"
+          @click="doUpdate"
+        >
+          {{ updateDownloading
+            ? `${t.updateDownloading}${updateTotal ? ' ' + Math.round(updateProgress / updateTotal * 100) + '%' : ''}`
+            : t.checkUpdate
+          }}
+        </button>
+        <button class="update-banner-close" @click="updateInfo = null">×</button>
+      </div>
+    </transition>
 
     <section class="dashboard-grid">
       <article class="card focus-card">

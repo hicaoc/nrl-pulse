@@ -107,3 +107,39 @@ export async function onChatMessage(
 ): Promise<UnlistenFn> {
   return listen<ChatMessageEvent>("runtime://chat-message", (event) => handler(event.payload));
 }
+
+export interface UpdateInfo {
+  available: boolean;
+  version?: string;
+  body?: string;
+}
+
+export async function checkUpdate(): Promise<UpdateInfo> {
+  try {
+    const { check } = await import("@tauri-apps/plugin-updater");
+    const update = await check();
+    if (update?.available) {
+      return { available: true, version: update.version, body: update.body ?? "" };
+    }
+    return { available: false };
+  } catch {
+    return { available: false };
+  }
+}
+
+export async function downloadAndInstallUpdate(
+  onProgress: (downloaded: number, total: number | null) => void,
+): Promise<void> {
+  const { check } = await import("@tauri-apps/plugin-updater");
+  const { relaunch } = await import("@tauri-apps/plugin-process");
+  const update = await check();
+  if (!update?.available) return;
+  let downloaded = 0;
+  await update.downloadAndInstall((event) => {
+    if (event.event === "Progress") {
+      downloaded += event.data.chunkLength;
+      onProgress(downloaded, event.data.contentLength ?? null);
+    }
+  });
+  await relaunch();
+}

@@ -1540,3 +1540,53 @@ input[type="range"] {
     max-width: 100%;
   }
 }
+
+/* 更新提示横幅 */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 20px;
+  background: linear-gradient(90deg, rgba(34, 197, 94, 0.15), rgba(34, 197, 94, 0.05));
+  border-bottom: 1px solid rgba(34, 197, 94, 0.3);
+  font-size: 0.85rem;
+  color: #22c55e;
+}
+
+.update-banner span {
+  flex: 1;
+}
+
+.update-banner-btn {
+  padding: 4px 14px;
+  border: 1px solid #22c55e;
+  border-radius: 4px;
+  background: transparent;
+  color: #22c55e;
+  cursor: pointer;
+  font-size: 0.82rem;
+  transition: background 0.15s;
+}
+
+.update-banner-btn:hover:not(:disabled) {
+  background: rgba(34, 197, 94, 0.15);
+}
+
+.update-banner-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.update-banner-close {
+  background: none;
+  border: none;
+  color: rgba(34, 197, 94, 0.6);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.update-banner-close:hover {
+  color: #22c55e;
+}
