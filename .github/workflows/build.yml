@@ -71,7 +71,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          cargo tauri signer sign \
+          ./node_modules/.bin/tauri signer sign \
             -k "$TAURI_SIGNING_PRIVATE_KEY" \
             src-tauri/target/x86_64-pc-windows-msvc/release/nrl-pulse.exe
 
@@ -136,7 +136,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          cargo tauri signer sign \
+          ./node_modules/.bin/tauri signer sign \
             -k "$TAURI_SIGNING_PRIVATE_KEY" \
             src-tauri/target/x86_64-unknown-linux-gnu/release/nrl-pulse
 
@@ -211,9 +211,9 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          cargo tauri signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" \
+          ./node_modules/.bin/tauri signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" \
             src-tauri/target/aarch64-apple-darwin/release/nrl-pulse
-          cargo tauri signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" \
+          ./node_modules/.bin/tauri signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" \
             src-tauri/target/x86_64-apple-darwin/release/nrl-pulse
 
       - uses: actions/upload-artifact@v4
