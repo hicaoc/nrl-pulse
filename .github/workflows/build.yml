@@ -41,6 +41,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y llvm clang
 
+      - name: Generate icon.ico
+        run: |
+          pip install pillow --quiet
+          python3 - <<'EOF'
+          from PIL import Image
+          img = Image.open("src-tauri/icons/icon.png").convert("RGBA")
+          sizes = [16, 32, 48, 64, 128, 256]
+          imgs = [img.resize((s, s), Image.LANCZOS) for s in sizes]
+          imgs[0].save("src-tauri/icons/icon.ico", format="ICO", append_images=imgs[1:], sizes=[(s,s) for s in sizes])
+          print("icon.ico generated")
+          EOF
+
       - name: Install cargo-xwin
         run: cargo install cargo-xwin --locked
 
@@ -133,6 +145,21 @@ jobs:
             src-tauri/target
           key: mac-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: mac-cargo-
+
+      - name: Generate icon.icns
+        run: |
+          mkdir -p /tmp/nrl.iconset
+          sips -z 16 16     src-tauri/icons/icon.png --out /tmp/nrl.iconset/icon_16x16.png
+          sips -z 32 32     src-tauri/icons/icon.png --out /tmp/nrl.iconset/icon_16x16@2x.png
+          sips -z 32 32     src-tauri/icons/icon.png --out /tmp/nrl.iconset/icon_32x32.png
+          sips -z 64 64     src-tauri/icons/icon.png --out /tmp/nrl.iconset/icon_32x32@2x.png
+          sips -z 128 128   src-tauri/icons/icon.png --out /tmp/nrl.iconset/icon_128x128.png
+          sips -z 256 256   src-tauri/icons/icon.png --out /tmp/nrl.iconset/icon_128x128@2x.png
+          sips -z 256 256   src-tauri/icons/icon.png --out /tmp/nrl.iconset/icon_256x256.png
+          sips -z 512 512   src-tauri/icons/icon.png --out /tmp/nrl.iconset/icon_256x256@2x.png
+          sips -z 512 512   src-tauri/icons/icon.png --out /tmp/nrl.iconset/icon_512x512.png
+          cp src-tauri/icons/icon.png                    /tmp/nrl.iconset/icon_512x512@2x.png
+          iconutil -c icns /tmp/nrl.iconset -o src-tauri/icons/icon.icns
 
       - name: Install frontend deps
         run: pnpm install
