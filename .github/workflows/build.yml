@@ -57,7 +57,7 @@ jobs:
         run: cargo install cargo-xwin --locked
 
       - name: Install frontend deps
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build
         env:
@@ -124,7 +124,7 @@ jobs:
             patchelf
 
       - name: Install frontend deps
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build
         env:
@@ -193,7 +193,7 @@ jobs:
           iconutil -c icns /tmp/nrl.iconset -o src-tauri/icons/icon.icns
 
       - name: Install frontend deps
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build ARM
         env:

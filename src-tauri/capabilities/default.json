@@ -9,6 +9,6 @@
     "fs:default",
     "opener:default",
     "updater:default",
-    "process:exit"
+    "process:allow-restart"
   ]
 }
