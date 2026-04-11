@@ -269,6 +269,10 @@ struct AudioInner {
     playback: Arc<Mutex<PlaybackState>>,
 }
 
+// cpal::Stream 在 macOS 上未实现 Send（CoreAudio 回调持有 dyn FnMut），
+// 但 Stream 始终在 Mutex 保护下访问，实际访问路径是线程安全的。
+unsafe impl Send for AudioInner {}
+
 impl AudioEngine {
     pub fn new() -> Self {
         let transmitting = Arc::new(AtomicBool::new(false));
