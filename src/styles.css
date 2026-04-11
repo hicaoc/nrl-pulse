@@ -511,7 +511,8 @@ textarea {
   white-space: nowrap;
 }
 
-.tool-pill.status-connected {
+.tool-pill.status-connected,
+.ghost-btn.status-connected {
   border: 1.5px solid #22c55e;
   color: #22c55e;
 }

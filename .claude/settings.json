@@ -1,7 +1,26 @@
 {
   "permissions": {
     "allow": [
-      "Bash(make build:*)"
+      "Bash(make build:*)",
+      "Bash(pip3 install:*)",
+      "Bash(sudo apt-get:*)",
+      "Bash(pip install:*)",
+      "Bash(apt list:*)",
+      "Read(//home/caocheng/.local/bin/**)",
+      "Bash(meson setup:*)",
+      "Bash(make)",
+      "Bash(rustup target:*)",
+      "Bash(vp --version)",
+      "Bash(chmod +x /home/caocheng/ham/nrl-win/scripts/bump-version.sh)",
+      "Bash(convert -background none logo.svg -resize 512x512 icon.png)",
+      "Bash(convert -background none logo.svg -resize 32x32 icon-32.png)",
+      "Bash(convert -background none logo.svg -resize 128x128 icon-128.png)",
+      "Bash(convert icon-32.png icon-128.png icon.png icon.ico)",
+      "Bash(node -e \"console.log\\('node ok'\\)\")",
+      "Bash(node -e ':*)",
+      "Bash(node -e \"require\\('sharp'\\)\")",
+      "Bash(npx --yes sharp-cli --version)",
+      "Bash(npx sharp-cli:*)"
     ]
   }
 }

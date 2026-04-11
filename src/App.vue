@@ -49,6 +49,7 @@ const messages = {
     transmit: "发射",
     platformAccount: "平台账号",
     platformLogin: "登录",
+    platformLoggedIn: "已登录",
     systemLogs: "日志",
     closeLogs: "关闭日志",
     openSettings: "配置",
@@ -147,6 +148,7 @@ const messages = {
     transmit: "TX",
     platformAccount: "Account",
     platformLogin: "Login",
+    platformLoggedIn: "Logged In",
     systemLogs: "Logs",
     closeLogs: "Hide Logs",
     openSettings: "Settings",
@@ -238,8 +240,8 @@ const messages = {
 const t = computed(() => messages[language.value]);
 
 const txLabel = computed(() => {
-  if (runtime.snapshot.isTransmitting) return t.value.txActive;
   if (runtime.snapshot.activeSpeaker) return `${runtime.snapshot.activeSpeaker}-${runtime.snapshot.activeSpeakerSsid}`;
+  if (runtime.snapshot.isTransmitting) return t.value.txActive;
   return t.value.txIdle;
 });
 const pttStatusReason = computed(() => {
@@ -369,12 +371,15 @@ function scheduleHoldActivation() {
   }, HOLD_THRESHOLD_MS);
 }
 
-async function releasePtt() {
+async function releasePtt(event?: PointerEvent) {
   flog("[ptt] releasePtt: pressed=", pttPressed.value, "holdActivated=", holdActivated.value, "holdTimer=", holdTimerId.value);
   if (!pttPressed.value) {
     return;
   }
   pttPressed.value = false;
+  if (event?.currentTarget instanceof Element) {
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* ok */ }
+  }
   if (holdTimerId.value !== null) {
     clearHoldTimer();
     await runtime.toggleTx();
@@ -386,10 +391,14 @@ async function releasePtt() {
   }
 }
 
-function pressPtt() {
+function pressPtt(event?: PointerEvent) {
   flog("[ptt] pressPtt: busy=", runtime.busy, "pressed=", pttPressed.value, "conn=", runtime.snapshot.connection);
   if (runtime.busy || pttPressed.value || runtime.snapshot.connection !== "connected") {
     return;
+  }
+  // 捕获指针，确保 pointerup 在按钮上触发，即使鼠标移出按钮范围
+  if (event?.currentTarget instanceof Element) {
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* ok */ }
   }
   pttPressed.value = true;
   holdActivated.value = false;
@@ -568,10 +577,9 @@ watch(
           pressed: isPttWindow ? runtime.snapshot.isTransmitting : pttPressed,
           disabled: !!pttStatusReason
         }"
-        @pointerdown.prevent="pressPtt"
-        @pointerup.prevent="releasePtt"
-        @pointercancel.prevent="releasePtt"
-        @pointerleave.prevent="releasePtt"
+        @pointerdown.prevent="pressPtt($event)"
+        @pointerup.prevent="releasePtt($event)"
+        @pointercancel.prevent="releasePtt($event)"
       >
         <span class="ptt-ring"></span>
         <span class="ptt-core"></span>
@@ -630,8 +638,13 @@ watch(
         <button class="ghost-btn lang-btn" @click="toggleLanguage">
           {{ language === "zh" ? "EN" : t.language }}
         </button>
-        <button class="ghost-btn" :disabled="platform.busy" @click="showLogin = !showLogin">
-          {{ t.platformLogin }}
+        <button
+          class="ghost-btn"
+          :class="{ 'status-connected': platform.loggedIn }"
+          :disabled="platform.busy"
+          @click="showLogin = !showLogin"
+        >
+          {{ platform.loggedIn ? t.platformLoggedIn : t.platformLogin }}
         </button>
         <button class="ghost-btn" :disabled="runtime.busy" @click="showLogs = !showLogs">
           {{ showLogs ? t.closeLogs : t.systemLogs }}

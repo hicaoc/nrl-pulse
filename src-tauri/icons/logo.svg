@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#0d2137"/>
+      <stop offset="100%" stop-color="#060f1a"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#5BC0FF" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#5BC0FF" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur-glow">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="soft-glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="circle-clip">
+      <circle cx="256" cy="256" r="240"/>
+    </clipPath>
+  </defs>
+
+  <!-- 背景圆 -->
+  <circle cx="256" cy="256" r="256" fill="#060f1a"/>
+  <circle cx="256" cy="256" r="240" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="240" fill="url(#glow)"/>
+
+  <!-- 外圆边框 -->
+  <circle cx="256" cy="256" r="238" fill="none" stroke="#5BC0FF" stroke-width="2.5" stroke-opacity="0.4"/>
+
+  <!-- 无线电波弧线（左侧，向外展开）-->
+  <g clip-path="url(#circle-clip)" filter="url(#soft-glow)">
+    <path d="M 178 256 A 40 40 0 0 1 178 256" fill="none"/>
+    <path d="M 162 220 A 52 52 0 0 0 162 292" fill="none" stroke="#5BC0FF" stroke-width="5" stroke-linecap="round" stroke-opacity="0.9"/>
+    <path d="M 140 196 A 82 82 0 0 0 140 316" fill="none" stroke="#5BC0FF" stroke-width="4" stroke-linecap="round" stroke-opacity="0.65"/>
+    <path d="M 118 172 A 112 112 0 0 0 118 340" fill="none" stroke="#5BC0FF" stroke-width="3" stroke-linecap="round" stroke-opacity="0.4"/>
+
+    <!-- 无线电波弧线（右侧）-->
+    <path d="M 350 220 A 52 52 0 0 1 350 292" fill="none" stroke="#5BC0FF" stroke-width="5" stroke-linecap="round" stroke-opacity="0.9"/>
+    <path d="M 372 196 A 82 82 0 0 1 372 316" fill="none" stroke="#5BC0FF" stroke-width="4" stroke-linecap="round" stroke-opacity="0.65"/>
+    <path d="M 394 172 A 112 112 0 0 1 394 340" fill="none" stroke="#5BC0FF" stroke-width="3" stroke-linecap="round" stroke-opacity="0.4"/>
+  </g>
+
+  <!-- 脉冲心跳线 -->
+  <g filter="url(#blur-glow)">
+    <polyline
+      points="96,256 168,256 192,256 210,208 228,304 246,232 258,280 272,256 344,256 416,256"
+      fill="none" stroke="#5BC0FF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"
+    />
+  </g>
+  <!-- 脉冲线清晰层 -->
+  <polyline
+    points="96,256 168,256 192,256 210,208 228,304 246,232 258,280 272,256 344,256 416,256"
+    fill="none" stroke="#5BC0FF" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"
+    opacity="0.95"
+  />
+
+  <!-- 中心圆点 -->
+  <circle cx="256" cy="256" r="10" fill="#5BC0FF" filter="url(#blur-glow)"/>
+  <circle cx="256" cy="256" r="6" fill="#ffffff"/>
+
+  <!-- 底部文字 NRL -->
+  <text x="256" y="430" text-anchor="middle" font-family="Arial, sans-serif" font-weight="700"
+        font-size="52" letter-spacing="18" fill="#5BC0FF" opacity="0.9">NRL</text>
+
+  <!-- 底部细线装饰 -->
+  <line x1="156" y1="448" x2="356" y2="448" stroke="#5BC0FF" stroke-width="1.5" stroke-opacity="0.3"/>
+</svg>
