@@ -20,7 +20,9 @@
       "Bash(node -e ':*)",
       "Bash(node -e \"require\\('sharp'\\)\")",
       "Bash(npx --yes sharp-cli --version)",
-      "Bash(npx sharp-cli:*)"
+      "Bash(npx sharp-cli:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ]
   }
 }

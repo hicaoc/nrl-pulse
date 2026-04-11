@@ -450,8 +450,6 @@ fn build_input_stream(
         sender,
         transmitting,
     )?));
-    let error_callback = |err| eprintln!("input stream error: {err}");
-
     match supported.sample_format() {
         SampleFormat::F32 => {
             let state = state.clone();
@@ -459,7 +457,7 @@ fn build_input_stream(
                 .build_input_stream(
                     &config,
                     move |data: &[f32], _| capture_callback_f32(data, channels, &state),
-                    error_callback,
+                    |err| eprintln!("input stream error: {err}"),
                     None,
                 )
                 .map_err(|err| format!("build input stream failed: {err}"))
@@ -470,7 +468,7 @@ fn build_input_stream(
                 .build_input_stream(
                     &config,
                     move |data: &[i16], _| capture_callback_i16(data, channels, &state),
-                    error_callback,
+                    |err| eprintln!("input stream error: {err}"),
                     None,
                 )
                 .map_err(|err| format!("build input stream failed: {err}"))
@@ -481,7 +479,7 @@ fn build_input_stream(
                 .build_input_stream(
                     &config,
                     move |data: &[u16], _| capture_callback_u16(data, channels, &state),
-                    error_callback,
+                    |err| eprintln!("input stream error: {err}"),
                     None,
                 )
                 .map_err(|err| format!("build input stream failed: {err}"))
@@ -501,8 +499,6 @@ fn build_output_stream(
         "[Audio] Output stream: {}Hz, {} ch, format={:?}",
         config.sample_rate.0, channels, supported.sample_format()
     );
-    let error_callback = |err| eprintln!("output stream error: {err}");
-
     match supported.sample_format() {
         SampleFormat::F32 => {
             let playback = playback.clone();
@@ -510,7 +506,7 @@ fn build_output_stream(
                 .build_output_stream(
                     &config,
                     move |data: &mut [f32], _| render_output_f32(data, channels, &playback),
-                    error_callback,
+                    |err| eprintln!("output stream error: {err}"),
                     None,
                 )
                 .map_err(|err| format!("build output stream failed: {err}"))
@@ -521,7 +517,7 @@ fn build_output_stream(
                 .build_output_stream(
                     &config,
                     move |data: &mut [i16], _| render_output_i16(data, channels, &playback),
-                    error_callback,
+                    |err| eprintln!("output stream error: {err}"),
                     None,
                 )
                 .map_err(|err| format!("build output stream failed: {err}"))
@@ -532,7 +528,7 @@ fn build_output_stream(
                 .build_output_stream(
                     &config,
                     move |data: &mut [u16], _| render_output_u16(data, channels, &playback),
-                    error_callback,
+                    |err| eprintln!("output stream error: {err}"),
                     None,
                 )
                 .map_err(|err| format!("build output stream failed: {err}"))
