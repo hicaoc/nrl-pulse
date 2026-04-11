@@ -1,0 +1,210 @@
+import { computed, ref } from "vue";
+import { defineStore } from "pinia";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { flog } from "@/lib/tauri";
+import {
+  bootstrapRuntime,
+  connectSession,
+  disconnectSession,
+  loadRuntimeConfig,
+  onPresence,
+  onRuntimeSnapshot,
+  onTimeline,
+  saveRuntimeConfig,
+  sendTextMessage,
+  setTransmit,
+  syncAtState,
+  toggleMonitor,
+  toggleRecorder,
+  toggleTransmit,
+  updateJitterBuffer,
+} from "@/lib/tauri";
+import type {
+  PresenceItem,
+  RuntimeConfig,
+  SessionSnapshot,
+  TimelineEvent,
+} from "@/types";
+
+const initialSnapshot: SessionSnapshot = {
+  roomName: "NRL Command Room",
+  callsign: "B1NRL",
+  ssid: 7,
+  activeSpeaker: "BG5XYZ",
+  activeSpeakerSsid: 1,
+  connection: "connecting",
+  packetLoss: 0.6,
+  latencyMs: 84,
+  jitterMs: 22,
+  uplinkKbps: 12.8,
+  downlinkKbps: 13.6,
+  rxLevel: 0.58,
+  txLevel: 0.16,
+  rxSpectrum: Array.from({ length: 28 }, () => 0),
+  txSpectrum: Array.from({ length: 28 }, () => 0),
+  isTransmitting: false,
+  isMonitoring: true,
+  recorderEnabled: true,
+  queuedFrames: 4,
+  lastTextMessage: "系统初始化中",
+  devices: {
+    inputDevice: "Default Microphone",
+    outputDevice: "Default Speaker",
+    sampleRate: 8000,
+    jitterBufferMs: 120,
+    agcEnabled: true,
+    noiseSuppression: true,
+  },
+};
+
+export const useRuntimeStore = defineStore("runtime", () => {
+  const snapshot = ref<SessionSnapshot>(initialSnapshot);
+  const presence = ref<PresenceItem[]>([]);
+  const timeline = ref<TimelineEvent[]>([]);
+  const config = ref<RuntimeConfig>({
+    server: "127.0.0.1",
+    port: 10024,
+    serverName: "Local",
+    apiBase: "",
+    authToken: "",
+    loginUsername: "",
+    callsign: "B1NRL",
+    ssid: 7,
+    roomName: "NRL East Hub",
+    currentGroupId: 0,
+    volume: 1,
+    pttKey: "Space",
+  });
+  const bootstrapped = ref(false);
+  const busy = ref(false);
+  const unlisteners: UnlistenFn[] = [];
+
+  const connectionText = computed(() => {
+    const map: Record<SessionSnapshot["connection"], string> = {
+      disconnected: "离线",
+      connecting: "连接中",
+      connected: "已连接",
+      recovering: "重连恢复中",
+    };
+    return map[snapshot.value.connection];
+  });
+
+  const qualityScore = computed(() => {
+    const { packetLoss, latencyMs, jitterMs } = snapshot.value;
+    const score = 100 - packetLoss * 18 - latencyMs * 0.12 - jitterMs * 0.35;
+    return Math.max(26, Math.min(99, Math.round(score)));
+  });
+
+  function mergeSnapshot(next: SessionSnapshot) {
+    snapshot.value = next;
+  }
+
+  function pushTimeline(event: TimelineEvent) {
+    timeline.value = [event, ...timeline.value].slice(0, 10);
+  }
+
+  async function bootstrap() {
+    if (bootstrapped.value) {
+      return;
+    }
+    // 先订阅事件，再拉初始数据，避免两步之间的 emit 丢失
+    // 保存 unlisten 引用，防止 listener 被 GC 回收
+    unlisteners.push(await onRuntimeSnapshot((next) => {
+      flog("[runtime] snapshot received connection=", next.connection, "isTransmitting=", next.isTransmitting);
+      snapshot.value = next;
+    }));
+    unlisteners.push(await onPresence((next) => {
+      presence.value = next;
+    }));
+    unlisteners.push(await onTimeline((event) => {
+      pushTimeline(event);
+    }));
+
+    const data = await bootstrapRuntime();
+    flog("[runtime] bootstrap snapshot connection=", data.snapshot.connection);
+    snapshot.value = data.snapshot;
+    presence.value = data.presence;
+    timeline.value = data.timeline;
+    config.value = await loadRuntimeConfig();
+    bootstrapped.value = true;
+  }
+
+  async function runAction(action: () => Promise<SessionSnapshot>) {
+    if (busy.value) {
+      return;
+    }
+    busy.value = true;
+    try {
+      mergeSnapshot(await action());
+    } finally {
+      busy.value = false;
+    }
+  }
+
+  async function connect() {
+    await runAction(connectSession);
+  }
+
+  async function disconnect() {
+    await runAction(disconnectSession);
+  }
+
+  async function toggleTx() {
+    await runAction(toggleTransmit);
+  }
+
+  async function setTx(enabled: boolean) {
+    await runAction(() => setTransmit(enabled));
+  }
+
+  async function toggleRx() {
+    await runAction(toggleMonitor);
+  }
+
+  async function toggleRec() {
+    await runAction(toggleRecorder);
+  }
+
+  async function setJitter(value: number) {
+    await runAction(() => updateJitterBuffer(value));
+  }
+
+  async function sendMessage(message: string) {
+    const text = message.trim();
+    if (!text) {
+      return;
+    }
+    await runAction(() => sendTextMessage(text));
+  }
+
+  async function saveConfig(next: RuntimeConfig) {
+    config.value = next;
+    await runAction(() => saveRuntimeConfig(next));
+  }
+
+  async function syncAt() {
+    await runAction(syncAtState);
+  }
+
+  return {
+    snapshot,
+    presence,
+    timeline,
+    config,
+    bootstrapped,
+    busy,
+    connectionText,
+    qualityScore,
+    bootstrap,
+    connect,
+    disconnect,
+    toggleTx,
+    setTx,
+    toggleRx,
+    toggleRec,
+    setJitter,
+    sendMessage,
+    saveConfig,
+    syncAt,
+  };
+});
