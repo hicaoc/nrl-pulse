@@ -81,6 +81,7 @@ const messages = {
     groupNotSelected: "未选择群组",
     online: "在线",
     groupSwitch: "群组切换",
+    groupSearch: "搜索名称或 ID…",
     refresh: "刷新",
     loginFirstRoom: "先登录平台账号，再选择服务器和房间。",
     openLogin: "打开登录",
@@ -185,6 +186,7 @@ const messages = {
     groupNotSelected: "No Group Selected",
     online: "Online",
     groupSwitch: "Group Switch",
+    groupSearch: "Search name or ID…",
     refresh: "Refresh",
     loginFirstRoom: "Log in to the platform account first, then choose a room.",
     openLogin: "Open Login",
@@ -308,6 +310,14 @@ const pttKeyLabel = computed(() => normalizeKeyLabel(runtime.config.pttKey));
 const selectedLoginServer = computed(
   () => platform.servers.find((server) => server.host === platform.selectedServerHost) ?? null,
 );
+const groupSearch = ref("");
+const filteredGroups = computed(() => {
+  const q = groupSearch.value.trim().toLowerCase();
+  if (!q) return platform.groups;
+  return platform.groups.filter(
+    (g) => g.name.toLowerCase().includes(q) || String(g.id).includes(q),
+  );
+});
 const currentGroupText = computed(() => {
   if (!platform.currentGroup) {
     return t.value.groupNotSelected;
@@ -805,20 +815,29 @@ watch(
               <div>
                 <p class="section-kicker">{{ t.groupSwitch }}</p>
               </div>
-              <button
-                class="ghost-btn compact-ghost"
-                :disabled="platform.busy || !platform.loggedIn"
-                @click="platform.refreshGroups()"
-              >
-                {{ t.refresh }}
-              </button>
+              <div class="ops-head-right">
+                <input
+                  v-if="platform.loggedIn"
+                  v-model="groupSearch"
+                  class="group-search"
+                  type="text"
+                  :placeholder="t.groupSearch"
+                />
+                <button
+                  class="ghost-btn compact-ghost"
+                  :disabled="platform.busy || !platform.loggedIn"
+                  @click="platform.refreshGroups()"
+                >
+                  {{ t.refresh }}
+                </button>
+              </div>
             </div>
             <div v-if="!platform.loggedIn" class="ops-empty">
               <button class="ghost-btn" @click="showLogin = true">{{ t.openLogin }}</button>
             </div>
             <div v-else class="group-stack">
               <button
-                v-for="group in platform.groups"
+                v-for="group in filteredGroups"
                 :key="group.id"
                 class="group-chip"
                 :class="{ active: group.id === platform.currentGroupId, 'has-online': (group.onlineDevNumber ?? 0) > 0 }"

@@ -29,7 +29,10 @@
       "Bash(npx --version)",
       "Bash(pnpm add:*)",
       "Bash(node_modules/.bin/pnpm add:*)",
-      "Bash(~/.local/share/pnpm/pnpm add:*)"
+      "Bash(~/.local/share/pnpm/pnpm add:*)",
+      "Bash(./node_modules/.bin/tauri signer:*)",
+      "Bash(cargo --version)",
+      "Bash(cargo install:*)"
     ]
   }
 }

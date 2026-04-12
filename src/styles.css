@@ -905,6 +905,12 @@ textarea {
   font-size: 1.5rem;
 }
 
+.ops-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .ops-empty {
   display: grid;
   gap: 12px;
@@ -921,6 +927,27 @@ textarea {
   gap: 10px;
   max-height: min(42vh, 360px);
   overflow-y: auto;
+}
+
+.group-search {
+  width: 140px;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  color: #f7f2e8;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 0.88rem;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.group-search::placeholder {
+  color: rgba(244, 235, 223, 0.35);
+}
+
+.group-search:focus {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.09);
 }
 
 .group-chip {
