@@ -94,7 +94,7 @@ unsafe fn start_voice_io(
     transmitting: Arc<AtomicBool>,
 ) -> Result<AecCapture, String> {
     // Find VoiceProcessingIO AudioComponent
-    let mut desc = AudioComponentDescription {
+    let desc = AudioComponentDescription {
         componentType: kAudioUnitType_Output,
         componentSubType: kAudioUnitSubType_VoiceProcessingIO,
         componentManufacturer: kAudioUnitManufacturer_Apple,
@@ -163,7 +163,7 @@ unsafe fn start_voice_io(
     );
 
     // Set the format we want the callback to receive: native float32 interleaved
-    let mut fmt = AudioStreamBasicDescription {
+    let fmt = AudioStreamBasicDescription {
         mSampleRate: hw_fmt.mSampleRate,
         mFormatID: kAudioFormatLinearPCM,
         mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
@@ -320,23 +320,32 @@ unsafe fn process_input(
     }
 
     // Resample / passthrough → 160-sample frames
-    if let Some(ref mut rs) = guard.resampler {
+    // Destructure to hold independent mutable refs and avoid borrow conflicts
+    let CallbackState {
+        ref mut resampler,
+        ref mut in_ring,
+        ref mut frame,
+        ref sender,
+        ..
+    } = *guard;
+
+    if let Some(ref mut rs) = resampler {
         let chunk_size = rs.input_frames_next();
-        while guard.in_ring.len() >= chunk_size {
-            let chunk: Vec<f32> = guard.in_ring.drain(..chunk_size).collect();
+        while in_ring.len() >= chunk_size {
+            let chunk: Vec<f32> = in_ring.drain(..chunk_size).collect();
             let input_data = vec![chunk];
             if let Ok(adapter) = SequentialSliceOfVecs::new(&input_data, 1, chunk_size) {
                 if let Ok(out) = rs.process(&adapter, 0, None) {
                     if let Some(iter) = out.iter_channel(0) {
                         for s in iter {
                             let pcm = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
-                            guard.frame.push(pcm);
-                            if guard.frame.len() == VOICE_FRAME {
+                            frame.push(pcm);
+                            if frame.len() == VOICE_FRAME {
                                 let out = std::mem::replace(
-                                    &mut guard.frame,
+                                    frame,
                                     Vec::with_capacity(VOICE_FRAME),
                                 );
-                                let _ = guard.sender.send(out);
+                                let _ = sender.send(out);
                             }
                         }
                     }
@@ -344,15 +353,15 @@ unsafe fn process_input(
             }
         }
     } else {
-        while let Some(s) = guard.in_ring.pop_front() {
+        while let Some(s) = in_ring.pop_front() {
             let pcm = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
-            guard.frame.push(pcm);
-            if guard.frame.len() == VOICE_FRAME {
+            frame.push(pcm);
+            if frame.len() == VOICE_FRAME {
                 let out = std::mem::replace(
-                    &mut guard.frame,
+                    frame,
                     Vec::with_capacity(VOICE_FRAME),
                 );
-                let _ = guard.sender.send(out);
+                let _ = sender.send(out);
             }
         }
     }
