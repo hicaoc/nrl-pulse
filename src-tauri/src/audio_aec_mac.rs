@@ -13,23 +13,19 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 
 use coreaudio_sys::{
-    kAudioUnitErr_InvalidProperty,
     kAudioUnitManufacturer_Apple,
     kAudioUnitSubType_VoiceProcessingIO,
-    kAudioUnitType_IO,
-    AUGraphAddNode, AUGraphClose, AUGraphInitialize, AUGraphNewAUGraph, AUGraphNodeInfo,
-    AUGraphOpen, AUGraphStart, AUGraphStop,
+    kAudioUnitType_Output,
     AudioBufferList, AudioComponent, AudioComponentDescription, AudioComponentFindNext,
     AudioComponentInstanceNew, AudioStreamBasicDescription,
-    AudioTimeStamp, AudioUnit, AudioUnitAddRenderNotify, AudioUnitElement,
+    AudioTimeStamp, AudioUnit, AudioUnitElement,
     AudioUnitGetProperty, AudioUnitInitialize, AudioUnitRenderActionFlags,
     AudioUnitSetProperty, OSStatus,
     kAudioFormatFlagIsFloat, kAudioFormatFlagIsPacked,
     kAudioFormatLinearPCM,
     kAudioOutputUnitProperty_EnableIO,
     kAudioUnitProperty_StreamFormat,
-    kAudioUnitScope_Input, kAudioUnitScope_Output,
-    kAudioUnitSubType_RemoteIO,
+    kAudioUnitScope_Global, kAudioUnitScope_Input, kAudioUnitScope_Output,
 };
 
 use rubato::{Fft, FixedSync, Resampler};
@@ -99,7 +95,7 @@ unsafe fn start_voice_io(
 ) -> Result<AecCapture, String> {
     // Find VoiceProcessingIO AudioComponent
     let mut desc = AudioComponentDescription {
-        componentType: kAudioUnitType_IO,
+        componentType: kAudioUnitType_Output,
         componentSubType: kAudioUnitSubType_VoiceProcessingIO,
         componentManufacturer: kAudioUnitManufacturer_Apple,
         componentFlags: 0,
@@ -263,7 +259,7 @@ unsafe extern "C" fn input_render_callback(
 ) -> OSStatus {
     // Reconstruct Arc without consuming it (we'll see it again next callback)
     let state_arc = Arc::from_raw(in_ref_con as *const Mutex<CallbackState>);
-    let result = process_input(&state_arc, in_time_stamp, in_bus_number, in_number_frames);
+    let result = process_input(&state_arc, _io_action_flags, in_time_stamp, in_bus_number, in_number_frames);
     // Keep the Arc alive — put it back
     std::mem::forget(state_arc);
     result
@@ -271,6 +267,7 @@ unsafe extern "C" fn input_render_callback(
 
 unsafe fn process_input(
     state_arc: &Arc<Mutex<CallbackState>>,
+    _io_action_flags: *mut AudioUnitRenderActionFlags,
     in_time_stamp: *const AudioTimeStamp,
     in_bus_number: AudioUnitElement,
     in_number_frames: u32,
@@ -297,8 +294,8 @@ unsafe fn process_input(
     let audio_unit = guard.audio_unit;
     let status = coreaudio_sys::AudioUnitRender(
         audio_unit,
-        // cast away the const — AudioUnitRender wants *mut but doesn't mutate flags here
-        in_time_stamp as *mut _,
+        _io_action_flags,
+        in_time_stamp,
         in_bus_number,
         in_number_frames,
         &mut abl,
