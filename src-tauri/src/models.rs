@@ -13,6 +13,7 @@ pub struct DeviceSettings {
     pub jitter_buffer_ms: u32,
     pub agc_enabled: bool,
     pub noise_suppression: bool,
+    pub aec_enabled: bool,
 }
 
 #[derive(Clone, Serialize)]

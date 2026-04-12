@@ -11,6 +11,7 @@ export interface DeviceSettings {
   jitterBufferMs: number;
   agcEnabled: boolean;
   noiseSuppression: boolean;
+  aecEnabled: boolean;
 }
 
 export interface RuntimeConfig {

@@ -54,6 +54,7 @@ const initialSnapshot: SessionSnapshot = {
     jitterBufferMs: 120,
     agcEnabled: true,
     noiseSuppression: true,
+    aecEnabled: false,
   },
 };
 

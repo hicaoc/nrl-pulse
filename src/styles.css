@@ -1103,6 +1103,17 @@ textarea {
 
 .keybind-box {
   min-height: 86px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text-dim);
+  text-align: left;
+}
+
+.keybind-box strong {
+  color: #f7f2e8;
+  font-size: 1rem;
 }
 
 .setting-form input,

@@ -395,6 +395,7 @@ impl AudioEngine {
             jitter_buffer_ms: 120,
             agc_enabled: false,
             noise_suppression: false,
+            aec_enabled: false,
         }, logs))
     }
 

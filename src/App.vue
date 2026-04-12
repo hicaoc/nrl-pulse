@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { getVersion } from "@tauri-apps/api/app";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   checkUpdate,
   closePttWindow,
@@ -115,6 +117,7 @@ const messages = {
     jitterBuffer: "抖动缓冲",
     agc: "AGC",
     noiseSuppression: "降噪",
+    aec: "回声消除 AEC",
     enabled: "开启",
     disabled: "关闭",
     runningLogs: "运行日志",
@@ -218,6 +221,7 @@ const messages = {
     jitterBuffer: "Jitter Buffer",
     agc: "AGC",
     noiseSuppression: "Noise Reduction",
+    aec: "Echo Cancel AEC",
     enabled: "On",
     disabled: "Off",
     runningLogs: "Runtime Logs",
@@ -527,6 +531,10 @@ function syncConfigDrafts() {
 }
 
 onMounted(async () => {
+  const version = await getVersion();
+  const title = `NRL Pulse v${version} © BH4RPN`;
+  document.title = title;
+  await getCurrentWindow().setTitle(title);
   if (isPttWindow) {
     document.documentElement.classList.add("ptt-window");
     document.body.classList.add("ptt-window");
@@ -908,14 +916,23 @@ watch(
       </div>
 
       <div class="settings-list">
-        <div class="setting-form">
-          <div class="setting-fixed keybind-box">
+        <div class="flag-grid">
+          <button class="ghost-btn flag-card keybind-box" :disabled="runtime.busy" @click="beginPttKeyCapture">
             <span>{{ t.pttHotkey }}</span>
             <strong>{{ listeningPttKey ? t.anyKey : normalizeKeyLabel(runtime.config.pttKey) }}</strong>
-          </div>
-          <button class="ghost-btn" :disabled="runtime.busy" @click="beginPttKeyCapture">
-            {{ listeningPttKey ? t.waitKey : t.setPttKey }}
           </button>
+          <div class="flag-card">
+            <span>{{ t.agc }}</span>
+            <strong>{{ runtime.snapshot.devices.agcEnabled ? t.enabled : t.disabled }}</strong>
+          </div>
+          <div class="flag-card">
+            <span>{{ t.noiseSuppression }}</span>
+            <strong>{{ runtime.snapshot.devices.noiseSuppression ? t.enabled : t.disabled }}</strong>
+          </div>
+          <div class="flag-card">
+            <span>{{ t.aec }}</span>
+            <strong>{{ runtime.snapshot.devices.aecEnabled ? t.enabled : t.disabled }}</strong>
+          </div>
         </div>
         <div class="setting-row">
           <span>{{ t.inputDevice }}</span>
@@ -944,17 +961,6 @@ watch(
           :value="runtime.snapshot.devices.jitterBufferMs"
           @input="handleJitterInput"
         />
-      </div>
-
-      <div class="flag-grid">
-        <div class="flag-card">
-          <span>{{ t.agc }}</span>
-          <strong>{{ runtime.snapshot.devices.agcEnabled ? t.enabled : t.disabled }}</strong>
-        </div>
-        <div class="flag-card">
-          <span>{{ t.noiseSuppression }}</span>
-          <strong>{{ runtime.snapshot.devices.noiseSuppression ? t.enabled : t.disabled }}</strong>
-        </div>
       </div>
     </aside>
 
