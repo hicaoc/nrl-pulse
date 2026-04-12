@@ -8,16 +8,19 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-windows:
     name: Windows (x86_64)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v4.1.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -27,7 +30,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v4.2.3
         with:
           path: |
             ~/.cargo/registry
@@ -75,12 +78,12 @@ jobs:
           ./node_modules/.bin/tauri signer sign --password "" \
             src-tauri/target/x86_64-pc-windows-msvc/release/nrl-pulse.exe
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4.6.2
         with:
           name: nrl-pulse-windows-sig
           path: src-tauri/target/x86_64-pc-windows-msvc/release/nrl-pulse.exe.sig
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4.6.2
         with:
           name: nrl-pulse-windows
           path: src-tauri/target/x86_64-pc-windows-msvc/release/nrl-pulse.exe
@@ -89,11 +92,11 @@ jobs:
     name: Linux (x86_64)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v4.1.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -103,7 +106,7 @@ jobs:
           targets: x86_64-unknown-linux-gnu
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v4.2.3
         with:
           path: |
             ~/.cargo/registry
@@ -140,12 +143,12 @@ jobs:
           ./node_modules/.bin/tauri signer sign --password "" \
             src-tauri/target/x86_64-unknown-linux-gnu/release/nrl-pulse
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4.6.2
         with:
           name: nrl-pulse-linux
           path: src-tauri/target/x86_64-unknown-linux-gnu/release/nrl-pulse
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4.6.2
         with:
           name: nrl-pulse-linux-sig
           path: src-tauri/target/x86_64-unknown-linux-gnu/release/nrl-pulse.sig
@@ -154,11 +157,11 @@ jobs:
     name: macOS (ARM + Intel)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v4.1.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -168,7 +171,7 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v4.2.3
         with:
           path: |
             ~/.cargo/registry
@@ -223,22 +226,22 @@ jobs:
           ./node_modules/.bin/tauri signer sign --password "" \
             src-tauri/target/x86_64-apple-darwin/release/nrl-pulse
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4.6.2
         with:
           name: nrl-pulse-mac-arm
           path: src-tauri/target/aarch64-apple-darwin/release/nrl-pulse
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4.6.2
         with:
           name: nrl-pulse-mac-arm-sig
           path: src-tauri/target/aarch64-apple-darwin/release/nrl-pulse.sig
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4.6.2
         with:
           name: nrl-pulse-mac-x64
           path: src-tauri/target/x86_64-apple-darwin/release/nrl-pulse
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4.6.2
         with:
           name: nrl-pulse-mac-x64-sig
           path: src-tauri/target/x86_64-apple-darwin/release/nrl-pulse.sig
@@ -252,7 +255,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
 
       - name: Read version
         id: version
@@ -260,7 +263,7 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           echo "version=v${VERSION}" >> $GITHUB_OUTPUT
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4.3.0
         with:
           path: artifacts
 
