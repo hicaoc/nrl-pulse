@@ -5,6 +5,8 @@
   "windows": ["ptt-float"],
   "permissions": [
     "core:default",
+    "core:app:allow-version",
+    "core:window:allow-set-title",
     "core:window:allow-start-dragging"
   ]
 }

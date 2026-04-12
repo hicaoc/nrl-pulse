@@ -543,10 +543,12 @@ function syncConfigDrafts() {
 }
 
 onMounted(async () => {
-  const version = await getVersion();
-  const title = `NRL Pulse v${version} © BH4RPN`;
-  document.title = title;
-  await getCurrentWindow().setTitle(title);
+  try {
+    const version = await getVersion();
+    const title = `NRL Pulse v${version} © BH4RPN`;
+    document.title = title;
+    await getCurrentWindow().setTitle(title);
+  } catch { /* 权限未授予时不影响后续初始化 */ }
   if (isPttWindow) {
     document.documentElement.classList.add("ptt-window");
     document.body.classList.add("ptt-window");
