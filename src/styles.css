@@ -701,6 +701,11 @@ textarea {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.flag-card-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .metric-card span,
 .flag-card span,
 .setting-row span,

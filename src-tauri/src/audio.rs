@@ -9,6 +9,10 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use crate::models::DeviceSettings;
+#[cfg(target_os = "windows")]
+use crate::audio_aec_win::AecCapture;
+#[cfg(target_os = "macos")]
+use crate::audio_aec_mac::AecCapture;
 
 const TARGET_SAMPLE_RATE: u32 = 8_000;
 const VOICE_FRAME_SAMPLES: usize = 160;
@@ -267,6 +271,8 @@ struct AudioInner {
     input_stream: Option<Stream>,
     output_stream: Option<Stream>,
     playback: Arc<Mutex<PlaybackState>>,
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    aec_capture: Option<AecCapture>,
 }
 
 // cpal::Stream 在 macOS 上未实现 Send（CoreAudio 回调持有 dyn FnMut），
@@ -295,6 +301,8 @@ impl AudioEngine {
                 input_stream: None,
                 output_stream: None,
                 playback: dummy_playback,
+                #[cfg(any(target_os = "windows", target_os = "macos"))]
+                aec_capture: None,
             })),
             transmitting,
             monitoring,
@@ -333,6 +341,7 @@ impl AudioEngine {
         let mut input_rate = TARGET_SAMPLE_RATE;
         let mut input_resampling = false;
         let mut input_stream = None;
+        let mut aec_enabled = false;
         {
             let mut rx_guard = self
                 .capture_rx
@@ -341,38 +350,80 @@ impl AudioEngine {
             *rx_guard = None;
         }
 
-        if let Some(device) = host.default_input_device() {
-            input_name = device
-                .name()
-                .unwrap_or_else(|_| "Default Microphone".into());
-            if let Ok((input_supported, input_logs)) = preferred_config(&device, true) {
-                logs.extend(input_logs);
-                input_rate = input_supported.sample_rate().0;
-                input_resampling = input_rate != TARGET_SAMPLE_RATE;
-                let (capture_tx, capture_rx) = unbounded_channel();
-                if let Ok(stream) = build_input_stream(
-                    &device,
-                    &input_supported,
-                    capture_tx,
-                    self.transmitting.clone(),
-                ) {
-                    if stream.play().is_ok() {
-                        {
-                            let mut rx_guard = self
-                                .capture_rx
-                                .lock()
-                                .map_err(|_| "capture receiver poisoned")?;
-                            *rx_guard = Some(capture_rx);
+        // ── Windows / macOS: try platform AEC first ─────────────────────────
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        let mut aec_capture: Option<AecCapture> = None;
+
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        {
+            let (capture_tx, capture_rx) = unbounded_channel();
+            match AecCapture::start(capture_tx, self.transmitting.clone()) {
+                Ok(aec) => {
+                    input_name = format!("{} (AEC)", aec.device_name);
+                    input_rate = aec.device_rate;
+                    input_resampling = input_rate != TARGET_SAMPLE_RATE;
+                    aec_enabled = true;
+                    logs.push(format!(
+                        "AEC: Windows WASAPI echo cancellation active @ {} Hz",
+                        input_rate
+                    ));
+                    eprintln!("[AEC] WASAPI AEC active: {}", input_name);
+                    {
+                        let mut rx_guard = self
+                            .capture_rx
+                            .lock()
+                            .map_err(|_| "capture receiver poisoned")?;
+                        *rx_guard = Some(capture_rx);
+                    }
+                    aec_capture = Some(aec);
+                }
+                Err(e) => {
+                    eprintln!("[AEC] WASAPI AEC unavailable ({e}), falling back to cpal");
+                    logs.push(format!("AEC unavailable: {e}"));
+                }
+            }
+        }
+
+        // ── Fallback: cpal default input ────────────────────────────────────
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        let use_cpal_input = true;
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        let use_cpal_input = aec_capture.is_none();
+
+        if use_cpal_input {
+            if let Some(device) = host.default_input_device() {
+                input_name = device
+                    .name()
+                    .unwrap_or_else(|_| "Default Microphone".into());
+                if let Ok((input_supported, input_logs)) = preferred_config(&device, true) {
+                    logs.extend(input_logs);
+                    input_rate = input_supported.sample_rate().0;
+                    input_resampling = input_rate != TARGET_SAMPLE_RATE;
+                    let (capture_tx, capture_rx) = unbounded_channel();
+                    if let Ok(stream) = build_input_stream(
+                        &device,
+                        &input_supported,
+                        capture_tx,
+                        self.transmitting.clone(),
+                    ) {
+                        if stream.play().is_ok() {
+                            {
+                                let mut rx_guard = self
+                                    .capture_rx
+                                    .lock()
+                                    .map_err(|_| "capture receiver poisoned")?;
+                                *rx_guard = Some(capture_rx);
+                            }
+                            input_stream = Some(stream);
+                        } else {
+                            input_name = format!("{input_name} (start failed)");
                         }
-                        input_stream = Some(stream);
                     } else {
-                        input_name = format!("{input_name} (start failed)");
+                        input_name = format!("{input_name} (unsupported)");
                     }
                 } else {
-                    input_name = format!("{input_name} (unsupported)");
+                    input_name = format!("{input_name} (config failed)");
                 }
-            } else {
-                input_name = format!("{input_name} (config failed)");
             }
         }
 
@@ -383,6 +434,8 @@ impl AudioEngine {
         inner.playback = playback;
         inner.output_stream = Some(output_stream);
         inner.input_stream = input_stream;
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        { inner.aec_capture = aec_capture; }
 
         Ok((DeviceSettings {
             input_device: input_name,
@@ -395,7 +448,7 @@ impl AudioEngine {
             jitter_buffer_ms: 120,
             agc_enabled: false,
             noise_suppression: false,
-            aec_enabled: false,
+            aec_enabled,
         }, logs))
     }
 
@@ -404,6 +457,8 @@ impl AudioEngine {
         if let Ok(mut inner) = self.inner.lock() {
             inner.input_stream = None;
             inner.output_stream = None;
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            { inner.aec_capture = None; }
             if let Ok(mut playback) = inner.playback.lock() {
                 match &mut playback.renderer {
                     PlaybackRenderer::Passthrough(buf) => buf.clear(),

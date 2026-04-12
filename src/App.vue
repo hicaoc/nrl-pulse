@@ -119,6 +119,7 @@ const messages = {
     agc: "AGC",
     noiseSuppression: "降噪",
     aec: "回声消除 AEC",
+    aecUnsupported: "当前系统不支持回声消除",
     enabled: "开启",
     disabled: "关闭",
     runningLogs: "运行日志",
@@ -224,6 +225,7 @@ const messages = {
     agc: "AGC",
     noiseSuppression: "Noise Reduction",
     aec: "Echo Cancel AEC",
+    aecUnsupported: "Echo cancellation not supported on this system",
     enabled: "On",
     disabled: "Off",
     runningLogs: "Runtime Logs",
@@ -948,7 +950,11 @@ watch(
             <span>{{ t.noiseSuppression }}</span>
             <strong>{{ runtime.snapshot.devices.noiseSuppression ? t.enabled : t.disabled }}</strong>
           </div>
-          <div class="flag-card">
+          <div
+            class="flag-card"
+            :class="{ 'flag-card-disabled': !runtime.snapshot.devices.aecEnabled }"
+            :title="runtime.snapshot.devices.aecEnabled ? '' : t.aecUnsupported"
+          >
             <span>{{ t.aec }}</span>
             <strong>{{ runtime.snapshot.devices.aecEnabled ? t.enabled : t.disabled }}</strong>
           </div>

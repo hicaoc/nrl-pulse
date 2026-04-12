@@ -1,5 +1,9 @@
 mod at;
 mod audio;
+#[cfg(target_os = "windows")]
+mod audio_aec_win;
+#[cfg(target_os = "macos")]
+mod audio_aec_mac;
 mod config;
 mod g711;
 mod models;
