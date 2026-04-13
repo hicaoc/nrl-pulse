@@ -313,8 +313,8 @@ jobs:
           BASE="https://github.com/hicaoc/nrl-pulse/releases/download/${VERSION}"
           WIN_SIG=$(cat nrl-pulse-windows.exe.sig)
           LIN_SIG=$(cat nrl-pulse-linux.sig)
-          MAC_ARM_SIG=$(cat nrl-pulse-mac-arm.sig)
-          MAC_X64_SIG=$(cat nrl-pulse-mac-x64.sig)
+          MAC_ARM_SIG=$(cat nrl-pulse-mac-arm.sig 2>/dev/null || echo "")
+          MAC_X64_SIG=$(cat nrl-pulse-mac-x64.sig 2>/dev/null || echo "")
           cat > latest.json << EOF
           {
             "version": "${VERSION}",
@@ -353,7 +353,5 @@ jobs:
             nrl-pulse-windows.exe
             nrl-pulse-linux
             nrl-pulse-mac-arm.dmg
-            nrl-pulse-mac-arm.app.tar.gz
             nrl-pulse-mac-x64.dmg
-            nrl-pulse-mac-x64.app.tar.gz
             latest.json
