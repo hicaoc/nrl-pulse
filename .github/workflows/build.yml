@@ -224,12 +224,19 @@ jobs:
 
       - name: Collect macOS bundle artifacts
         run: |
+          echo "=== bundle output ==="
+          find src-tauri/target/aarch64-apple-darwin/release/bundle -type f | sort
+          find src-tauri/target/x86_64-apple-darwin/release/bundle -type f | sort
+          echo "====================="
+
           find src-tauri/target/aarch64-apple-darwin/release/bundle/dmg -name "*.dmg" -exec cp {} nrl-pulse-mac-arm.dmg \;
           find src-tauri/target/x86_64-apple-darwin/release/bundle/dmg -name "*.dmg" -exec cp {} nrl-pulse-mac-x64.dmg \;
-          find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -name "*.app.tar.gz" -exec cp {} nrl-pulse-mac-arm.app.tar.gz \;
-          find src-tauri/target/x86_64-apple-darwin/release/bundle/macos -name "*.app.tar.gz" -exec cp {} nrl-pulse-mac-x64.app.tar.gz \;
-          find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -name "*.app.tar.gz.sig" -exec cp {} nrl-pulse-mac-arm.app.tar.gz.sig \;
-          find src-tauri/target/x86_64-apple-darwin/release/bundle/macos -name "*.app.tar.gz.sig" -exec cp {} nrl-pulse-mac-x64.app.tar.gz.sig \;
+
+          # updater artifacts (.app.tar.gz) — optional, only present when createUpdaterArtifacts: true takes effect
+          find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -name "*.app.tar.gz"     -exec cp {} nrl-pulse-mac-arm.app.tar.gz \; || true
+          find src-tauri/target/x86_64-apple-darwin/release/bundle/macos -name "*.app.tar.gz"     -exec cp {} nrl-pulse-mac-x64.app.tar.gz \; || true
+          find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -name "*.app.tar.gz.sig" -exec cp {} nrl-pulse-mac-arm.app.tar.gz.sig \; || true
+          find src-tauri/target/x86_64-apple-darwin/release/bundle/macos -name "*.app.tar.gz.sig" -exec cp {} nrl-pulse-mac-x64.app.tar.gz.sig \; || true
 
       - uses: actions/upload-artifact@v4.6.2
         with:
@@ -240,11 +247,13 @@ jobs:
         with:
           name: nrl-pulse-mac-arm-updater
           path: nrl-pulse-mac-arm.app.tar.gz
+          if-no-files-found: warn
 
       - uses: actions/upload-artifact@v4.6.2
         with:
           name: nrl-pulse-mac-arm-sig
           path: nrl-pulse-mac-arm.app.tar.gz.sig
+          if-no-files-found: warn
 
       - uses: actions/upload-artifact@v4.6.2
         with:
@@ -255,11 +264,13 @@ jobs:
         with:
           name: nrl-pulse-mac-x64-updater
           path: nrl-pulse-mac-x64.app.tar.gz
+          if-no-files-found: warn
 
       - uses: actions/upload-artifact@v4.6.2
         with:
           name: nrl-pulse-mac-x64-sig
           path: nrl-pulse-mac-x64.app.tar.gz.sig
+          if-no-files-found: warn
 
   release:
     name: Release
@@ -288,12 +299,12 @@ jobs:
           cp artifacts/nrl-pulse-windows-sig/nrl-pulse.exe.sig      nrl-pulse-windows.exe.sig
           cp artifacts/nrl-pulse-linux/nrl-pulse                    nrl-pulse-linux
           cp artifacts/nrl-pulse-linux-sig/nrl-pulse.sig            nrl-pulse-linux.sig
-          cp artifacts/nrl-pulse-mac-arm/nrl-pulse-mac-arm.dmg      nrl-pulse-mac-arm.dmg
-          cp artifacts/nrl-pulse-mac-arm-updater/nrl-pulse-mac-arm.app.tar.gz nrl-pulse-mac-arm.app.tar.gz
-          cp artifacts/nrl-pulse-mac-arm-sig/nrl-pulse-mac-arm.app.tar.gz.sig nrl-pulse-mac-arm.sig
-          cp artifacts/nrl-pulse-mac-x64/nrl-pulse-mac-x64.dmg      nrl-pulse-mac-x64.dmg
-          cp artifacts/nrl-pulse-mac-x64-updater/nrl-pulse-mac-x64.app.tar.gz nrl-pulse-mac-x64.app.tar.gz
-          cp artifacts/nrl-pulse-mac-x64-sig/nrl-pulse-mac-x64.app.tar.gz.sig nrl-pulse-mac-x64.sig
+          cp artifacts/nrl-pulse-mac-arm/nrl-pulse-mac-arm.dmg              nrl-pulse-mac-arm.dmg
+          cp artifacts/nrl-pulse-mac-x64/nrl-pulse-mac-x64.dmg              nrl-pulse-mac-x64.dmg
+          cp artifacts/nrl-pulse-mac-arm-updater/nrl-pulse-mac-arm.app.tar.gz     nrl-pulse-mac-arm.app.tar.gz     2>/dev/null || true
+          cp artifacts/nrl-pulse-mac-x64-updater/nrl-pulse-mac-x64.app.tar.gz     nrl-pulse-mac-x64.app.tar.gz     2>/dev/null || true
+          cp artifacts/nrl-pulse-mac-arm-sig/nrl-pulse-mac-arm.app.tar.gz.sig     nrl-pulse-mac-arm.sig            2>/dev/null || true
+          cp artifacts/nrl-pulse-mac-x64-sig/nrl-pulse-mac-x64.app.tar.gz.sig     nrl-pulse-mac-x64.sig            2>/dev/null || true
 
       - name: Generate latest.json
         run: |
