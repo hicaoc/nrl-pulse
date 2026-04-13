@@ -36,9 +36,9 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "all",
-    "createUpdaterArtifacts": false,
+    "active": true,
+    "targets": ["dmg"],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/icon-32.png",
       "icons/icon-128.png",
