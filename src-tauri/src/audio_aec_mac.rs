@@ -44,8 +44,8 @@ const BUS_INPUT: AudioUnitElement = 1;  // microphone input
 pub struct AecCapture {
     /// The AudioUnit — must stay alive for the duration of capture
     audio_unit: AudioUnit,
-    /// Shared state accessed from the C render callback
-    state: Arc<Mutex<CallbackState>>,
+    /// Kept alive so the raw pointer passed to the C callback remains valid
+    _state: Arc<Mutex<CallbackState>>,
     pub device_rate: u32,
     pub device_name: String,
 }
@@ -81,7 +81,6 @@ struct CallbackState {
     resampler: Option<Fft<f32>>,
     in_ring: VecDeque<f32>,
     frame: Vec<i16>,
-    capture_rate: u32,
     capture_channels: usize,
     /// AudioUnit handle needed inside the callback to pull input data
     audio_unit: AudioUnit,
@@ -210,7 +209,6 @@ unsafe fn start_voice_io(
         resampler,
         in_ring: VecDeque::with_capacity(VOICE_FRAME * 8),
         frame: Vec::with_capacity(VOICE_FRAME),
-        capture_rate,
         capture_channels,
         audio_unit,
     }));
@@ -241,7 +239,7 @@ unsafe fn start_voice_io(
 
     Ok(AecCapture {
         audio_unit,
-        state,
+        _state: state,
         device_rate: capture_rate,
         device_name: "Built-in Microphone (AEC)".into(),
     })
