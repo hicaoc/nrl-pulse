@@ -36,7 +36,6 @@ pub struct SessionSnapshot {
     pub tx_spectrum: Vec<f32>,
     pub is_transmitting: bool,
     pub is_monitoring: bool,
-    pub recorder_enabled: bool,
     pub queued_frames: u32,
     pub last_text_message: String,
     pub devices: DeviceSettings,
@@ -72,6 +71,12 @@ pub struct ChatMessageEvent {
     pub text: String,
     pub meta: String,
     pub time: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub type_: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_data: Option<Vec<f32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
 }
 
 #[derive(Clone, Serialize)]

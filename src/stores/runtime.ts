@@ -15,7 +15,6 @@ import {
   setTransmit,
   syncAtState,
   toggleMonitor,
-  toggleRecorder,
   toggleTransmit,
   updateJitterBuffer,
 } from "@/lib/tauri";
@@ -44,7 +43,6 @@ const initialSnapshot: SessionSnapshot = {
   txSpectrum: Array.from({ length: 28 }, () => 0),
   isTransmitting: false,
   isMonitoring: true,
-  recorderEnabled: true,
   queuedFrames: 4,
   lastTextMessage: "系统初始化中",
   devices: {
@@ -75,6 +73,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     currentGroupId: 0,
     volume: 1,
     pttKey: "Space",
+    voiceSavePath: "",
   });
   const bootstrapped = ref(false);
   const busy = ref(false);
@@ -162,10 +161,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await runAction(toggleMonitor);
   }
 
-  async function toggleRec() {
-    await runAction(toggleRecorder);
-  }
-
   async function setJitter(value: number) {
     await runAction(() => updateJitterBuffer(value));
   }
@@ -202,7 +197,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
     toggleTx,
     setTx,
     toggleRx,
-    toggleRec,
     setJitter,
     sendMessage,
     saveConfig,

@@ -27,6 +27,7 @@ export interface RuntimeConfig {
   currentGroupId: number;
   volume: number;
   pttKey: string;
+  voiceSavePath: string;
 }
 
 export interface SessionSnapshot {
@@ -47,7 +48,6 @@ export interface SessionSnapshot {
   txSpectrum: number[];
   isTransmitting: boolean;
   isMonitoring: boolean;
-  recorderEnabled: boolean;
   queuedFrames: number;
   lastTextMessage: string;
   devices: DeviceSettings;
@@ -77,6 +77,9 @@ export interface ChatMessageEvent {
   text: string;
   meta: string;
   time: string;
+  type?: "text" | "voice";
+  audioData?: number[];
+  duration?: number;
 }
 
 export interface PlatformServer {

@@ -44,10 +44,6 @@ export async function toggleMonitor(): Promise<SessionSnapshot> {
   return invoke<SessionSnapshot>("toggle_monitor");
 }
 
-export async function toggleRecorder(): Promise<SessionSnapshot> {
-  return invoke<SessionSnapshot>("toggle_recorder");
-}
-
 export async function updateJitterBuffer(value: number): Promise<SessionSnapshot> {
   return invoke<SessionSnapshot>("update_jitter_buffer", { value });
 }
@@ -66,6 +62,10 @@ export async function saveRuntimeConfig(config: RuntimeConfig): Promise<SessionS
 
 export async function syncAtState(): Promise<SessionSnapshot> {
   return invoke<SessionSnapshot>("sync_at_state");
+}
+
+export async function getDefaultAudioDir(): Promise<string> {
+  return invoke<string>("get_default_audio_dir");
 }
 
 export async function togglePttWindow(): Promise<boolean> {

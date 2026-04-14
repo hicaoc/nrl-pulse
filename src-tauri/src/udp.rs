@@ -242,6 +242,7 @@ async fn handle_packet(
                     pcm.len(),
                     analysis.level,
                     &analysis.spectrum,
+                    &pcm,
                 )
                 .await;
             let _ = app.emit("runtime://snapshot", runtime.snapshot().await);

@@ -1,3 +1,6 @@
+use std::fs::File;
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,6 +17,93 @@ use crate::udp::UdpSession;
 
 fn chrono_local_now() -> String {
     chrono::Local::now().format("%H:%M:%S").to_string()
+}
+
+fn save_voice_to_wav(
+    callsign: &str,
+    ssid: u8,
+    audio_data: &[i16],
+    duration_ms: u128,
+    save_path: &str,
+) -> Result<String, String> {
+    if audio_data.is_empty() {
+        return Err("No audio data to save".into());
+    }
+
+    let base_dir = if save_path.is_empty() {
+        dirs::audio_dir().unwrap_or_else(|| PathBuf::from("."))
+    } else {
+        PathBuf::from(save_path)
+    };
+
+    let date_dir = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let full_dir = base_dir.join(&date_dir);
+    std::fs::create_dir_all(&full_dir).map_err(|e| format!("Failed to create directory: {}", e))?;
+
+    let timestamp = chrono::Local::now().format("%H%M%S");
+    let duration_sec = (duration_ms as f64 / 1000.0).max(1.0);
+    let duration_str = format!("{:.1}", duration_sec);
+    let filename = format!("{}-{}_{}_{}s.wav", callsign, ssid, timestamp, duration_str);
+    let file_path = full_dir.join(&filename);
+
+    let sample_rate: u32 = 8000;
+    let num_channels: u16 = 1;
+    let bits_per_sample: u16 = 16;
+    let byte_rate = sample_rate * u32::from(num_channels) * u32::from(bits_per_sample / 8);
+    let block_align = num_channels * (bits_per_sample / 8);
+    let data_size = audio_data.len() * 2;
+
+    let mut file = File::create(&file_path)
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+
+    file.write_all(b"RIFF")
+        .map_err(|e| format!("Failed to write RIFF: {}", e))?;
+    
+    let chunk_size: u32 = 36 + data_size as u32;
+    file.write_all(&chunk_size.to_le_bytes())
+        .map_err(|e| format!("Failed to write chunk size: {}", e))?;
+    
+    file.write_all(b"WAVE")
+        .map_err(|e| format!("Failed to write WAVE: {}", e))?;
+    
+    file.write_all(b"fmt ")
+        .map_err(|e| format!("Failed to write fmt: {}", e))?;
+    
+    let subchunk1_size: u32 = 16;
+    file.write_all(&subchunk1_size.to_le_bytes())
+        .map_err(|e| format!("Failed to write subchunk1 size: {}", e))?;
+    
+    let audio_format: u16 = 1;
+    file.write_all(&audio_format.to_le_bytes())
+        .map_err(|e| format!("Failed to write audio format: {}", e))?;
+    
+    file.write_all(&num_channels.to_le_bytes())
+        .map_err(|e| format!("Failed to write num channels: {}", e))?;
+    
+    file.write_all(&sample_rate.to_le_bytes())
+        .map_err(|e| format!("Failed to write sample rate: {}", e))?;
+    
+    file.write_all(&byte_rate.to_le_bytes())
+        .map_err(|e| format!("Failed to write byte rate: {}", e))?;
+    
+    file.write_all(&block_align.to_le_bytes())
+        .map_err(|e| format!("Failed to write block align: {}", e))?;
+    
+    file.write_all(&bits_per_sample.to_le_bytes())
+        .map_err(|e| format!("Failed to write bits per sample: {}", e))?;
+    
+    file.write_all(b"data")
+        .map_err(|e| format!("Failed to write data: {}", e))?;
+    
+    file.write_all(&(data_size as u32).to_le_bytes())
+        .map_err(|e| format!("Failed to write data size: {}", e))?;
+    
+    for &sample in audio_data {
+        file.write_all(&sample.to_le_bytes())
+            .map_err(|e| format!("Failed to write sample: {}", e))?;
+    }
+
+    Ok(filename)
 }
 
 #[derive(Clone)]
@@ -34,16 +124,20 @@ struct RuntimeData {
     timeline: Vec<TimelineEvent>,
     at_state: AtState,
     voice_session: Option<VoiceSession>,
+    outgoing_voice_data: Vec<i16>,
+    outgoing_voice_start: Option<Instant>,
     last_heartbeat_at: Option<Instant>,
     heartbeat_timeout_reported: bool,
     tick: u64,
 }
 
+#[derive(Clone)]
 struct VoiceSession {
     callsign: String,
     ssid: u8,
     started_at: Instant,
     last_seen_at: Instant,
+    audio_data: Vec<i16>,
 }
 
 const SPECTRUM_BANDS: usize = 28;
@@ -169,14 +263,30 @@ impl RuntimeState {
         }
         guard.snapshot.is_transmitting = enabled;
         self.audio.set_transmitting(enabled);
-        if !enabled {
+        
+        let detail = if enabled {
+            guard.outgoing_voice_data.clear();
+            guard.outgoing_voice_start = Some(Instant::now());
+            "发射链路进入发送状态，等待真实麦克风与编码器挂接"
+        } else {
             guard.snapshot.tx_level = 0.0;
             guard.snapshot.tx_spectrum.fill(0.0);
             guard.snapshot.uplink_kbps = 0.0;
-        }
-        let detail = if enabled {
-            "发射链路进入发送状态，等待真实麦克风与编码器挂接"
-        } else {
+            let duration_ms = guard.outgoing_voice_start
+                .map(|s| s.elapsed().as_millis())
+                .unwrap_or(0);
+            let voice_data = guard.outgoing_voice_data.clone();
+            guard.outgoing_voice_data.clear();
+            guard.outgoing_voice_start = None;
+            if !voice_data.is_empty() && duration_ms > 100 {
+                let data_copy = voice_data.clone();
+                let dur_copy = duration_ms;
+                drop(guard);
+                self.emit_outgoing_voice_message_with_data(data_copy, dur_copy).await;
+                let mut guard = self.inner.write().await;
+                guard.push_event("发射切换", "发射结束，返回监听模式", "accent");
+                return guard.snapshot.clone();
+            }
             "发射结束，返回监听模式"
         };
         guard.push_event("发射切换", detail, "accent");
@@ -193,18 +303,6 @@ impl RuntimeState {
             "监听链路已关闭"
         };
         guard.push_event("监听切换", detail, "info");
-        guard.snapshot.clone()
-    }
-
-    pub async fn toggle_recorder(&self) -> SessionSnapshot {
-        let mut guard = self.inner.write().await;
-        guard.snapshot.recorder_enabled = !guard.snapshot.recorder_enabled;
-        let detail = if guard.snapshot.recorder_enabled {
-            "录音器已启用，后续可写入 WAV/索引数据库"
-        } else {
-            "录音器已停用"
-        };
-        guard.push_event("录音切换", detail, "info");
         guard.snapshot.clone()
     }
 
@@ -306,9 +404,10 @@ impl RuntimeState {
         samples: usize,
         level: f32,
         spectrum: &[f32],
+        pcm_data: &[i16],
     ) {
         let now = Instant::now();
-        let mut emitted = Vec::new();
+        let emitted = Vec::new();
         {
             let mut guard = self.inner.write().await;
             guard.snapshot.active_speaker = callsign.clone();
@@ -322,42 +421,32 @@ impl RuntimeState {
             match guard.voice_session.take() {
                 Some(mut session) if session.callsign == callsign && session.ssid == ssid => {
                     session.last_seen_at = now;
+                    session.audio_data.extend_from_slice(pcm_data);
                     guard.voice_session = Some(session);
                 }
                 Some(session) => {
                     let elapsed = now.duration_since(session.started_at).as_millis();
-                    emitted.push(guard.push_event(
-                        "语音会话结束",
-                        &format!(
-                            "{}-{} 结束发言，会话时长 {} ms",
-                            session.callsign, session.ssid, elapsed
-                        ),
-                        "info",
-                    ));
-                    emitted.push(guard.push_event(
-                        "语音会话开始",
-                        &format!("{callsign}-{ssid} 开始发言"),
-                        "accent",
-                    ));
-                    guard.voice_session = Some(VoiceSession {
-                        callsign,
+                    self.emit_voice_message(&session, elapsed).await;
+                    let mut new_session = VoiceSession {
+                        callsign: callsign.clone(),
                         ssid,
                         started_at: now,
                         last_seen_at: now,
-                    });
+                        audio_data: Vec::new(),
+                    };
+                    new_session.audio_data.extend_from_slice(pcm_data);
+                    guard.voice_session = Some(new_session);
                 }
                 None => {
-                    emitted.push(guard.push_event(
-                        "语音会话开始",
-                        &format!("{callsign}-{ssid} 开始发言"),
-                        "accent",
-                    ));
-                    guard.voice_session = Some(VoiceSession {
-                        callsign,
+                    let mut new_session = VoiceSession {
+                        callsign: callsign.clone(),
                         ssid,
                         started_at: now,
                         last_seen_at: now,
-                    });
+                        audio_data: Vec::new(),
+                    };
+                    new_session.audio_data.extend_from_slice(pcm_data);
+                    guard.voice_session = Some(new_session);
                 }
             }
         }
@@ -506,6 +595,11 @@ impl RuntimeState {
                 runtime
                     .note_transmit_frame(frame.len(), analysis.level, &analysis.spectrum)
                     .await;
+                let is_transmitting = runtime.inner.read().await.snapshot.is_transmitting;
+                if is_transmitting {
+                    let mut guard = runtime.inner.write().await;
+                    guard.outgoing_voice_data.extend_from_slice(&frame);
+                }
                 let _ = runtime.udp.send_voice_frame(&config, &frame).await;
             }
             runtime.capture_task_running.store(false, Ordering::Relaxed);
@@ -565,34 +659,33 @@ impl RuntimeState {
         tauri::async_runtime::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(200)).await;
-                let mut emitted = Vec::new();
-                {
+                let emitted = Vec::new();
+                let session_info = {
                     let mut guard = runtime.inner.write().await;
-                    let Some(session) = &guard.voice_session else {
-                        if guard.snapshot.connection == "disconnected" {
-                            break;
-                        }
+                    if guard.snapshot.connection == "disconnected" {
+                        break;
+                    }
+                    let Some(session) = guard.voice_session.take() else {
                         continue;
                     };
                     if session.last_seen_at.elapsed() < Duration::from_secs(1) {
+                        guard.voice_session = Some(session);
                         continue;
                     }
                     let elapsed = session
                         .last_seen_at
                         .duration_since(session.started_at)
                         .as_millis();
-                    let detail = format!(
-                        "{}-{} 结束发言，会话时长 {} ms",
-                        session.callsign, session.ssid, elapsed
-                    );
-                    emitted.push(guard.push_event("语音会话结束", &detail, "info"));
-                    guard.voice_session = None;
                     guard.snapshot.rx_level = 0.0;
                     guard.snapshot.rx_spectrum.fill(0.0);
                     guard.snapshot.queued_frames = 0;
                     guard.snapshot.downlink_kbps = 0.0;
                     guard.snapshot.active_speaker.clear();
                     guard.snapshot.active_speaker_ssid = 0;
+                    Some((session, elapsed))
+                };
+                if let Some((session, elapsed)) = session_info {
+                    runtime.emit_voice_message(&session, elapsed).await;
                 }
                 runtime.emit_runtime_updates(emitted).await;
             }
@@ -628,6 +721,99 @@ impl RuntimeState {
                 text: text.into(),
                 meta: format!("{callsign}-{ssid}"),
                 time,
+                type_: None,
+                audio_data: None,
+                duration: None,
+            };
+            let _ = app.emit("runtime://chat-message", event);
+        }
+    }
+
+    async fn emit_voice_message(&self, session: &VoiceSession, duration_ms: u128) {
+        let config = {
+            let guard = self.inner.read().await;
+            guard.config.clone()
+        };
+
+        if let Err(e) = save_voice_to_wav(
+            &session.callsign,
+            session.ssid,
+            &session.audio_data,
+            duration_ms,
+            &config.voice_save_path,
+        ) {
+            eprintln!("[Runtime] Failed to save voice: {}", e);
+        }
+
+        if let Some(app) = self.app.read().await.clone() {
+            let id = {
+                let mut guard = self.inner.write().await;
+                guard.tick += 1;
+                guard.tick
+            };
+            let time = chrono_local_now();
+            let audio_data: Vec<f32> = session
+                .audio_data
+                .iter()
+                .map(|&s| s as f32 / i16::MAX as f32)
+                .collect();
+            let duration_sec = duration_ms as f64 / 1000.0;
+            let event = ChatMessageEvent {
+                id: format!("chat-{id}"),
+                side: "remote".into(),
+                text: String::new(),
+                meta: format!("{}-{}-{}", session.callsign, session.ssid, format!("{:.1}s", duration_sec)),
+                time,
+                type_: Some("voice".into()),
+                audio_data: Some(audio_data),
+                duration: Some(duration_sec),
+            };
+            let _ = app.emit("runtime://chat-message", event);
+        }
+    }
+
+    async fn emit_outgoing_voice_message_with_data(&self, audio_data: Vec<i16>, duration_ms: u128) {
+        let (callsign, ssid, voice_save_path) = {
+            let guard = self.inner.read().await;
+            let config = &guard.config;
+            (config.callsign.clone(), config.ssid, config.voice_save_path.clone())
+        };
+        
+        if audio_data.is_empty() || duration_ms < 100 {
+            return;
+        }
+        
+        if let Err(e) = save_voice_to_wav(
+            &callsign,
+            ssid,
+            &audio_data,
+            duration_ms,
+            &voice_save_path,
+        ) {
+            eprintln!("[Runtime] Failed to save outgoing voice: {}", e);
+        }
+        
+        if let Some(app) = self.app.read().await.clone() {
+            let id = {
+                let mut guard = self.inner.write().await;
+                guard.tick += 1;
+                guard.tick
+            };
+            let time = chrono_local_now();
+            let normalized_data: Vec<f32> = audio_data
+                .iter()
+                .map(|&s| s as f32 / i16::MAX as f32)
+                .collect();
+            let duration_sec = duration_ms as f64 / 1000.0;
+            let event = ChatMessageEvent {
+                id: format!("chat-{id}"),
+                side: "self".into(),
+                text: String::new(),
+                meta: format!("{}-{}-{}", callsign, ssid, format!("{:.1}s", duration_sec)),
+                time,
+                type_: Some("voice".into()),
+                audio_data: Some(normalized_data),
+                duration: Some(duration_sec),
             };
             let _ = app.emit("runtime://chat-message", event);
         }
@@ -656,7 +842,6 @@ impl RuntimeData {
                 tx_spectrum: vec![0.0; SPECTRUM_BANDS],
                 is_transmitting: false,
                 is_monitoring: true,
-                recorder_enabled: true,
                 queued_frames: 0,
                 last_text_message: "等待连接服务器".into(),
                 devices: DeviceSettings {
@@ -683,6 +868,8 @@ impl RuntimeData {
                 last_command: "AT+VOLUME=100".into(),
             },
             voice_session: None,
+            outgoing_voice_data: vec![],
+            outgoing_voice_start: None,
             last_heartbeat_at: None,
             heartbeat_timeout_reported: false,
             tick: 0,

@@ -1,6 +1,6 @@
 [package]
 name = "nrl-pulse"
-version = "0.0.2"
+version = "0.0.3"
 description = "Modern cross-platform NRL desktop client"
 authors = ["Codex"]
 edition = "2021"
@@ -15,6 +15,7 @@ tauri-build = { version = "2.0.1", features = [] }
 [dependencies]
 chrono = "0.4"
 cpal = "0.16.0"
+dirs = "5"
 reqwest = { version = "0.12.15", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

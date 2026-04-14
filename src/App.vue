@@ -2,11 +2,13 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   checkUpdate,
   closePttWindow,
   downloadAndInstallUpdate,
   flog,
+  getDefaultAudioDir,
   onChatMessage,
   openPttWindow,
   startPttWindowDrag,
@@ -26,6 +28,11 @@ const isPttWindow = window.location.hash === "#ptt";
 
 const draftMessage = ref("");
 const pttKeyDraft = ref("Space");
+const voiceSavePathDraft = ref("");
+const defaultAudioPath = ref("");
+const voiceSavePathDisplay = computed(() => 
+  voiceSavePathDraft.value || defaultAudioPath.value || (language.value === "zh" ? "（默认）" : "(Default)")
+);
 const showSettings = ref(false);
 const showLogs = ref(false);
 const updateInfo = ref<UpdateInfo | null>(null);
@@ -44,6 +51,83 @@ const language = ref<Lang>((localStorage.getItem("nrl-pulse-lang") as Lang) || "
 const chatMessages = ref<
   ChatMessageEvent[]
 >([]);
+
+const playingMessageId = ref<string | null>(null);
+let audioContext: AudioContext | null = null;
+
+function getAudioContext(): AudioContext {
+  if (!audioContext) {
+    audioContext = new AudioContext();
+  }
+  return audioContext;
+}
+
+function generateWaveform(audioData: number[], samples: number): number[] {
+  if (!audioData || audioData.length === 0) return [];
+  const step = Math.max(1, Math.floor(audioData.length / samples));
+  const waveform: number[] = [];
+  for (let i = 0; i < samples; i++) {
+    const idx = i * step;
+    let sum = 0;
+    let count = 0;
+    for (let j = 0; j < step && idx + j < audioData.length; j++) {
+      sum += Math.abs(audioData[idx + j]);
+      count++;
+    }
+    waveform.push(count > 0 ? sum / count : 0);
+  }
+  return waveform;
+}
+
+async function playVoiceMessage(message: ChatMessageEvent) {
+  if (!message.audioData || message.audioData.length === 0) return;
+  
+  if (playingMessageId.value === message.id) {
+    playingMessageId.value = null;
+    return;
+  }
+  
+  playingMessageId.value = message.id;
+  
+  try {
+    const ctx = getAudioContext();
+    if (ctx.state === 'suspended') {
+      await ctx.resume();
+    }
+    
+    const buffer = ctx.createBuffer(1, message.audioData.length, 8000);
+    const channelData = buffer.getChannelData(0);
+    for (let i = 0; i < message.audioData.length; i++) {
+      channelData[i] = message.audioData[i];
+    }
+    
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    
+    source.onended = () => {
+      playingMessageId.value = null;
+    };
+    
+    source.start(0);
+  } catch (e) {
+    console.error('Failed to play voice message:', e);
+    playingMessageId.value = null;
+  }
+}
+
+function isVoiceMessage(message: ChatMessageEvent): boolean {
+  return message.type === 'voice';
+}
+
+function getVoiceBubbleWidth(duration: number | undefined): number {
+  const minWidth = 50;
+  const maxWidth = 80;
+  if (!duration) return minWidth;
+  const estimatedSeconds = duration;
+  const width = minWidth + (estimatedSeconds * 4);
+  return Math.min(maxWidth, Math.max(minWidth, width));
+}
 
 const messages = {
   zh: {
@@ -73,8 +157,6 @@ const messages = {
     disconnect: "断开",
     enableMute: "开启静音",
     disableMute: "取消静音",
-    stopRecording: "停止录音",
-    startRecording: "开始录音",
     pttWindow: "PTT",
     currentTalker: "当前发言",
     regionUnknown: "区域未识别",
@@ -115,6 +197,7 @@ const messages = {
     inputDevice: "输入设备",
     outputDevice: "输出设备",
     sampleRate: "采样率",
+    voiceSavePath: "语音保存路径",
     jitterBuffer: "抖动缓冲",
     agc: "AGC",
     noiseSuppression: "降噪",
@@ -147,7 +230,6 @@ const messages = {
     updateNone: "当前已是最新版本",
     checkUpdate: "检查更新",
     mute: "静音",
-    recording: "录音",
     roomWithOnline: (name: string, onlineCount: number, totalCount: number) =>
       `${name} · 在线 ${onlineCount}/${totalCount}`,
     zone: (value: string) => `${value} 区`,
@@ -221,6 +303,7 @@ const messages = {
     inputDevice: "Input",
     outputDevice: "Output",
     sampleRate: "Sample Rate",
+    voiceSavePath: "Voice Save Path",
     jitterBuffer: "Jitter Buffer",
     agc: "AGC",
     noiseSuppression: "Noise Reduction",
@@ -496,11 +579,24 @@ async function saveNetworkConfig() {
   await runtime.saveConfig({
     ...runtime.config,
     pttKey: pttKeyDraft.value,
+    voiceSavePath: voiceSavePathDraft.value,
   });
 }
 
 async function toggleFloatingPtt() {
   await togglePttWindow();
+}
+
+async function browseVoicePath() {
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    title: language.value === "zh" ? "选择语音保存路径" : "Select Voice Save Path",
+  });
+  if (selected && typeof selected === "string") {
+    voiceSavePathDraft.value = selected;
+    await saveNetworkConfig();
+  }
 }
 
 function toggleLanguage() {
@@ -537,6 +633,7 @@ async function switchGroup(groupId: number) {
 
 function syncConfigDrafts() {
   pttKeyDraft.value = runtime.config.pttKey;
+  voiceSavePathDraft.value = runtime.config.voiceSavePath || "";
   if (runtime.config.server && platform.servers.some((server) => server.host === runtime.config.server)) {
     platform.selectedServerHost = runtime.config.server;
   }
@@ -545,7 +642,7 @@ function syncConfigDrafts() {
 onMounted(async () => {
   try {
     const version = await getVersion();
-    const title = `NRL Pulse v${version} © BH4RPN`;
+    const title = `NRL Pulse v${version} © BH4RPN 2026 , BA4RN BG6FCS BD4RFG BD4VKI BI4UMD BA4QAO ...  `;
     document.title = title;
     await getCurrentWindow().setTitle(title);
   } catch { /* 权限未授予时不影响后续初始化 */ }
@@ -554,6 +651,7 @@ onMounted(async () => {
     document.body.classList.add("ptt-window");
   }
   await runtime.bootstrap();
+  defaultAudioPath.value = await getDefaultAudioDir();
   if (!isPttWindow) {
     await platform.bootstrap();
   }
@@ -775,24 +873,6 @@ watch(
                 />
               </svg>
             </button>
-            <button
-              class="icon-toggle record-toggle"
-              :class="{ active: runtime.snapshot.recorderEnabled }"
-              :disabled="runtime.busy"
-              :title="runtime.snapshot.recorderEnabled ? t.stopRecording : t.startRecording"
-              @click="runtime.toggleRec()"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  v-if="runtime.snapshot.recorderEnabled"
-                  d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V7.5a3.5 3.5 0 1 0-7 0V12a3.5 3.5 0 0 0 3.5 3.5m-6-3.5a6 6 0 0 0 12 0M12 18v3m-3 0h6"
-                />
-                <path
-                  v-else
-                  d="M15.5 15.2A3.5 3.5 0 0 1 8.5 12V7.5a3.5 3.5 0 0 1 5.8-2.6M6 12a6 6 0 0 0 9.6 4.8M12 18v3m-3 0h6M4 4l16 16"
-                />
-              </svg>
-            </button>
             <button class="ghost-btn tool-pill" :title="t.pttWindow" @click="toggleFloatingPtt">
               {{ t.pttWindow }}
             </button>
@@ -895,9 +975,35 @@ watch(
             class="chat-row"
             :data-side="message.side"
           >
-            <div class="chat-bubble" :data-side="message.side">
+            <div
+              class="chat-bubble"
+              :class="{ 'voice-bubble': isVoiceMessage(message), 'playing': playingMessageId === message.id }"
+              :data-side="message.side"
+              :style="isVoiceMessage(message) ? { width: getVoiceBubbleWidth(message.duration) + '%' } : {}"
+              @click="isVoiceMessage(message) && playVoiceMessage(message)"
+            >
               <small>{{ message.meta }} · {{ message.time }}</small>
-              <p>{{ message.text }}</p>
+              <template v-if="isVoiceMessage(message)">
+                <div class="voice-content">
+                  <div class="voice-icon" :class="{ playing: playingMessageId === message.id }">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                      <path v-if="playingMessageId !== message.id" d="M8 5v14l11-7z"/>
+                      <path v-else d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                    </svg>
+                  </div>
+                  <div class="voice-waveform">
+                    <div
+                      v-for="(level, idx) in generateWaveform(message.audioData || [], 40)"
+                      :key="idx"
+                      class="wave-bar"
+                      :style="{ height: Math.max(4, level * 24) + 'px' }"
+                    />
+                  </div>
+                </div>
+              </template>
+              <template v-else>
+                <p>{{ message.text }}</p>
+              </template>
             </div>
           </div>
 
@@ -972,6 +1078,21 @@ watch(
         <div class="setting-row">
           <span>{{ t.sampleRate }}</span>
           <strong>{{ runtime.snapshot.devices.sampleRate }} Hz</strong>
+        </div>
+        <div class="setting-row voice-path-row">
+          <span>{{ t.voiceSavePath }}</span>
+          <div class="voice-path-input-row">
+            <input
+              v-model="voiceSavePathDraft"
+              type="text"
+              class="text-input"
+              :placeholder="language === 'zh' ? '留空使用默认路径' : 'Empty for default'"
+              @blur="saveNetworkConfig"
+            />
+            <button class="ghost-btn compact" @click="browseVoicePath">
+              {{ language === 'zh' ? '浏览' : 'Browse' }}
+            </button>
+          </div>
         </div>
       </div>
 

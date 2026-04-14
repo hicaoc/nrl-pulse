@@ -65,11 +65,6 @@ async fn toggle_monitor(state: tauri::State<'_, RuntimeState>) -> Result<Session
 }
 
 #[tauri::command]
-async fn toggle_recorder(state: tauri::State<'_, RuntimeState>) -> Result<SessionSnapshot, String> {
-    Ok(state.toggle_recorder().await)
-}
-
-#[tauri::command]
 async fn update_jitter_buffer(
     state: tauri::State<'_, RuntimeState>,
     value: u32,
@@ -224,6 +219,13 @@ async fn close_ptt_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn get_default_audio_dir() -> String {
+    dirs::audio_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -256,7 +258,6 @@ pub fn run() {
             toggle_transmit,
             set_transmit,
             toggle_monitor,
-            toggle_recorder,
             update_jitter_buffer,
             send_text_message,
             load_runtime_config,
@@ -271,7 +272,8 @@ pub fn run() {
             open_ptt_window,
             toggle_ptt_window,
             start_ptt_window_drag,
-            close_ptt_window
+            close_ptt_window,
+            get_default_audio_dir
         ])
         .run(tauri::generate_context!())
         .expect("failed to run NRL Pulse");

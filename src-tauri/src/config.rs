@@ -17,6 +17,7 @@ pub struct RuntimeConfig {
     pub current_group_id: i32,
     pub volume: f32,
     pub ptt_key: String,
+    pub voice_save_path: String,
 }
 
 impl Default for RuntimeConfig {
@@ -34,6 +35,7 @@ impl Default for RuntimeConfig {
             current_group_id: 0,
             volume: 1.0,
             ptt_key: "Space".into(),
+            voice_save_path: String::new(),
         }
     }
 }
