@@ -228,6 +228,7 @@ const messages = {
     updateAvailable: (v: string) => `发现新版本 ${v}，点击更新`,
     updateDownloading: "下载中...",
     updateNone: "当前已是最新版本",
+    updateNow: "立即更新",
     checkUpdate: "检查更新",
     mute: "静音",
     roomWithOnline: (name: string, onlineCount: number, totalCount: number) =>
@@ -334,6 +335,7 @@ const messages = {
     updateAvailable: (v: string) => `New version ${v} available, click to update`,
     updateDownloading: "Downloading...",
     updateNone: "You are on the latest version",
+    updateNow: "Update Now",
     checkUpdate: "Check for Updates",
     mute: "Mute",
     recording: "Record",
@@ -822,18 +824,28 @@ watch(
     <!-- 更新提示横幅 -->
     <transition name="drawer-fade">
       <div v-if="updateInfo" class="update-banner">
-        <span>{{ t.updateAvailable(updateInfo.version ?? "") }}</span>
-        <button
-          class="update-banner-btn"
-          :disabled="updateDownloading"
-          @click="doUpdate"
-        >
-          {{ updateDownloading
-            ? `${t.updateDownloading}${updateTotal ? ' ' + Math.round(updateProgress / updateTotal * 100) + '%' : ''}`
-            : t.checkUpdate
-          }}
-        </button>
-        <button class="update-banner-close" @click="updateInfo = null">×</button>
+        <span class="update-banner-msg">
+          {{ updateDownloading ? t.updateDownloading : t.updateAvailable(updateInfo.version ?? "") }}
+        </span>
+        <template v-if="updateDownloading">
+          <div class="update-progress-wrap">
+            <div class="update-progress-bar" :class="{ indeterminate: !updateTotal }">
+              <div
+                class="update-progress-fill"
+                :style="{ width: updateTotal ? Math.round(updateProgress / updateTotal * 100) + '%' : '100%' }"
+              ></div>
+            </div>
+            <span class="update-progress-pct">
+              {{ updateTotal ? Math.round(updateProgress / updateTotal * 100) + '%' : '...' }}
+            </span>
+          </div>
+        </template>
+        <template v-else>
+          <button class="update-banner-btn" @click="doUpdate">
+            {{ t.updateNow }}
+          </button>
+          <button class="update-banner-close" @click="updateInfo = null">×</button>
+        </template>
       </div>
     </transition>
 

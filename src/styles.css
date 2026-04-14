@@ -1755,7 +1755,7 @@ input[type="range"] {
 }
 
 .update-banner span {
-  flex: 1;
+  flex: none;
 }
 
 .update-banner-btn {
@@ -1790,4 +1790,47 @@ input[type="range"] {
 
 .update-banner-close:hover {
   color: #22c55e;
+}
+
+.update-banner-msg {
+  flex: 1;
+}
+
+.update-progress-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.update-progress-bar {
+  flex: 1;
+  height: 6px;
+  background: rgba(34, 197, 94, 0.2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.update-progress-fill {
+  height: 100%;
+  background: #22c55e;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.update-progress-bar.indeterminate .update-progress-fill {
+  width: 40% !important;
+  animation: progress-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+  0%   { transform: translateX(-150%); }
+  100% { transform: translateX(350%); }
+}
+
+.update-progress-pct {
+  font-size: 0.8rem;
+  color: #22c55e;
+  min-width: 36px;
+  text-align: right;
 }
