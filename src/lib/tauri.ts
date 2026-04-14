@@ -131,7 +131,7 @@ export async function downloadAndInstallUpdate(
   onProgress: (downloaded: number, total: number | null) => void,
 ): Promise<void> {
   const { check } = await import("@tauri-apps/plugin-updater");
-  const { relaunch } = await import("@tauri-apps/plugin-process");
+  const { relaunch, exit: processExit } = await import("@tauri-apps/plugin-process");
   const update = await check();
   if (!update?.available) return;
   let downloaded = 0;
@@ -141,5 +141,6 @@ export async function downloadAndInstallUpdate(
       onProgress(downloaded, event.data.contentLength ?? null);
     }
   });
-  await relaunch();
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  await processExit(0);
 }

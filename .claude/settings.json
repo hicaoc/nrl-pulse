@@ -32,7 +32,9 @@
       "Bash(~/.local/share/pnpm/pnpm add:*)",
       "Bash(./node_modules/.bin/tauri signer:*)",
       "Bash(cargo --version)",
-      "Bash(cargo install:*)"
+      "Bash(cargo install:*)",
+      "Bash(git stash:*)",
+      "Bash(git pull:*)"
     ]
   }
 }
