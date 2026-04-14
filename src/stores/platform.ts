@@ -147,7 +147,10 @@ export const usePlatformStore = defineStore("platform", () => {
       applyGroupSnapshot(data);
       const groupName =
         data.groups.find((group) => group.id === data.currentGroupId)?.name ?? runtime.config.roomName;
-      await runtime.saveConfig({
+      // 后台持久化配置，不阻塞 platform.busy：
+      // 群组切换的关键操作是 HTTP 平台 API，config save 是次要的磁盘持久化，
+      // 不应将两个 busy 串联起来导致按钮长时间禁用
+      void runtime.saveConfig({
         ...runtime.config,
         authToken: token.value,
         loginUsername: username.value.trim(),

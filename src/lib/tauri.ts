@@ -68,6 +68,10 @@ export async function getDefaultAudioDir(): Promise<string> {
   return invoke<string>("get_default_audio_dir");
 }
 
+export async function readVoiceFile(filePath: string): Promise<number[]> {
+  return invoke<number[]>("read_voice_file", { filePath });
+}
+
 export async function togglePttWindow(): Promise<boolean> {
   return invoke<boolean>("toggle_ptt_window");
 }
@@ -88,6 +92,12 @@ export async function onRuntimeSnapshot(
   handler: (snapshot: SessionSnapshot) => void,
 ): Promise<UnlistenFn> {
   return listen<SessionSnapshot>("runtime://snapshot", (event) => handler(event.payload));
+}
+
+export async function onRuntimeConfig(
+  handler: (config: RuntimeConfig) => void,
+): Promise<UnlistenFn> {
+  return listen<RuntimeConfig>("runtime://config", (event) => handler(event.payload));
 }
 
 export async function onPresence(

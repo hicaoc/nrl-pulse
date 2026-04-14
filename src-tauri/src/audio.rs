@@ -341,6 +341,7 @@ impl AudioEngine {
         let mut input_rate = TARGET_SAMPLE_RATE;
         let mut input_resampling = false;
         let mut input_stream = None;
+        #[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(unused_mut))]
         let mut aec_enabled = false;
         {
             let mut rx_guard = self

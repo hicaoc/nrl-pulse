@@ -78,7 +78,8 @@ export interface ChatMessageEvent {
   meta: string;
   time: string;
   type?: "text" | "voice";
-  audioData?: number[];
+  waveform?: number[];
+  filePath?: string;
   duration?: number;
 }
 

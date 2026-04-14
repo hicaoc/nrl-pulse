@@ -74,7 +74,9 @@ pub struct ChatMessageEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub type_: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub audio_data: Option<Vec<f32>>,
+    pub waveform: Option<Vec<f32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
 }

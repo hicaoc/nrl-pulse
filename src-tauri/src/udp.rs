@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::net::{lookup_host, UdpSocket};
 use tokio::sync::{Mutex, RwLock};
 
@@ -150,6 +150,7 @@ impl UdpSession {
                     .await;
                 return;
             }
+            runtime.note_heartbeat_sent().await;
             runtime
                 .push_runtime_event("心跳已发送", "已发出首次 UDP 心跳", "info")
                 .await;
@@ -172,6 +173,7 @@ impl UdpSession {
                         .await;
                     break;
                 }
+                runtime.note_heartbeat_sent().await;
             }
         });
     }
@@ -245,7 +247,8 @@ async fn handle_packet(
                     &pcm,
                 )
                 .await;
-            let _ = app.emit("runtime://snapshot", runtime.snapshot().await);
+            // 限速 emit：每 80ms 最多推一次 snapshot，防止高频 UDP 包导致前端事件积压
+            runtime.throttled_emit_snapshot(app).await;
         }
         2 => {
             runtime

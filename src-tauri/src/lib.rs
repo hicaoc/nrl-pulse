@@ -16,7 +16,7 @@ use config::RuntimeConfig;
 use models::{RuntimeBootstrap, SessionSnapshot};
 use platform::{GroupSnapshot, LoginBootstrap, PlatformDevice, PlatformServer};
 use runtime::RuntimeState;
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 #[tauri::command]
 fn frontend_log(window: tauri::Window, msg: String) {
@@ -30,38 +30,60 @@ async fn bootstrap_runtime(
     Ok(state.bootstrap().await)
 }
 
+fn broadcast_snapshot(app: &tauri::AppHandle, snapshot: &SessionSnapshot) {
+    let _ = app.emit("runtime://snapshot", snapshot.clone());
+}
+
 #[tauri::command]
 async fn connect_session(
     app: tauri::AppHandle,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<SessionSnapshot, String> {
     let config = config::load_or_default(&app);
-    Ok(state.connect(config).await)
+    let snapshot = state.connect(config).await;
+    broadcast_snapshot(&app, &snapshot);
+    Ok(snapshot)
 }
 
 #[tauri::command]
 async fn disconnect_session(
+    app: tauri::AppHandle,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<SessionSnapshot, String> {
-    Ok(state.disconnect().await)
+    let snapshot = state.disconnect().await;
+    broadcast_snapshot(&app, &snapshot);
+    Ok(snapshot)
 }
 
 #[tauri::command]
-async fn toggle_transmit(state: tauri::State<'_, RuntimeState>) -> Result<SessionSnapshot, String> {
-    Ok(state.toggle_transmit().await)
+async fn toggle_transmit(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<SessionSnapshot, String> {
+    let snapshot = state.toggle_transmit().await;
+    broadcast_snapshot(&app, &snapshot);
+    Ok(snapshot)
 }
 
 #[tauri::command]
 async fn set_transmit(
+    app: tauri::AppHandle,
     state: tauri::State<'_, RuntimeState>,
     enabled: bool,
 ) -> Result<SessionSnapshot, String> {
-    Ok(state.set_transmit(enabled).await)
+    let snapshot = state.set_transmit(enabled).await;
+    broadcast_snapshot(&app, &snapshot);
+    Ok(snapshot)
 }
 
 #[tauri::command]
-async fn toggle_monitor(state: tauri::State<'_, RuntimeState>) -> Result<SessionSnapshot, String> {
-    Ok(state.toggle_monitor().await)
+async fn toggle_monitor(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<SessionSnapshot, String> {
+    let snapshot = state.toggle_monitor().await;
+    broadcast_snapshot(&app, &snapshot);
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -94,7 +116,10 @@ async fn save_runtime_config(
     config: RuntimeConfig,
 ) -> Result<SessionSnapshot, String> {
     config::save(&app, &config)?;
-    Ok(state.save_config_snapshot(&config).await)
+    let snapshot = state.save_config_snapshot(&config).await;
+    broadcast_snapshot(&app, &snapshot);
+    let _ = app.emit("runtime://config", config.clone());
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -184,8 +209,8 @@ async fn open_ptt_window(app: tauri::AppHandle) -> Result<bool, String> {
 
     WebviewWindowBuilder::new(&app, LABEL, WebviewUrl::App("index.html#ptt".into()))
         .title("NRL PTT")
-        .inner_size(300.0, 150.0)
-        .min_inner_size(280.0, 130.0)
+        .inner_size(340.0, 150.0)
+        .min_inner_size(300.0, 140.0)
         .resizable(false)
         .decorations(false)
         .transparent(true)
@@ -224,6 +249,14 @@ fn get_default_audio_dir() -> String {
     dirs::audio_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| ".".to_string())
+}
+
+#[tauri::command]
+async fn read_voice_file(file_path: String) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || std::fs::read(&file_path))
+        .await
+        .map_err(|err| format!("read voice file task failed: {err}"))?
+        .map_err(|err| format!("read voice file failed: {err}"))
 }
 
 pub fn run() {
@@ -273,7 +306,8 @@ pub fn run() {
             toggle_ptt_window,
             start_ptt_window_drag,
             close_ptt_window,
-            get_default_audio_dir
+            get_default_audio_dir,
+            read_voice_file
         ])
         .run(tauri::generate_context!())
         .expect("failed to run NRL Pulse");

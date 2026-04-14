@@ -34,7 +34,8 @@
       "Bash(cargo --version)",
       "Bash(cargo install:*)",
       "Bash(git stash:*)",
-      "Bash(git pull:*)"
+      "Bash(git pull:*)",
+      "Bash(cargo build:*)"
     ]
   }
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -11,6 +11,7 @@ import {
   getDefaultAudioDir,
   onChatMessage,
   openPttWindow,
+  readVoiceFile,
   startPttWindowDrag,
   togglePttWindow,
 } from "@/lib/tauri";
@@ -30,9 +31,6 @@ const draftMessage = ref("");
 const pttKeyDraft = ref("Space");
 const voiceSavePathDraft = ref("");
 const defaultAudioPath = ref("");
-const voiceSavePathDisplay = computed(() => 
-  voiceSavePathDraft.value || defaultAudioPath.value || (language.value === "zh" ? "（默认）" : "(Default)")
-);
 const showSettings = ref(false);
 const showLogs = ref(false);
 const updateInfo = ref<UpdateInfo | null>(null);
@@ -46,72 +44,405 @@ const pttPressed = ref(false);
 const holdActivated = ref(false);
 const holdTimerId = ref<number | null>(null);
 const animationTimerId = ref<number | null>(null);
+const clockTimerId = ref<number | null>(null);
 const animationTick = ref(0);
 const language = ref<Lang>((localStorage.getItem("nrl-pulse-lang") as Lang) || "zh");
-const chatMessages = ref<
+const chatMessages = shallowRef<
   ChatMessageEvent[]
 >([]);
+const currentTime = ref(new Date());
 
 const playingMessageId = ref<string | null>(null);
-let audioContext: AudioContext | null = null;
+let activeVoiceAudio: HTMLAudioElement | null = null;
+let activeVoiceUrl: string | null = null;
+const waveformCanvases = new Map<string, HTMLCanvasElement>();
+const waveformHoverIndex = new Map<string, number | null>();
+const rxMeterCanvas = ref<HTMLCanvasElement | null>(null);
+const txMeterCanvas = ref<HTMLCanvasElement | null>(null);
+const spectrumCanvas = ref<HTMLCanvasElement | null>(null);
+const meterDisplayLevel = new Map<"rx" | "tx", number>();
+const meterPeakLevel = new Map<"rx" | "tx", number>();
+const rxPeakDisplay = ref(0);
+const txPeakDisplay = ref(0);
+const spectrumHoverIndex = ref<number | null>(null);
+const spectrumDisplayLevels = ref<number[]>([]);
+const spectrumPeakLevels = ref<number[]>([]);
 
-function getAudioContext(): AudioContext {
-  if (!audioContext) {
-    audioContext = new AudioContext();
-  }
-  return audioContext;
+function normalizeChatMessage(event: ChatMessageEvent): ChatMessageEvent {
+  return markRaw({
+    ...event,
+    waveform: event.waveform ? markRaw(event.waveform) : undefined,
+  });
 }
 
-function generateWaveform(audioData: number[], samples: number): number[] {
-  if (!audioData || audioData.length === 0) return [];
-  const step = Math.max(1, Math.floor(audioData.length / samples));
-  const waveform: number[] = [];
-  for (let i = 0; i < samples; i++) {
-    const idx = i * step;
-    let sum = 0;
-    let count = 0;
-    for (let j = 0; j < step && idx + j < audioData.length; j++) {
-      sum += Math.abs(audioData[idx + j]);
-      count++;
-    }
-    waveform.push(count > 0 ? sum / count : 0);
+function appendChatMessage(event: ChatMessageEvent) {
+  chatMessages.value = [...chatMessages.value, normalizeChatMessage(event)].slice(-40);
+}
+
+function drawWaveform(messageId: string, waveform: number[] | undefined, isPlaying: boolean) {
+  const canvas = waveformCanvases.get(messageId);
+  if (!canvas) return;
+
+  const cssWidth = canvas.clientWidth || 140;
+  const cssHeight = canvas.clientHeight || 20;
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.round(cssWidth * dpr));
+  const height = Math.max(1, Math.round(cssHeight * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
   }
-  return waveform;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, width, height);
+
+  const bars = waveform?.length ? waveform : Array.from({ length: 40 }, () => 0.08);
+  const hoverIndex = waveformHoverIndex.get(messageId);
+  const gap = Math.max(1 * dpr, Math.floor(width * 0.008));
+  const barWidth = Math.max(2 * dpr, (width - gap * (bars.length - 1)) / bars.length);
+  let x = 0;
+
+  for (let i = 0; i < bars.length; i++) {
+    const level = Math.max(0.12, Math.min(1, bars[i] ?? 0));
+    const barHeight = Math.max(4 * dpr, level * height);
+    const y = (height - barHeight) / 2;
+    const hovered = hoverIndex === i;
+
+    ctx.fillStyle = hovered
+      ? "rgba(196, 247, 255, 1)"
+      : isPlaying
+        ? "rgba(255, 255, 255, 0.92)"
+        : "rgba(247, 242, 232, 0.74)";
+    if (hovered) {
+      ctx.shadowColor = "rgba(91, 192, 255, 0.62)";
+      ctx.shadowBlur = 14 * dpr;
+    } else {
+      ctx.shadowBlur = 0;
+    }
+    ctx.beginPath();
+    ctx.roundRect(x, y, barWidth, barHeight, Math.min(barWidth / 2, 2 * dpr));
+    ctx.fill();
+    x += barWidth + gap;
+  }
+  ctx.shadowBlur = 0;
+}
+
+function redrawWaveforms() {
+  for (const message of chatMessages.value) {
+    drawWaveform(message.id, message.waveform, playingMessageId.value === message.id);
+  }
+}
+
+function setWaveformCanvas(messageId: string, el: HTMLCanvasElement | null) {
+  if (el) {
+    waveformCanvases.set(messageId, el);
+    void nextTick(() => {
+      const message = chatMessages.value.find((item) => item.id === messageId);
+      drawWaveform(messageId, message?.waveform, playingMessageId.value === messageId);
+    });
+    return;
+  }
+  waveformCanvases.delete(messageId);
+  waveformHoverIndex.delete(messageId);
+}
+
+function handleWaveformHover(messageId: string, event: MouseEvent) {
+  const message = chatMessages.value.find((item) => item.id === messageId);
+  const bars = message?.waveform;
+  if (!bars?.length) return;
+  const canvas = waveformCanvases.get(messageId);
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width <= 0) return;
+  const index = Math.min(
+    bars.length - 1,
+    Math.max(0, Math.floor(((event.clientX - rect.left) / rect.width) * bars.length)),
+  );
+  if (waveformHoverIndex.get(messageId) !== index) {
+    waveformHoverIndex.set(messageId, index);
+    drawWaveform(messageId, bars, playingMessageId.value === messageId);
+  }
+}
+
+function clearWaveformHover(messageId: string) {
+  if (!waveformHoverIndex.has(messageId) && !waveformCanvases.has(messageId)) return;
+  waveformHoverIndex.set(messageId, null);
+  const message = chatMessages.value.find((item) => item.id === messageId);
+  drawWaveform(messageId, message?.waveform, playingMessageId.value === messageId);
+}
+
+function prepareCanvas(canvas: HTMLCanvasElement, fallbackWidth: number, fallbackHeight: number) {
+  const cssWidth = canvas.clientWidth || fallbackWidth;
+  const cssHeight = canvas.clientHeight || fallbackHeight;
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.round(cssWidth * dpr));
+  const height = Math.max(1, Math.round(cssHeight * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  return { ctx, width, height, dpr };
+}
+
+function drawMeter(canvas: HTMLCanvasElement | null, level: number, tone: "rx" | "tx") {
+  if (!canvas) return;
+  const prepared = prepareCanvas(canvas, 120, 10);
+  if (!prepared) return;
+  const { ctx, width, height, dpr } = prepared;
+  const previousDisplay = meterDisplayLevel.get(tone) ?? 0;
+  const previousPeak = meterPeakLevel.get(tone) ?? 0;
+  const displayLevel = level > previousDisplay
+    ? level
+    : Math.max(level, previousDisplay - 0.014);
+  const peakLevel = level >= previousPeak
+    ? level
+    : Math.max(displayLevel, previousPeak - 0.006);
+  meterDisplayLevel.set(tone, displayLevel);
+  meterPeakLevel.set(tone, peakLevel);
+  if (tone === "rx") {
+    rxPeakDisplay.value = peakLevel;
+  } else {
+    txPeakDisplay.value = peakLevel;
+  }
+  const peakX = Math.max(0, Math.min(width - 2, width * peakLevel));
+  const segmentGap = Math.max(1, Math.round(dpr));
+  const segmentCount = 18;
+  const segmentWidth = (width - segmentGap * (segmentCount - 1)) / segmentCount;
+
+  ctx.clearRect(0, 0, width, height);
+  const bg = ctx.createLinearGradient(0, 0, 0, height);
+  bg.addColorStop(0, "rgba(255,255,255,0.05)");
+  bg.addColorStop(1, "rgba(255,255,255,0.015)");
+  ctx.fillStyle = bg;
+  ctx.beginPath();
+  ctx.roundRect(0, 0, width, height, 3 * dpr);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,0.06)";
+  ctx.lineWidth = Math.max(1, dpr * 0.8);
+  ctx.stroke();
+
+  let x = 0;
+  for (let i = 0; i < segmentCount; i++) {
+    const segmentStart = x;
+    const segmentEnd = x + segmentWidth;
+    const threshold = (i + 1) / segmentCount;
+    const active = displayLevel >= threshold;
+    let color = "rgba(255,255,255,0.08)";
+    if (active) {
+      if (i < Math.floor(segmentCount * 0.65)) {
+        color = tone === "rx" ? "rgba(88, 203, 255, 0.95)" : "rgba(255, 180, 97, 0.95)";
+      } else if (i < Math.floor(segmentCount * 0.88)) {
+        color = "rgba(255, 211, 106, 0.95)";
+      } else {
+        color = "rgba(255, 112, 112, 0.98)";
+      }
+    } else {
+      if (i < Math.floor(segmentCount * 0.65)) {
+        color = tone === "rx" ? "rgba(88, 203, 255, 0.12)" : "rgba(255, 180, 97, 0.12)";
+      } else if (i < Math.floor(segmentCount * 0.88)) {
+        color = "rgba(255, 211, 106, 0.11)";
+      } else {
+        color = "rgba(255, 112, 112, 0.1)";
+      }
+    }
+
+    ctx.fillStyle = color;
+    if (active) {
+      ctx.shadowColor = color;
+      ctx.shadowBlur = i >= Math.floor(segmentCount * 0.88) ? 8 * dpr : 5 * dpr;
+    } else {
+      ctx.shadowBlur = 0;
+    }
+    ctx.beginPath();
+    ctx.roundRect(segmentStart, 0, segmentWidth, height, 2 * dpr);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    x = segmentEnd + segmentGap;
+  }
+
+  ctx.strokeStyle = "rgba(255,255,255,0.05)";
+  ctx.lineWidth = Math.max(1, dpr * 0.7);
+  for (let i = 1; i < 4; i++) {
+    const tickX = Math.round((width / 4) * i) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(tickX, 1);
+    ctx.lineTo(tickX, height - 1);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = tone === "rx" ? "rgba(227, 250, 255, 0.98)" : "rgba(255, 241, 207, 0.98)";
+  ctx.shadowColor = tone === "rx" ? "rgba(91, 192, 255, 0.5)" : "rgba(255, 145, 87, 0.44)";
+  ctx.shadowBlur = 8 * dpr;
+  ctx.fillRect(peakX, 0, Math.max(2, 2 * dpr), height);
+  ctx.shadowBlur = 0;
+}
+
+function drawSpectrumCanvas() {
+  if (!spectrumCanvas.value) return;
+  const prepared = prepareCanvas(spectrumCanvas.value, 800, 220);
+  if (!prepared) return;
+  const { ctx, width, height, dpr } = prepared;
+  const bars = spectrumBars.value;
+  const hoverIndex = spectrumHoverIndex.value;
+  const displayLevels = spectrumDisplayLevels.value;
+  const peakLevels = spectrumPeakLevels.value;
+  if (displayLevels.length !== bars.length) {
+    spectrumDisplayLevels.value = Array.from({ length: bars.length }, (_, index) => bars[index] ?? 0);
+  }
+  if (peakLevels.length !== bars.length) {
+    spectrumPeakLevels.value = Array.from({ length: bars.length }, (_, index) => bars[index] ?? 0);
+  }
+  const gap = Math.max(3 * dpr, Math.floor(width * 0.006));
+  const barWidth = Math.max(6 * dpr, (width - gap * (bars.length - 1)) / bars.length);
+  const floorY = height - 2 * dpr;
+
+  ctx.clearRect(0, 0, width, height);
+  const bg = ctx.createLinearGradient(0, 0, 0, height);
+  bg.addColorStop(0, "rgba(8, 18, 28, 0.08)");
+  bg.addColorStop(1, "rgba(8, 18, 28, 0.18)");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.strokeStyle = "rgba(173, 218, 240, 0.08)";
+  ctx.lineWidth = 1;
+  for (let i = 1; i <= 4; i++) {
+    const y = Math.round((height / 5) * i) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = "rgba(129, 225, 255, 0.22)";
+  ctx.lineWidth = Math.max(1, dpr);
+  ctx.beginPath();
+  ctx.moveTo(0, floorY);
+  ctx.lineTo(width, floorY);
+  ctx.stroke();
+
+  let x = 0;
+  for (let index = 0; index < bars.length; index++) {
+    const bar = bars[index] ?? 0;
+    const previousDisplay = spectrumDisplayLevels.value[index] ?? 0;
+    const previousPeak = spectrumPeakLevels.value[index] ?? 0;
+    const scaled = Math.max(0.04, Math.min(1, bar));
+    const displayLevel = scaled > previousDisplay
+      ? previousDisplay + (scaled - previousDisplay) * 0.48
+      : previousDisplay + (scaled - previousDisplay) * 0.16;
+    const peakLevel = scaled >= previousPeak
+      ? scaled
+      : Math.max(displayLevel, previousPeak - 0.012);
+    spectrumDisplayLevels.value[index] = displayLevel;
+    spectrumPeakLevels.value[index] = peakLevel;
+
+    const barHeight = Math.max(height * 0.1, displayLevel * (height * 0.88));
+    const y = floorY - barHeight;
+    const hovered = hoverIndex === index;
+    const gradient = ctx.createLinearGradient(0, y, 0, height);
+    gradient.addColorStop(0, hovered ? "rgba(231, 252, 255, 0.95)" : "rgba(177, 237, 255, 0.34)");
+    gradient.addColorStop(0.28, hovered ? "rgba(167, 238, 255, 0.9)" : "rgba(120, 214, 255, 0.48)");
+    gradient.addColorStop(1, hovered ? "rgba(67, 179, 255, 0.78)" : "rgba(63, 164, 232, 0.52)");
+    ctx.fillStyle = gradient;
+    ctx.shadowColor = hovered ? "rgba(143, 231, 255, 0.34)" : "rgba(129, 225, 255, 0.12)";
+    ctx.shadowBlur = hovered ? 20 * dpr : 8 * dpr;
+    ctx.beginPath();
+    ctx.roundRect(x, y, barWidth, barHeight, [barWidth, barWidth, 2 * dpr, 2 * dpr]);
+    ctx.fill();
+
+    const peakY = Math.max(2 * dpr, floorY - peakLevel * (height * 0.88));
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = hovered ? "rgba(248, 254, 255, 0.98)" : "rgba(227, 248, 255, 0.8)";
+    ctx.fillRect(x, peakY, barWidth, hovered ? 3 * dpr : 2 * dpr);
+
+    ctx.fillStyle = hovered ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.08)";
+    ctx.fillRect(x, y, Math.max(1, barWidth * 0.18), barHeight);
+    x += barWidth + gap;
+  }
+  ctx.shadowBlur = 0;
+}
+
+function redrawRealtimeCanvases() {
+  drawMeter(rxMeterCanvas.value, platform.loggedIn ? runtime.snapshot.rxLevel : 0, "rx");
+  drawMeter(txMeterCanvas.value, platform.loggedIn ? runtime.snapshot.txLevel : 0, "tx");
+  drawSpectrumCanvas();
+}
+
+function handleSpectrumHover(event: MouseEvent) {
+  const canvas = spectrumCanvas.value;
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width <= 0 || spectrumBars.value.length === 0) return;
+  const index = Math.min(
+    spectrumBars.value.length - 1,
+    Math.max(0, Math.floor(((event.clientX - rect.left) / rect.width) * spectrumBars.value.length)),
+  );
+  if (spectrumHoverIndex.value !== index) {
+    spectrumHoverIndex.value = index;
+    drawSpectrumCanvas();
+  }
+}
+
+function clearSpectrumHover() {
+  if (spectrumHoverIndex.value === null) return;
+  spectrumHoverIndex.value = null;
+  drawSpectrumCanvas();
 }
 
 async function playVoiceMessage(message: ChatMessageEvent) {
-  if (!message.audioData || message.audioData.length === 0) return;
-  
+  if (!message.filePath) return;
+
   if (playingMessageId.value === message.id) {
+    activeVoiceAudio?.pause();
+    activeVoiceAudio = null;
+    if (activeVoiceUrl) {
+      URL.revokeObjectURL(activeVoiceUrl);
+      activeVoiceUrl = null;
+    }
     playingMessageId.value = null;
     return;
   }
-  
+
+  if (activeVoiceAudio) {
+    activeVoiceAudio.pause();
+    activeVoiceAudio = null;
+  }
+  if (activeVoiceUrl) {
+    URL.revokeObjectURL(activeVoiceUrl);
+    activeVoiceUrl = null;
+  }
+
   playingMessageId.value = message.id;
-  
+
   try {
-    const ctx = getAudioContext();
-    if (ctx.state === 'suspended') {
-      await ctx.resume();
-    }
-    
-    const buffer = ctx.createBuffer(1, message.audioData.length, 8000);
-    const channelData = buffer.getChannelData(0);
-    for (let i = 0; i < message.audioData.length; i++) {
-      channelData[i] = message.audioData[i];
-    }
-    
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(ctx.destination);
-    
-    source.onended = () => {
-      playingMessageId.value = null;
+    const bytes = await readVoiceFile(message.filePath);
+    const blob = new Blob([new Uint8Array(bytes)], { type: "audio/wav" });
+    const objectUrl = URL.createObjectURL(blob);
+    const audio = new Audio(objectUrl);
+    activeVoiceAudio = audio;
+    activeVoiceUrl = objectUrl;
+
+    audio.onended = () => {
+      if (activeVoiceAudio === audio) {
+        activeVoiceAudio = null;
+        if (activeVoiceUrl) {
+          URL.revokeObjectURL(activeVoiceUrl);
+          activeVoiceUrl = null;
+        }
+        playingMessageId.value = null;
+      }
     };
-    
-    source.start(0);
+
+    await audio.play();
   } catch (e) {
-    console.error('Failed to play voice message:', e);
+    console.error("Failed to play voice message:", e);
+    activeVoiceAudio = null;
+    if (activeVoiceUrl) {
+      URL.revokeObjectURL(activeVoiceUrl);
+      activeVoiceUrl = null;
+    }
     playingMessageId.value = null;
   }
 }
@@ -229,7 +560,7 @@ const messages = {
     updateDownloading: "下载中...",
     updateNone: "当前已是最新版本",
     updateNow: "立即更新",
-    checkUpdate: "检查更新",
+    checkUpdate: "更新",
     mute: "静音",
     roomWithOnline: (name: string, onlineCount: number, totalCount: number) =>
       `${name} · 在线 ${onlineCount}/${totalCount}`,
@@ -336,7 +667,7 @@ const messages = {
     updateDownloading: "Downloading...",
     updateNone: "You are on the latest version",
     updateNow: "Update Now",
-    checkUpdate: "Check for Updates",
+    checkUpdate: "Update",
     mute: "Mute",
     recording: "Record",
     roomWithOnline: (name: string, onlineCount: number, totalCount: number) =>
@@ -394,9 +725,6 @@ const currentTalkerRegion = computed(() => {
   return describeCallsignRegion(runtime.snapshot.activeSpeaker);
 });
 const pttKeyLabel = computed(() => normalizeKeyLabel(runtime.config.pttKey));
-const selectedLoginServer = computed(
-  () => platform.servers.find((server) => server.host === platform.selectedServerHost) ?? null,
-);
 const groupSearch = ref("");
 const filteredGroups = computed(() => {
   const q = groupSearch.value.trim().toLowerCase();
@@ -425,20 +753,41 @@ const spectrumBars = computed(() => {
     return Math.min(1, Math.max(0.04, base + shimmer));
   });
 });
+const systemClockText = computed(() =>
+  new Intl.DateTimeFormat(language.value === "zh" ? "zh-CN" : "en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(currentTime.value),
+);
+const systemDateText = computed(() =>
+  new Intl.DateTimeFormat(language.value === "zh" ? "zh-CN" : "en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    weekday: "short",
+  }).format(currentTime.value),
+);
 
-const rxLevelDb = computed(() => {
-  const level = runtime.snapshot.rxLevel;
-  if (level <= 0) return "-∞ dB";
+function formatDb(level: number): string {
+  if (level <= 0) return "-∞";
   const db = 20 * Math.log10(level);
-  return `${db.toFixed(1)} dB`;
-});
+  return `${db.toFixed(1)}`;
+}
 
-const txLevelDb = computed(() => {
-  const level = runtime.snapshot.txLevel;
-  if (level <= 0) return "-∞ dB";
-  const db = 20 * Math.log10(level);
-  return `${db.toFixed(1)} dB`;
-});
+function formatDualDb(primary: number, peak: number): string {
+  const primaryText = formatDb(primary);
+  const peakText = formatDb(peak);
+  if (primaryText === "-∞" && peakText === "-∞") {
+    return "-∞ dB";
+  }
+  return `${primaryText} · ${peakText} dB`;
+}
+
+const rxLevelDb = computed(() => formatDualDb(runtime.snapshot.rxLevel, rxPeakDisplay.value));
+
+const txLevelDb = computed(() => formatDualDb(runtime.snapshot.txLevel, txPeakDisplay.value));
 
 function describeCallsignRegion(callsign: string) {
   const match = callsign.toUpperCase().match(/[A-Z]+(\d)/);
@@ -475,6 +824,13 @@ function stopAnimationTimer() {
   if (animationTimerId.value !== null) {
     window.clearInterval(animationTimerId.value);
     animationTimerId.value = null;
+  }
+}
+
+function stopClockTimer() {
+  if (clockTimerId.value !== null) {
+    window.clearInterval(clockTimerId.value);
+    clockTimerId.value = null;
   }
 }
 
@@ -606,7 +962,12 @@ function toggleLanguage() {
   localStorage.setItem("nrl-pulse-lang", language.value);
 }
 
-async function startPttDrag() {
+async function onHeaderPointerDown(event: PointerEvent) {
+  const target = event.target as HTMLElement | null;
+  if (target?.closest(".ptt-console-close")) {
+    return;
+  }
+  event.preventDefault();
   await startPttWindowDrag();
 }
 
@@ -644,7 +1005,7 @@ function syncConfigDrafts() {
 onMounted(async () => {
   try {
     const version = await getVersion();
-    const title = `NRL Pulse v${version} © BH4RPN 2026 , BA4RN BG6FCS BD4RFG BD4VKI BI4UMD BA4QAO ...  `;
+    const title = `NRL Pulse v${version} © BH4RPN 2026 , BA4RN BG6FCS BH4TDV BD4RFG BD4VKI BI4UMD BA4QAO ...  `;
     document.title = title;
     await getCurrentWindow().setTitle(title);
   } catch { /* 权限未授予时不影响后续初始化 */ }
@@ -660,13 +1021,18 @@ onMounted(async () => {
   syncConfigDrafts();
   showLogin.value = !isPttWindow && !platform.loggedIn;
   await onChatMessage((event) => {
-    chatMessages.value = [...chatMessages.value, event].slice(-40);
+    appendChatMessage(event);
   });
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("keyup", handleGlobalKeyup);
   animationTimerId.value = window.setInterval(() => {
     animationTick.value += 1;
   }, 120);
+  clockTimerId.value = window.setInterval(() => {
+    currentTime.value = new Date();
+  }, 1000);
+  window.addEventListener("resize", redrawWaveforms);
+  window.addEventListener("resize", redrawRealtimeCanvases);
   if (!isPttWindow) {
     void openPttWindow();
     // 启动后静默检查更新
@@ -699,15 +1065,49 @@ async function manualCheckUpdate() {
 }
 
 onBeforeUnmount(() => {
+  activeVoiceAudio?.pause();
+  activeVoiceAudio = null;
+  if (activeVoiceUrl) {
+    URL.revokeObjectURL(activeVoiceUrl);
+    activeVoiceUrl = null;
+  }
   if (isPttWindow) {
     document.documentElement.classList.remove("ptt-window");
     document.body.classList.remove("ptt-window");
   }
   clearHoldTimer();
   stopAnimationTimer();
+  stopClockTimer();
   window.removeEventListener("keydown", handleGlobalKeydown);
   window.removeEventListener("keyup", handleGlobalKeyup);
+  window.removeEventListener("resize", redrawWaveforms);
+  window.removeEventListener("resize", redrawRealtimeCanvases);
+  waveformCanvases.clear();
+  waveformHoverIndex.clear();
 });
+
+watch(chatMessages, () => {
+  void nextTick(redrawWaveforms);
+});
+
+watch(playingMessageId, () => {
+  void nextTick(redrawWaveforms);
+});
+
+watch(
+  [
+    () => platform.loggedIn,
+    () => runtime.snapshot.rxLevel,
+    () => runtime.snapshot.txLevel,
+    () => runtime.snapshot.isTransmitting,
+    () => animationTick.value,
+    spectrumBars,
+  ],
+  () => {
+    void nextTick(redrawRealtimeCanvases);
+  },
+  { immediate: true },
+);
 
 watch(
   () => runtime.config,
@@ -728,30 +1128,49 @@ watch(
 
 <template>
   <main v-if="isPttWindow" class="shell shell-ptt">
-    <section class="ptt-float-shell">
-      <div class="ptt-float-drag" @pointerdown.prevent="startPttDrag">
-        <span class="ptt-float-grip"></span>
+    <section class="ptt-console" :class="{ 'is-tx': runtime.snapshot.isTransmitting, 'is-offline': !!pttStatusReason }">
+      <header class="ptt-console-head" @pointerdown="onHeaderPointerDown">
+        <span class="ptt-status-led" :data-state="runtime.snapshot.connection"></span>
+        <span class="ptt-status-text">{{ pttStatusReason || connectionLabel }}</span>
+        <span class="ptt-grip" aria-hidden="true"></span>
+        <button
+          class="ptt-console-close"
+          :title="t.closePttWindow"
+          @pointerdown.stop
+          @click.stop="closeFloatingWindow"
+        >×</button>
+      </header>
+
+      <div class="ptt-console-body">
+        <button
+          class="ptt-dial"
+          :class="{
+            active: runtime.snapshot.isTransmitting,
+            pressed: runtime.snapshot.isTransmitting,
+            disabled: !!pttStatusReason,
+          }"
+          @pointerdown.prevent="pressPtt($event)"
+          @pointerup.prevent="releasePtt($event)"
+          @pointercancel.prevent="releasePtt($event)"
+        >
+          <span class="ptt-dial-halo"></span>
+          <span class="ptt-dial-ring"></span>
+          <span class="ptt-dial-core">
+            <span class="ptt-dial-label">PTT</span>
+            <span class="ptt-dial-sub">{{ pttKeyLabel }}</span>
+          </span>
+        </button>
+
+        <div class="ptt-console-info">
+          <span class="ptt-info-kicker ptt-info-key">⌨ {{ pttKeyLabel }}</span>
+          <strong class="ptt-info-callsign">{{ txLabel }}</strong>
+          <div class="ptt-info-meta">
+            <span class="ptt-info-chip ptt-info-room" :title="runtime.snapshot.roomName || '—'">
+              {{ runtime.snapshot.roomName || "—" }}
+            </span>
+          </div>
+        </div>
       </div>
-      <button class="ptt-float-close" :title="t.closePttWindow" @click="closeFloatingWindow">×</button>
-      <button
-        class="ptt-button ptt-button-floating"
-        :class="{
-          active: runtime.snapshot.isTransmitting,
-          pressed: isPttWindow ? runtime.snapshot.isTransmitting : pttPressed,
-          disabled: !!pttStatusReason
-        }"
-        @pointerdown.prevent="pressPtt($event)"
-        @pointerup.prevent="releasePtt($event)"
-        @pointercancel.prevent="releasePtt($event)"
-      >
-        <span class="ptt-ring"></span>
-        <span class="ptt-core"></span>
-        <span class="ptt-copy">
-          <small>{{ pttStatusReason ? pttStatusReason : "PTT" }}</small>
-          <strong>{{ txLabel }}</strong>
-          <em v-if="!pttStatusReason">{{ pttKeyLabel }}</em>
-        </span>
-      </button>
     </section>
   </main>
 
@@ -778,22 +1197,22 @@ watch(
           <span>{{ t.queue }}</span>
           <strong>{{ platform.loggedIn ? runtime.snapshot.queuedFrames : 0 }}</strong>
         </div>
-        <div class="summary-item summary-signal">
-          <div class="signal-stack">
-            <div class="signal-row">
-              <span>{{ t.receive }}</span>
-              <div class="mini-meter vu-meter">
-                <span class="mini-meter-fill rx" :style="{ width: platform.loggedIn ? `${runtime.snapshot.rxLevel * 100}%` : '0%' }"></span>
-              </div>
-              <strong>{{ platform.loggedIn ? rxLevelDb : "-∞ dB" }}</strong>
+      </div>
+      <div class="summary-item summary-signal">
+        <div class="signal-stack">
+          <div class="signal-row">
+            <span>{{ t.receive }}</span>
+            <div class="mini-meter vu-meter">
+              <canvas ref="rxMeterCanvas" class="mini-meter-canvas" width="120" height="10"></canvas>
             </div>
-            <div class="signal-row">
-              <span>{{ t.transmit }}</span>
-              <div class="mini-meter vu-meter">
-                <span class="mini-meter-fill tx" :style="{ width: platform.loggedIn ? `${runtime.snapshot.txLevel * 100}%` : '0%' }"></span>
-              </div>
-              <strong>{{ platform.loggedIn ? txLevelDb : "-∞ dB" }}</strong>
+            <strong>{{ platform.loggedIn ? rxLevelDb : "-∞ dB" }}</strong>
+          </div>
+          <div class="signal-row">
+            <span>{{ t.transmit }}</span>
+            <div class="mini-meter vu-meter">
+              <canvas ref="txMeterCanvas" class="mini-meter-canvas" width="120" height="10"></canvas>
             </div>
+            <strong>{{ platform.loggedIn ? txLevelDb : "-∞ dB" }}</strong>
           </div>
         </div>
       </div>
@@ -852,6 +1271,9 @@ watch(
     <section class="dashboard-grid">
       <article class="card focus-card">
         <div class="callsign-stage">
+          <div class="system-clock" aria-label="System time">
+            <strong class="system-clock-time">{{ systemDateText }} · {{ systemClockText }}</strong>
+          </div>
           <div class="callsign-tools">
             <button
               class="ghost-btn tool-pill"
@@ -890,12 +1312,14 @@ watch(
             </button>
           </div>
           <div class="callsign-spectrum" aria-hidden="true">
-            <span
-              v-for="(bar, index) in spectrumBars"
-              :key="index"
-              class="callsign-spectrum-bar"
-              :style="{ transform: `scaleY(${bar})` }"
-            ></span>
+            <canvas
+              ref="spectrumCanvas"
+              class="callsign-spectrum-canvas"
+              width="960"
+              height="240"
+              @mousemove="handleSpectrumHover"
+              @mouseleave="clearSpectrumHover"
+            ></canvas>
           </div>
           <div class="callsign-display">{{ currentTalker }}</div>
           <div class="callsign-meta">
@@ -1003,14 +1427,14 @@ watch(
                       <path v-else d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
                     </svg>
                   </div>
-                  <div class="voice-waveform">
-                    <div
-                      v-for="(level, idx) in generateWaveform(message.audioData || [], 40)"
-                      :key="idx"
-                      class="wave-bar"
-                      :style="{ height: Math.max(4, level * 24) + 'px' }"
-                    />
-                  </div>
+                  <canvas
+                    :ref="(el) => setWaveformCanvas(message.id, el as HTMLCanvasElement | null)"
+                    class="voice-waveform-canvas"
+                    width="160"
+                    height="20"
+                    @mousemove="handleWaveformHover(message.id, $event)"
+                    @mouseleave="clearWaveformHover(message.id)"
+                  />
                 </div>
               </template>
               <template v-else>

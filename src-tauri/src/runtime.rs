@@ -1,9 +1,11 @@
 use std::fs::File;
 use std::io::Write;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
+use rustfft::num_complex::Complex32;
+use rustfft::{Fft, FftPlanner};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
 
@@ -19,17 +21,12 @@ fn chrono_local_now() -> String {
     chrono::Local::now().format("%H:%M:%S").to_string()
 }
 
-fn save_voice_to_wav(
+fn voice_file_path(
     callsign: &str,
     ssid: u8,
-    audio_data: &[i16],
     duration_ms: u128,
     save_path: &str,
-) -> Result<String, String> {
-    if audio_data.is_empty() {
-        return Err("No audio data to save".into());
-    }
-
+) -> Result<PathBuf, String> {
     let base_dir = if save_path.is_empty() {
         dirs::audio_dir().unwrap_or_else(|| PathBuf::from("."))
     } else {
@@ -44,7 +41,13 @@ fn save_voice_to_wav(
     let duration_sec = (duration_ms as f64 / 1000.0).max(1.0);
     let duration_str = format!("{:.1}", duration_sec);
     let filename = format!("{}-{}_{}_{}s.wav", callsign, ssid, timestamp, duration_str);
-    let file_path = full_dir.join(&filename);
+    Ok(full_dir.join(&filename))
+}
+
+fn save_voice_to_wav(file_path: &Path, audio_data: &[i16]) -> Result<(), String> {
+    if audio_data.is_empty() {
+        return Err("No audio data to save".into());
+    }
 
     let sample_rate: u32 = 8000;
     let num_channels: u16 = 1;
@@ -53,7 +56,7 @@ fn save_voice_to_wav(
     let block_align = num_channels * (bits_per_sample / 8);
     let data_size = audio_data.len() * 2;
 
-    let mut file = File::create(&file_path)
+    let mut file = File::create(file_path)
         .map_err(|e| format!("Failed to create file: {}", e))?;
 
     file.write_all(b"RIFF")
@@ -103,7 +106,30 @@ fn save_voice_to_wav(
             .map_err(|e| format!("Failed to write sample: {}", e))?;
     }
 
-    Ok(filename)
+    Ok(())
+}
+
+fn build_waveform_preview(audio_data: &[i16], samples: usize) -> Vec<f32> {
+    if audio_data.is_empty() || samples == 0 {
+        return Vec::new();
+    }
+
+    let step = (audio_data.len() / samples).max(1);
+    let mut waveform = Vec::with_capacity(samples);
+    for i in 0..samples {
+        let idx = i * step;
+        let mut sum = 0.0f32;
+        let mut count = 0usize;
+        for j in 0..step {
+            let Some(sample) = audio_data.get(idx + j) else {
+                break;
+            };
+            sum += (*sample as f32 / i16::MAX as f32).abs();
+            count += 1;
+        }
+        waveform.push(if count > 0 { sum / count as f32 } else { 0.0 });
+    }
+    waveform
 }
 
 #[derive(Clone)]
@@ -115,6 +141,8 @@ pub struct RuntimeState {
     capture_task_running: Arc<AtomicBool>,
     voice_watchdog_running: Arc<AtomicBool>,
     heartbeat_watchdog_running: Arc<AtomicBool>,
+    /// 上次向前端 emit snapshot 的时间（ms），用于限速，避免每包都 emit 导致事件积压
+    last_snapshot_emit_ms: Arc<AtomicU64>,
 }
 
 struct RuntimeData {
@@ -128,6 +156,10 @@ struct RuntimeData {
     outgoing_voice_start: Option<Instant>,
     last_heartbeat_at: Option<Instant>,
     heartbeat_timeout_reported: bool,
+    last_heartbeat_sent_at: Option<Instant>,
+    latency_ewma_ms: Option<f32>,
+    last_voice_arrival_at: Option<Instant>,
+    jitter_ewma_ms: Option<f32>,
     tick: u64,
 }
 
@@ -141,10 +173,23 @@ struct VoiceSession {
 }
 
 const SPECTRUM_BANDS: usize = 28;
+const MAX_VOICE_SESSION_SAMPLES: usize = 60 * 8000;
+const SPECTRUM_FFT_SIZE: usize = 256;
+const SPECTRUM_SAMPLE_RATE: f32 = 8_000.0;
+const SPECTRUM_MIN_FREQ: f32 = 80.0;
+const SPECTRUM_MAX_FREQ: f32 = 3_400.0;
 
 pub(crate) struct FrameAnalysis {
     pub level: f32,
     pub spectrum: [f32; SPECTRUM_BANDS],
+}
+
+fn spectrum_fft() -> &'static Arc<dyn Fft<f32>> {
+    static FFT: OnceLock<Arc<dyn Fft<f32>>> = OnceLock::new();
+    FFT.get_or_init(|| {
+        let mut planner = FftPlanner::<f32>::new();
+        planner.plan_fft_forward(SPECTRUM_FFT_SIZE)
+    })
 }
 
 impl RuntimeState {
@@ -157,6 +202,7 @@ impl RuntimeState {
             capture_task_running: Arc::new(AtomicBool::new(false)),
             voice_watchdog_running: Arc::new(AtomicBool::new(false)),
             heartbeat_watchdog_running: Arc::new(AtomicBool::new(false)),
+            last_snapshot_emit_ms: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -176,6 +222,20 @@ impl RuntimeState {
 
     pub async fn snapshot(&self) -> SessionSnapshot {
         self.inner.read().await.snapshot.clone()
+    }
+
+    /// 限速 snapshot emit：每 80ms 最多发一次，避免每个 UDP 包都 emit 造成前端事件积压
+    pub async fn throttled_emit_snapshot(&self, app: &AppHandle) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let last = self.last_snapshot_emit_ms.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last) < 80 {
+            return;
+        }
+        self.last_snapshot_emit_ms.store(now_ms, Ordering::Relaxed);
+        let _ = app.emit("runtime://snapshot", self.snapshot().await);
     }
 
     pub async fn connect(&self, config: RuntimeConfig) -> SessionSnapshot {
@@ -202,6 +262,10 @@ impl RuntimeState {
             guard.snapshot.last_text_message = "正在等待服务器心跳确认".into();
             guard.last_heartbeat_at = None;
             guard.heartbeat_timeout_reported = false;
+            guard.last_heartbeat_sent_at = None;
+            guard.latency_ewma_ms = None;
+            guard.last_voice_arrival_at = None;
+            guard.jitter_ewma_ms = None;
             guard.presence.clear();
             guard.push_presence(&config.callsign, config.ssid, "本机", "online");
             guard.push_event(
@@ -246,6 +310,10 @@ impl RuntimeState {
         guard.voice_session = None;
         guard.last_heartbeat_at = None;
         guard.heartbeat_timeout_reported = false;
+        guard.last_heartbeat_sent_at = None;
+        guard.latency_ewma_ms = None;
+        guard.last_voice_arrival_at = None;
+        guard.jitter_ewma_ms = None;
         guard.presence.clear();
         guard.push_event("链路断开", "用户主动断开当前房间连接", "warn");
         guard.snapshot.clone()
@@ -309,7 +377,6 @@ impl RuntimeState {
     pub async fn update_jitter_buffer(&self, value: u32) -> SessionSnapshot {
         let mut guard = self.inner.write().await;
         guard.snapshot.devices.jitter_buffer_ms = value;
-        guard.snapshot.jitter_ms = value.saturating_sub(34);
         guard.push_event(
             "调整缓冲",
             &format!("抖动缓冲更新为 {value}ms，后续会驱动真实 jitter buffer"),
@@ -408,8 +475,24 @@ impl RuntimeState {
     ) {
         let now = Instant::now();
         let emitted = Vec::new();
-        {
+        // 在持有写锁期间收集需要 emit 的旧会话，锁释放后再发送
+        // 不能在写锁内调用 emit_voice_message：该函数会再次获取 inner.read()，同一 task
+        // 内持有写锁再等读锁会永久死锁，导致所有后续锁操作（包括群组切换的 save_config）卡住
+        let finished_session: Option<(VoiceSession, u128)> = {
             let mut guard = self.inner.write().await;
+            // RFC 3550 风格的抖动估算：|到达间隔 - 期望间隔| 的 EWMA，期望间隔=20ms（160 样本 @ 8kHz）
+            if let Some(prev) = guard.last_voice_arrival_at {
+                let delta_ms = now.saturating_duration_since(prev).as_secs_f32() * 1000.0;
+                let expected_ms = (samples as f32 / 8.0).max(1.0);
+                let dev = (delta_ms - expected_ms).abs();
+                let next = match guard.jitter_ewma_ms {
+                    Some(prev) => prev + (dev - prev) / 16.0,
+                    None => dev,
+                };
+                guard.jitter_ewma_ms = Some(next);
+                guard.snapshot.jitter_ms = next.round().max(0.0) as u32;
+            }
+            guard.last_voice_arrival_at = Some(now);
             guard.snapshot.active_speaker = callsign.clone();
             guard.snapshot.active_speaker_ssid = ssid;
             guard.snapshot.rx_level = level;
@@ -421,12 +504,33 @@ impl RuntimeState {
             match guard.voice_session.take() {
                 Some(mut session) if session.callsign == callsign && session.ssid == ssid => {
                     session.last_seen_at = now;
-                    session.audio_data.extend_from_slice(pcm_data);
-                    guard.voice_session = Some(session);
+                    let next_len = session.audio_data.len().saturating_add(pcm_data.len());
+                    if next_len <= MAX_VOICE_SESSION_SAMPLES {
+                        session.audio_data.extend_from_slice(pcm_data);
+                        guard.voice_session = Some(session);
+                        None
+                    } else {
+                        let remaining = MAX_VOICE_SESSION_SAMPLES.saturating_sub(session.audio_data.len());
+                        if remaining > 0 {
+                            session.audio_data.extend_from_slice(&pcm_data[..remaining]);
+                        }
+                        let elapsed = now.duration_since(session.started_at).as_millis();
+                        let mut new_session = VoiceSession {
+                            callsign: callsign.clone(),
+                            ssid,
+                            started_at: now,
+                            last_seen_at: now,
+                            audio_data: Vec::new(),
+                        };
+                        if remaining < pcm_data.len() {
+                            new_session.audio_data.extend_from_slice(&pcm_data[remaining..]);
+                        }
+                        guard.voice_session = Some(new_session);
+                        Some((session, elapsed))
+                    }
                 }
                 Some(session) => {
                     let elapsed = now.duration_since(session.started_at).as_millis();
-                    self.emit_voice_message(&session, elapsed).await;
                     let mut new_session = VoiceSession {
                         callsign: callsign.clone(),
                         ssid,
@@ -436,6 +540,7 @@ impl RuntimeState {
                     };
                     new_session.audio_data.extend_from_slice(pcm_data);
                     guard.voice_session = Some(new_session);
+                    Some((session, elapsed))
                 }
                 None => {
                     let mut new_session = VoiceSession {
@@ -447,8 +552,13 @@ impl RuntimeState {
                     };
                     new_session.audio_data.extend_from_slice(pcm_data);
                     guard.voice_session = Some(new_session);
+                    None
                 }
             }
+        }; // 写锁在此处释放
+        // 锁释放后再 emit，避免 emit_voice_message 内的 inner.read() 与写锁死锁
+        if let Some((session, elapsed)) = finished_session {
+            self.emit_voice_message(&session, elapsed).await;
         }
         self.emit_runtime_updates(emitted).await;
     }
@@ -477,16 +587,33 @@ impl RuntimeState {
         guard.push_presence(callsign, ssid, "远端节点", state);
     }
 
+    pub async fn note_heartbeat_sent(&self) {
+        let mut guard = self.inner.write().await;
+        if guard.last_heartbeat_sent_at.is_none() {
+            guard.last_heartbeat_sent_at = Some(Instant::now());
+        }
+    }
+
     pub async fn note_heartbeat(&self, callsign: &str, ssid: u8) {
         let mut emitted = Vec::new();
         {
             let mut guard = self.inner.write().await;
             let first_confirm = guard.last_heartbeat_at.is_none();
             let recovered = guard.heartbeat_timeout_reported;
+            let now = Instant::now();
+            if let Some(sent_at) = guard.last_heartbeat_sent_at.take() {
+                let rtt_ms = now.saturating_duration_since(sent_at).as_secs_f32() * 1000.0;
+                let next = match guard.latency_ewma_ms {
+                    Some(prev) => prev + (rtt_ms - prev) * 0.2,
+                    None => rtt_ms,
+                };
+                guard.latency_ewma_ms = Some(next);
+                guard.snapshot.latency_ms = next.round().max(0.0) as u32;
+            }
             guard.push_presence(callsign, ssid, "远端节点", "online");
             guard.snapshot.connection = "connected".into();
             guard.snapshot.last_text_message = format!("收到 {}-{} 心跳确认", callsign, ssid);
-            guard.last_heartbeat_at = Some(Instant::now());
+            guard.last_heartbeat_at = Some(now);
             guard.heartbeat_timeout_reported = false;
             if first_confirm {
                 emitted.push(guard.push_event(
@@ -682,10 +809,16 @@ impl RuntimeState {
                     guard.snapshot.downlink_kbps = 0.0;
                     guard.snapshot.active_speaker.clear();
                     guard.snapshot.active_speaker_ssid = 0;
+                    guard.last_voice_arrival_at = None;
                     Some((session, elapsed))
                 };
                 if let Some((session, elapsed)) = session_info {
                     runtime.emit_voice_message(&session, elapsed).await;
+                    // 语音结束后主动推一次 snapshot，通知前端 rx_level/rx_spectrum 已归零
+                    // watchdog 已将这些字段清零（write lock 内），但没有 emit，前端会一直显示旧波形
+                    if let Some(app) = runtime.app.read().await.clone() {
+                        let _ = app.emit("runtime://snapshot", runtime.snapshot().await);
+                    }
                 }
                 runtime.emit_runtime_updates(emitted).await;
             }
@@ -722,7 +855,8 @@ impl RuntimeState {
                 meta: format!("{callsign}-{ssid}"),
                 time,
                 type_: None,
-                audio_data: None,
+                waveform: None,
+                file_path: None,
                 duration: None,
             };
             let _ = app.emit("runtime://chat-message", event);
@@ -730,21 +864,25 @@ impl RuntimeState {
     }
 
     async fn emit_voice_message(&self, session: &VoiceSession, duration_ms: u128) {
-        let config = {
+        let voice_save_path = {
             let guard = self.inner.read().await;
-            guard.config.clone()
+            guard.config.voice_save_path.clone()
         };
 
-        if let Err(e) = save_voice_to_wav(
+        let file_path = match voice_file_path(
             &session.callsign,
             session.ssid,
-            &session.audio_data,
             duration_ms,
-            &config.voice_save_path,
+            &voice_save_path,
         ) {
-            eprintln!("[Runtime] Failed to save voice: {}", e);
-        }
+            Ok(path) => Some(path),
+            Err(e) => {
+                eprintln!("[Runtime] Failed to prepare voice path: {}", e);
+                None
+            }
+        };
 
+        // 先立即 emit chat 消息，保证前端消息出现不被文件写入延迟
         if let Some(app) = self.app.read().await.clone() {
             let id = {
                 let mut guard = self.inner.write().await;
@@ -752,11 +890,6 @@ impl RuntimeState {
                 guard.tick
             };
             let time = chrono_local_now();
-            let audio_data: Vec<f32> = session
-                .audio_data
-                .iter()
-                .map(|&s| s as f32 / i16::MAX as f32)
-                .collect();
             let duration_sec = duration_ms as f64 / 1000.0;
             let event = ChatMessageEvent {
                 id: format!("chat-{id}"),
@@ -765,11 +898,34 @@ impl RuntimeState {
                 meta: format!("{}-{}-{}", session.callsign, session.ssid, format!("{:.1}s", duration_sec)),
                 time,
                 type_: Some("voice".into()),
-                audio_data: Some(audio_data),
+                waveform: Some(build_waveform_preview(&session.audio_data, 40)),
+                file_path: file_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().to_string()),
                 duration: Some(duration_sec),
             };
             let _ = app.emit("runtime://chat-message", event);
         }
+
+        // 文件写入放入独立阻塞线程，不占用 tokio worker，不阻塞 UDP reader
+        // 避免文件 I/O 期间 UDP 包积压、Tauri snapshot 事件堆积导致前端误判仍在接收
+        let callsign = session.callsign.clone();
+        let ssid = session.ssid;
+        let audio_data_save = session.audio_data.clone();
+        if let Some(file_path_save) = file_path {
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = save_voice_to_wav(&file_path_save, &audio_data_save) {
+                    eprintln!(
+                        "[Runtime] Failed to save voice {}-{} to {}: {}",
+                        callsign,
+                        ssid,
+                        file_path_save.display(),
+                        e
+                    );
+                }
+            });
+        }
+        // 不 await：文件写在后台异步完成，调用方立即返回
     }
 
     async fn emit_outgoing_voice_message_with_data(&self, audio_data: Vec<i16>, duration_ms: u128) {
@@ -778,21 +934,20 @@ impl RuntimeState {
             let config = &guard.config;
             (config.callsign.clone(), config.ssid, config.voice_save_path.clone())
         };
-        
+
         if audio_data.is_empty() || duration_ms < 100 {
             return;
         }
-        
-        if let Err(e) = save_voice_to_wav(
-            &callsign,
-            ssid,
-            &audio_data,
-            duration_ms,
-            &voice_save_path,
-        ) {
-            eprintln!("[Runtime] Failed to save outgoing voice: {}", e);
-        }
-        
+
+        let file_path = match voice_file_path(&callsign, ssid, duration_ms, &voice_save_path) {
+            Ok(path) => Some(path),
+            Err(e) => {
+                eprintln!("[Runtime] Failed to prepare outgoing voice path: {}", e);
+                None
+            }
+        };
+
+        // 先 emit chat 消息
         if let Some(app) = self.app.read().await.clone() {
             let id = {
                 let mut guard = self.inner.write().await;
@@ -800,10 +955,6 @@ impl RuntimeState {
                 guard.tick
             };
             let time = chrono_local_now();
-            let normalized_data: Vec<f32> = audio_data
-                .iter()
-                .map(|&s| s as f32 / i16::MAX as f32)
-                .collect();
             let duration_sec = duration_ms as f64 / 1000.0;
             let event = ChatMessageEvent {
                 id: format!("chat-{id}"),
@@ -812,10 +963,28 @@ impl RuntimeState {
                 meta: format!("{}-{}-{}", callsign, ssid, format!("{:.1}s", duration_sec)),
                 time,
                 type_: Some("voice".into()),
-                audio_data: Some(normalized_data),
+                waveform: Some(build_waveform_preview(&audio_data, 40)),
+                file_path: file_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().to_string()),
                 duration: Some(duration_sec),
             };
             let _ = app.emit("runtime://chat-message", event);
+        }
+
+        // 文件写入同样放入阻塞线程，不阻塞 set_transmit 及 runAction，防止 busy 卡死
+        if let Some(file_path_save) = file_path {
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = save_voice_to_wav(&file_path_save, &audio_data) {
+                    eprintln!(
+                        "[Runtime] Failed to save outgoing voice {}-{} to {}: {}",
+                        callsign,
+                        ssid,
+                        file_path_save.display(),
+                        e
+                    );
+                }
+            });
         }
     }
 }
@@ -872,6 +1041,10 @@ impl RuntimeData {
             outgoing_voice_start: None,
             last_heartbeat_at: None,
             heartbeat_timeout_reported: false,
+            last_heartbeat_sent_at: None,
+            latency_ewma_ms: None,
+            last_voice_arrival_at: None,
+            jitter_ewma_ms: None,
             tick: 0,
         }
     }
@@ -938,21 +1111,62 @@ pub(crate) fn analyze_pcm_frame(samples: &[i16]) -> FrameAnalysis {
     }
 
     let mut peak = 0.0_f32;
-    let mut spectrum = [0.0_f32; SPECTRUM_BANDS];
-    let chunk_size = ((samples.len() + SPECTRUM_BANDS - 1) / SPECTRUM_BANDS).max(1);
+    let mut rms_acc = 0.0_f32;
+    let mut input = vec![Complex32::new(0.0, 0.0); SPECTRUM_FFT_SIZE];
+    let sample_count = samples.len().min(SPECTRUM_FFT_SIZE);
 
-    for (band_index, chunk) in samples.chunks(chunk_size).take(SPECTRUM_BANDS).enumerate() {
-        let mut band_peak = 0.0_f32;
-        for &sample in chunk {
-            let normalized = (sample as f32 / i16::MAX as f32).abs();
-            peak = peak.max(normalized);
-            band_peak = band_peak.max(normalized);
-        }
-        spectrum[band_index] = band_peak.powf(0.72).min(1.0);
+    for (i, &sample) in samples.iter().take(sample_count).enumerate() {
+        let normalized = sample as f32 / i16::MAX as f32;
+        peak = peak.max(normalized.abs());
+        rms_acc += normalized * normalized;
+        let window = 0.5
+            - 0.5
+                * ((2.0 * std::f32::consts::PI * i as f32)
+                    / (sample_count.saturating_sub(1).max(1) as f32))
+                .cos();
+        input[i] = Complex32::new(normalized * window, 0.0);
     }
 
+    spectrum_fft().process(&mut input);
+
+    let bin_hz = SPECTRUM_SAMPLE_RATE / SPECTRUM_FFT_SIZE as f32;
+    let max_bin = SPECTRUM_FFT_SIZE / 2;
+    let mut magnitudes = vec![0.0_f32; max_bin + 1];
+    let mut global_max = 0.0_f32;
+    for bin in 1..=max_bin {
+        let mag = input[bin].norm();
+        magnitudes[bin] = mag;
+        global_max = global_max.max(mag);
+    }
+
+    let mut spectrum = [0.0_f32; SPECTRUM_BANDS];
+    if global_max > 0.0 {
+        let log_min = SPECTRUM_MIN_FREQ.ln();
+        let log_max = SPECTRUM_MAX_FREQ.ln();
+        for band_index in 0..SPECTRUM_BANDS {
+            let start_ratio = band_index as f32 / SPECTRUM_BANDS as f32;
+            let end_ratio = (band_index + 1) as f32 / SPECTRUM_BANDS as f32;
+            let start_freq = (log_min + (log_max - log_min) * start_ratio).exp();
+            let end_freq = (log_min + (log_max - log_min) * end_ratio).exp();
+            let start_bin = ((start_freq / bin_hz).floor() as usize).clamp(1, max_bin);
+            let end_bin = ((end_freq / bin_hz).ceil() as usize).clamp(start_bin + 1, max_bin + 1);
+
+            let mut band_energy = 0.0_f32;
+            let mut count = 0usize;
+            for mag in magnitudes.iter().take(end_bin).skip(start_bin) {
+                band_energy += *mag * *mag;
+                count += 1;
+            }
+            if count > 0 {
+                let rms = (band_energy / count as f32).sqrt();
+                spectrum[band_index] = (rms / global_max).powf(0.72).min(1.0);
+            }
+        }
+    }
+
+    let rms = (rms_acc / sample_count.max(1) as f32).sqrt();
     FrameAnalysis {
-        level: peak.powf(0.78).min(1.0),
+        level: (rms * 1.8).powf(0.85).min(1.0),
         spectrum,
     }
 }

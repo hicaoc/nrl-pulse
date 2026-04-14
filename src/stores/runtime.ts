@@ -8,6 +8,7 @@ import {
   disconnectSession,
   loadRuntimeConfig,
   onPresence,
+  onRuntimeConfig,
   onRuntimeSnapshot,
   onTimeline,
   saveRuntimeConfig,
@@ -110,7 +111,6 @@ export const useRuntimeStore = defineStore("runtime", () => {
     // 先订阅事件，再拉初始数据，避免两步之间的 emit 丢失
     // 保存 unlisten 引用，防止 listener 被 GC 回收
     unlisteners.push(await onRuntimeSnapshot((next) => {
-      flog("[runtime] snapshot received connection=", next.connection, "isTransmitting=", next.isTransmitting);
       snapshot.value = next;
     }));
     unlisteners.push(await onPresence((next) => {
@@ -118,6 +118,9 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }));
     unlisteners.push(await onTimeline((event) => {
       pushTimeline(event);
+    }));
+    unlisteners.push(await onRuntimeConfig((next) => {
+      config.value = next;
     }));
 
     const data = await bootstrapRuntime();
@@ -135,7 +138,14 @@ export const useRuntimeStore = defineStore("runtime", () => {
     }
     busy.value = true;
     try {
-      mergeSnapshot(await action());
+      // 超时保护：后台在切换群组时可能因音频线程锁竞争死锁，导致 IPC 永不返回
+      // 超时后强制释放 busy，避免所有按钮永久禁用
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("操作超时，请重试")), 6_000)
+      );
+      mergeSnapshot(await Promise.race([action(), timeout]));
+    } catch (e) {
+      flog("[runtime] runAction error:", String(e));
     } finally {
       busy.value = false;
     }

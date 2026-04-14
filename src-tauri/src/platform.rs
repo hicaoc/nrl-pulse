@@ -322,6 +322,8 @@ async fn fetch_group_list_with_client(
 fn http_client() -> Result<Client, String> {
     Client::builder()
         .user_agent("NRL Pulse/0.1.0")
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(6))
         .build()
         .map_err(|err| format!("build http client failed: {err}"))
 }
