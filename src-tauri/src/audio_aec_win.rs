@@ -1,11 +1,14 @@
 /// Windows WASAPI AEC (Acoustic Echo Cancellation) capture
 ///
-/// Activates the system Communications capture endpoint with
-/// `AUDIOCLIENT_ACTIVATION_PARAMS` so that Windows handles echo
-/// cancellation in hardware/driver before we ever see the samples.
-/// The resulting capture stream is resampled down to 8 kHz and
-/// pushed through the same `UnboundedSender<Vec<i16>>` used by the
-/// normal cpal path — upper layers see no difference.
+/// Opens the default Communications capture endpoint, casts the client
+/// to `IAudioClient2`, and marks the stream as `AudioCategory_Communications`
+/// via `SetClientProperties`. That tells Windows to route the stream
+/// through the built-in voice communications APO chain (AEC / AGC / NS),
+/// provided the microphone driver exposes those effects.
+///
+/// The resulting 8 kHz mono frames go through the same
+/// `UnboundedSender<Vec<i16>>` used by the cpal fallback path, so upper
+/// layers see no difference.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,18 +16,17 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc::UnboundedSender;
 use windows::{
-    core::{GUID, PCWSTR},
+    core::{Interface, GUID, PCWSTR},
     Win32::{
-        Foundation::{CloseHandle, WAIT_OBJECT_0},
+        Foundation::{CloseHandle, FALSE, WAIT_OBJECT_0},
         Media::Audio::{
             eCapture, eCommunications, eRender,
-            IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
+            AudioCategory_Communications,
+            AudioClientProperties,
+            IAudioCaptureClient, IAudioClient, IAudioClient2,
+            IMMDeviceEnumerator, MMDeviceEnumerator,
             AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
-            AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-            AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
-            PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
-            WAVEFORMATEX,
+            AUDCLNT_STREAMOPTIONS_NONE, WAVEFORMATEX,
         },
         System::Com::{
             CoCreateInstance, CoInitializeEx, CoTaskMemFree,
@@ -115,20 +117,18 @@ fn run_aec_thread(
             .ok()
             .map_err(|e| format!("CoInitializeEx failed: {e}"))?;
 
-        // Get the default communications render endpoint ID — WASAPI needs
-        // it to know which speaker output to cancel from the mic.
+        // Enumerate the default Communications endpoints. We use the capture
+        // endpoint for the mic; the render endpoint is referenced implicitly
+        // by the OS when it wires up the AEC reference signal for any stream
+        // tagged as AudioCategory_Communications.
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
                 .map_err(|e| format!("CoCreateInstance MMDeviceEnumerator: {e}"))?;
 
-        let render_device = enumerator
+        let _render_device = enumerator
             .GetDefaultAudioEndpoint(eRender, eCommunications)
             .map_err(|e| format!("GetDefaultAudioEndpoint render: {e}"))?;
-        let _render_id = render_device
-            .GetId()
-            .map_err(|e| format!("GetId render: {e}"))?;
 
-        // Get the default communications capture device for the display name
         let cap_device = enumerator
             .GetDefaultAudioEndpoint(eCapture, eCommunications)
             .map_err(|e| format!("GetDefaultAudioEndpoint capture: {e}"))?;
@@ -136,27 +136,36 @@ fn run_aec_thread(
         let device_name = get_device_friendly_name(&cap_device)
             .unwrap_or_else(|_| "Communications Microphone (AEC)".into());
 
-        // Build AUDIOCLIENT_ACTIVATION_PARAMS for process-loopback AEC.
-        // Using EXCLUDE mode with PID 0 means "capture all processes except none"
-        // i.e. capture the comm mic with the system echo canceller engaged.
-        let activation_params = AUDIOCLIENT_ACTIVATION_PARAMS {
-            ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-            Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
-                ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
-                    TargetProcessId: 0,
-                    ProcessLoopbackMode:
-                        PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
-                },
-            },
-        };
-
-        // Activate IAudioClient on the communications capture device
+        // Plain Activate — no pActivationParams. The previous code passed an
+        // AUDIOCLIENT_ACTIVATION_PARAMS { ActivationType: PROCESS_LOOPBACK },
+        // which is for cross-process loopback capture and has nothing to do
+        // with AEC; it got silently ignored and we ended up with raw mic
+        // audio bypassing every effect.
         let audio_client: IAudioClient = cap_device
-            .Activate(CLSCTX_ALL, Some(&activation_params as *const _ as *mut _))
+            .Activate(CLSCTX_ALL, None)
             .map_err(|e| format!("Activate IAudioClient: {e}"))?;
 
-        // Query the mix format — we must use SHARED mode with the device's
-        // native mix format to get AEC-processed audio.
+        // Tag the stream as Communications so the OS inserts the voice
+        // comms APO chain (AEC / AGC / NS). This requires IAudioClient2 and
+        // must happen *before* Initialize.
+        let client2: IAudioClient2 = audio_client
+            .cast()
+            .map_err(|e| format!("cast IAudioClient2: {e}"))?;
+        let props = AudioClientProperties {
+            cbSize: std::mem::size_of::<AudioClientProperties>() as u32,
+            bIsOffload: FALSE,
+            eCategory: AudioCategory_Communications,
+            // AUDCLNT_STREAMOPTIONS_RAW would bypass every effect and give us
+            // the unprocessed mic — exactly the bug we're fixing. Use NONE so
+            // the APO chain stays in.
+            Options: AUDCLNT_STREAMOPTIONS_NONE,
+        };
+        client2
+            .SetClientProperties(&props)
+            .map_err(|e| format!("SetClientProperties(Communications): {e}"))?;
+
+        // Query the mix format after SetClientProperties so we get the format
+        // the effects chain will actually deliver.
         let mix_fmt_ptr = audio_client
             .GetMixFormat()
             .map_err(|e| format!("GetMixFormat: {e}"))?;
