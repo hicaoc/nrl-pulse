@@ -46,6 +46,8 @@ pub struct AecCapture {
     audio_unit: AudioUnit,
     /// Kept alive so the raw pointer passed to the C callback remains valid
     _state: Arc<Mutex<CallbackState>>,
+    /// Raw pointer handed to the C callback via `Arc::into_raw`; reclaimed in Drop
+    callback_state_raw: *const Mutex<CallbackState>,
     pub device_rate: u32,
     pub device_name: String,
 }
@@ -66,9 +68,14 @@ impl AecCapture {
 impl Drop for AecCapture {
     fn drop(&mut self) {
         unsafe {
+            // 先停掉 AudioUnit，确保回调不会再访问 raw 指针
             coreaudio_sys::AudioOutputUnitStop(self.audio_unit);
             coreaudio_sys::AudioUnitUninitialize(self.audio_unit);
             coreaudio_sys::AudioComponentInstanceDispose(self.audio_unit);
+            // 回收 Arc::into_raw 泄出的强引用，让 CallbackState 正常释放
+            if !self.callback_state_raw.is_null() {
+                drop(Arc::from_raw(self.callback_state_raw));
+            }
         }
     }
 }
@@ -112,9 +119,10 @@ unsafe fn start_voice_io(
         "AudioComponentInstanceNew",
     )?;
 
-    // Enable input (bus 1), disable output (bus 0) — we only want capture
+    // VoiceProcessingIO 是全双工单元，Apple 官方示例总是让 input 和 output 两条 bus
+    // 都保持 enable。如果禁用 output bus，输入 render 回调会不被触发，或 AudioUnitRender
+    // 持续返回静音 —— AEC/AGC/NS 流水线需要 output 侧时钟驱动。
     let enable: u32 = 1;
-    let disable: u32 = 0;
     check_os(
         AudioUnitSetProperty(
             audio_unit,
@@ -132,10 +140,10 @@ unsafe fn start_voice_io(
             kAudioOutputUnitProperty_EnableIO,
             kAudioUnitScope_Output,
             BUS_OUTPUT,
-            &disable as *const _ as *const _,
+            &enable as *const _ as *const _,
             std::mem::size_of::<u32>() as u32,
         ),
-        "DisableIO output",
+        "EnableIO output",
     )?;
 
     // Query the hardware input format
@@ -240,6 +248,7 @@ unsafe fn start_voice_io(
     Ok(AecCapture {
         audio_unit,
         _state: state,
+        callback_state_raw: state_ptr as *const Mutex<CallbackState>,
         device_rate: capture_rate,
         device_name: "Built-in Microphone (AEC)".into(),
     })

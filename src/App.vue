@@ -22,6 +22,39 @@ import type { ChatMessageEvent } from "@/types";
 
 type Lang = "zh" | "en";
 
+// roundRect polyfill —— macOS 12 / WKWebView <16 没有该 API，且早期 Safari 16
+// 在半径超过短边一半时会抛 RangeError 而不是按 spec 钳制。统一替换成自绘实现。
+{
+  const proto = CanvasRenderingContext2D.prototype as CanvasRenderingContext2D & {
+    roundRect?: (x: number, y: number, w: number, h: number, r?: number | number[]) => void;
+  };
+  proto.roundRect = function (x, y, w, h, r) {
+    let tl = 0, tr = 0, br = 0, bl = 0;
+    if (Array.isArray(r)) {
+      if (r.length === 1) tl = tr = br = bl = r[0];
+      else if (r.length === 2) { tl = br = r[0]; tr = bl = r[1]; }
+      else if (r.length === 3) { tl = r[0]; tr = bl = r[1]; br = r[2]; }
+      else { tl = r[0]; tr = r[1]; br = r[2]; bl = r[3]; }
+    } else if (typeof r === "number") {
+      tl = tr = br = bl = r;
+    }
+    const maxR = Math.min(Math.abs(w), Math.abs(h)) / 2;
+    tl = Math.max(0, Math.min(tl, maxR));
+    tr = Math.max(0, Math.min(tr, maxR));
+    br = Math.max(0, Math.min(br, maxR));
+    bl = Math.max(0, Math.min(bl, maxR));
+    this.moveTo(x + tl, y);
+    this.lineTo(x + w - tr, y);
+    this.quadraticCurveTo(x + w, y, x + w, y + tr);
+    this.lineTo(x + w, y + h - br);
+    this.quadraticCurveTo(x + w, y + h, x + w - br, y + h);
+    this.lineTo(x + bl, y + h);
+    this.quadraticCurveTo(x, y + h, x, y + h - bl);
+    this.lineTo(x, y + tl);
+    this.quadraticCurveTo(x, y, x + tl, y);
+  };
+}
+
 const HOLD_THRESHOLD_MS = 320;
 const runtime = useRuntimeStore();
 const platform = usePlatformStore();

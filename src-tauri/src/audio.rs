@@ -364,11 +364,15 @@ impl AudioEngine {
                     input_rate = aec.device_rate;
                     input_resampling = input_rate != TARGET_SAMPLE_RATE;
                     aec_enabled = true;
+                    #[cfg(target_os = "windows")]
+                    let backend = "Windows WASAPI";
+                    #[cfg(target_os = "macos")]
+                    let backend = "macOS VoiceProcessingIO";
                     logs.push(format!(
-                        "AEC: Windows WASAPI echo cancellation active @ {} Hz",
+                        "AEC: {backend} echo cancellation active @ {} Hz",
                         input_rate
                     ));
-                    eprintln!("[AEC] WASAPI AEC active: {}", input_name);
+                    eprintln!("[AEC] {backend} AEC active: {}", input_name);
                     {
                         let mut rx_guard = self
                             .capture_rx
