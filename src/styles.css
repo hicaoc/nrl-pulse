@@ -1254,6 +1254,60 @@ textarea {
   grid-column: span 2;
 }
 
+.auth-switch,
+.auth-server-mode,
+.auth-actions {
+  display: grid;
+  grid-column: span 2;
+  gap: 10px;
+}
+
+.auth-switch,
+.auth-server-mode {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.auth-switch-btn,
+.mode-chip {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.auth-switch-btn[data-active="true"],
+.mode-chip[data-active="true"] {
+  border-color: rgba(255, 214, 109, 0.3);
+  color: #fff5da;
+  background: rgba(255, 214, 109, 0.12);
+}
+
+.auth-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+}
+
+.auth-tip {
+  grid-column: span 2;
+  padding: 10px 12px;
+  border-radius: 14px;
+  color: rgba(244, 235, 223, 0.78);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.upload-field strong,
+.upload-field small {
+  display: block;
+}
+
+.upload-field small {
+  color: rgba(244, 235, 223, 0.56);
+}
+
 .icon-btn {
   display: grid;
   place-items: center;
@@ -1760,6 +1814,14 @@ input[type="range"] {
   border-radius: 16px;
   color: #ffd5c2;
   background: rgba(255, 145, 87, 0.09);
+}
+
+.auth-success {
+  padding: 12px 14px;
+  border: 1px solid rgba(102, 227, 163, 0.24);
+  border-radius: 16px;
+  color: #ddffee;
+  background: rgba(102, 227, 163, 0.1);
 }
 
 @media (max-width: 1360px) {

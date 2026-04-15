@@ -61,6 +61,10 @@ export async function saveRuntimeConfig(config: RuntimeConfig): Promise<SessionS
   return invoke<SessionSnapshot>("save_runtime_config", { config });
 }
 
+export async function reconfigureSession(config: RuntimeConfig): Promise<SessionSnapshot> {
+  return invoke<SessionSnapshot>("reconfigure_session", { config });
+}
+
 export async function syncAtState(): Promise<SessionSnapshot> {
   return invoke<SessionSnapshot>("sync_at_state");
 }

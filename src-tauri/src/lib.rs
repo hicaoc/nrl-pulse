@@ -1,9 +1,9 @@
 mod at;
 mod audio;
-#[cfg(target_os = "windows")]
-mod audio_aec_win;
 #[cfg(target_os = "macos")]
 mod audio_aec_mac;
+#[cfg(target_os = "windows")]
+mod audio_aec_win;
 mod config;
 mod g711;
 mod models;
@@ -14,7 +14,10 @@ mod udp;
 
 use config::RuntimeConfig;
 use models::{RuntimeBootstrap, SessionSnapshot};
-use platform::{GroupSnapshot, LoginBootstrap, PlatformDevice, PlatformServer};
+use platform::{
+    GroupSnapshot, LoginBootstrap, PlatformDevice, PlatformRegisterPayload, PlatformRegisterResult,
+    PlatformServer,
+};
 use runtime::RuntimeState;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -123,6 +126,20 @@ async fn save_runtime_config(
 }
 
 #[tauri::command]
+async fn reconfigure_session(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RuntimeState>,
+    config: RuntimeConfig,
+) -> Result<SessionSnapshot, String> {
+    config::save(&app, &config)?;
+    let _ = state.disconnect().await;
+    let _ = app.emit("runtime://config", config.clone());
+    let snapshot = state.connect(config).await;
+    broadcast_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
 async fn sync_at_state(
     app: tauri::AppHandle,
     state: tauri::State<'_, RuntimeState>,
@@ -158,6 +175,16 @@ async fn platform_restore_session(
     current_group_id: i32,
 ) -> Result<LoginBootstrap, String> {
     platform::restore_session(api_base, token, server, current_group_id).await
+}
+
+#[tauri::command]
+async fn platform_register(
+    host: String,
+    payload: PlatformRegisterPayload,
+    license_filename: String,
+    license_bytes: Vec<u8>,
+) -> Result<PlatformRegisterResult, String> {
+    platform::register(host, payload, license_filename, license_bytes).await
 }
 
 #[tauri::command]
@@ -295,9 +322,11 @@ pub fn run() {
             send_text_message,
             load_runtime_config,
             save_runtime_config,
+            reconfigure_session,
             sync_at_state,
             fetch_platform_servers,
             platform_login,
+            platform_register,
             platform_restore_session,
             platform_fetch_groups,
             platform_fetch_group_devices,

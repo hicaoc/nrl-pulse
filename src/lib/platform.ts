@@ -3,6 +3,8 @@ import type {
   GroupSnapshot,
   LoginBootstrap,
   PlatformDevice,
+  PlatformRegisterPayload,
+  PlatformRegisterResult,
   PlatformServer,
 } from "@/types";
 
@@ -16,6 +18,20 @@ export async function platformLogin(
   password: string,
 ): Promise<LoginBootstrap> {
   return invoke<LoginBootstrap>("platform_login", { server, username, password });
+}
+
+export async function platformRegister(
+  host: string,
+  payload: PlatformRegisterPayload,
+  licenseFilename: string,
+  licenseBytes: Uint8Array,
+): Promise<PlatformRegisterResult> {
+  return invoke<PlatformRegisterResult>("platform_register", {
+    host,
+    payload,
+    licenseFilename,
+    licenseBytes: Array.from(licenseBytes),
+  });
 }
 
 export async function platformRestoreSession(

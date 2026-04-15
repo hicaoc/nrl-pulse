@@ -149,3 +149,17 @@ export interface GroupSnapshot {
   currentGroupId: number;
   devices: PlatformDevice[];
 }
+
+export interface PlatformRegisterPayload {
+  callsign: string;
+  name: string;
+  phone: string;
+  password: string;
+  address: string;
+  mail: string;
+}
+
+export interface PlatformRegisterResult {
+  code: number;
+  message?: string;
+}

@@ -12,6 +12,7 @@ import {
   onRuntimeConfig,
   onRuntimeSnapshot,
   onTimeline,
+  reconfigureSession,
   saveRuntimeConfig,
   sendTextMessage,
   setTransmit,
@@ -224,6 +225,11 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await runAction(() => saveRuntimeConfig(next));
   }
 
+  async function reconnectWithConfig(next: RuntimeConfig) {
+    config.value = next;
+    await runAction(() => reconfigureSession(next));
+  }
+
   async function syncAt() {
     await runAction(syncAtState);
   }
@@ -246,6 +252,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     setJitter,
     sendMessage,
     saveConfig,
+    reconnectWithConfig,
     syncAt,
   };
 });

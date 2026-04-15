@@ -3,6 +3,7 @@ import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRe
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
+import { platformRegister } from "@/lib/platform";
 import {
   checkUpdate,
   closePttWindow,
@@ -18,7 +19,7 @@ import {
 import type { UpdateInfo } from "@/lib/tauri";
 import { usePlatformStore } from "@/stores/platform";
 import { useRuntimeStore } from "@/stores/runtime";
-import type { ChatMessageEvent } from "@/types";
+import type { ChatMessageEvent, PlatformRegisterPayload } from "@/types";
 
 type Lang = "zh" | "en";
 
@@ -71,7 +72,11 @@ const updateDownloading = ref(false);
 const updateProgress = ref(0);
 const updateTotal = ref(0);
 const showLogin = ref(false);
+const showRegister = ref(false);
 const loginError = ref("");
+const registerError = ref("");
+const registerSuccess = ref("");
+const registerBusy = ref(false);
 const listeningPttKey = ref(false);
 const pttPressed = ref(false);
 const holdActivated = ref(false);
@@ -84,6 +89,21 @@ const chatMessages = shallowRef<
   ChatMessageEvent[]
 >([]);
 const currentTime = ref(new Date());
+const registerForm = ref<PlatformRegisterPayload>({
+  callsign: "",
+  name: "",
+  phone: "",
+  password: "",
+  address: "",
+  mail: "",
+});
+const registerLicense = ref<{
+  name: string;
+  size: number;
+  bytes: Uint8Array;
+} | null>(null);
+
+const MAX_REGISTER_IMAGE_BYTES = 512 * 1024;
 
 const playingMessageId = ref<string | null>(null);
 let activeVoiceAudio: HTMLAudioElement | null = null;
@@ -493,6 +513,138 @@ function getVoiceBubbleWidth(duration: number | undefined): number {
   return Math.min(maxWidth, Math.max(minWidth, width));
 }
 
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function resetRegisterState() {
+  registerError.value = "";
+  registerSuccess.value = "";
+}
+
+function resetRegisterForm() {
+  registerForm.value = {
+    callsign: "",
+    name: "",
+    phone: "",
+    password: "",
+    address: "",
+    mail: "",
+  };
+  registerLicense.value = null;
+}
+
+function openRegisterForm() {
+  loginError.value = "";
+  resetRegisterState();
+  showRegister.value = true;
+}
+
+function backToLoginForm() {
+  registerError.value = "";
+  showRegister.value = false;
+}
+
+function fileToObjectUrl(file: Blob): string {
+  return URL.createObjectURL(file);
+}
+
+function loadImageFromUrl(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(t.value.imageReadFailed));
+    image.src = url;
+  });
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error(t.value.imageReadFailed));
+        return;
+      }
+      resolve(blob);
+    }, type, quality);
+  });
+}
+
+async function compressImageToLimit(file: File) {
+  if (file.size <= MAX_REGISTER_IMAGE_BYTES) {
+    return {
+      name: file.name,
+      size: file.size,
+      bytes: new Uint8Array(await file.arrayBuffer()),
+    };
+  }
+
+  const objectUrl = fileToObjectUrl(file);
+  try {
+    const image = await loadImageFromUrl(objectUrl);
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error(t.value.imageReadFailed);
+    }
+
+    const scaleSteps = [1, 0.9, 0.8, 0.7, 0.6];
+    const qualitySteps = [0.86, 0.72, 0.58, 0.46];
+
+    for (const scale of scaleSteps) {
+      const width = Math.max(1, Math.round(image.naturalWidth * scale));
+      const height = Math.max(1, Math.round(image.naturalHeight * scale));
+      canvas.width = width;
+      canvas.height = height;
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(image, 0, 0, width, height);
+
+      for (const quality of qualitySteps) {
+        const blob = await canvasToBlob(canvas, "image/jpeg", quality);
+        if (blob.size <= MAX_REGISTER_IMAGE_BYTES) {
+          const baseName = file.name.replace(/\.[^.]+$/, "") || "license";
+          return {
+            name: `${baseName}.jpg`,
+            size: blob.size,
+            bytes: new Uint8Array(await blob.arrayBuffer()),
+          };
+        }
+      }
+    }
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+
+  throw new Error(t.value.imageTooLarge);
+}
+
+async function onRegisterImageChange(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const file = input?.files?.[0];
+  if (!file) {
+    return;
+  }
+  registerError.value = "";
+  try {
+    registerLicense.value = await compressImageToLimit(file);
+  } catch (error) {
+    registerLicense.value = null;
+    registerError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    if (input) {
+      input.value = "";
+    }
+  }
+}
+
+function resolveAuthHost(): string {
+  return platform.resolveSelectedServer()?.host?.trim() || "";
+}
+
 const messages = {
   zh: {
     language: "中文",
@@ -585,6 +737,34 @@ const messages = {
     currentAccount: "当前账号",
     currentGroupLabel: "当前组",
     logoutLocal: "退出本地登录态",
+    openRegister: "注册账号",
+    backToLogin: "返回登录",
+    registerAction: "提交注册",
+    registering: "注册中...",
+    serverModeList: "服务器列表",
+    serverModeCustom: "自定义服务器",
+    customServer: "自定义服务器地址",
+    customServerPlaceholder: "例如 m.nrlptt.com",
+    callsignField: "呼号",
+    realName: "姓名",
+    phoneField: "手机号",
+    emailField: "邮箱",
+    addressField: "地址",
+    licenseUpload: "操作证和电台执照合影",
+    registerPhotoHint: "超出 512KB 时会自动压缩后上传。",
+    registerPendingHint: "注册成功后需等待管理员审核。",
+    enterLoginServer: "请输入登录服务器",
+    invalidCallsign: "呼号只能包含 5-6 位大写字母和数字",
+    enterName: "请输入姓名",
+    invalidPhone: "请输入 11 位以上数字的手机号",
+    enterPassword: "请输入密码",
+    enterAddress: "请输入地址",
+    invalidEmail: "请输入有效的邮箱地址",
+    uploadLicense: "请上传操作证和电台执照",
+    imageTooLarge: "图片过大，请换一张更小的照片",
+    imageReadFailed: "图片处理失败，请重试",
+    registerFailed: "注册失败，请稍后重试",
+    registerSuccess: "注册成功，请等待管理员审核。",
     pttHint: (key: string) => `短按切换发射，长按保持发射，松开结束。键盘触发键：${key}`,
     ptt: "PTT",
     txActive: "发射中",
@@ -692,6 +872,34 @@ const messages = {
     currentAccount: "Account",
     currentGroupLabel: "Current Group",
     logoutLocal: "Clear Local Session",
+    openRegister: "Create Account",
+    backToLogin: "Back to Login",
+    registerAction: "Submit Registration",
+    registering: "Registering...",
+    serverModeList: "Server List",
+    serverModeCustom: "Custom Server",
+    customServer: "Custom Server Host",
+    customServerPlaceholder: "For example: m.nrlptt.com",
+    callsignField: "Callsign",
+    realName: "Name",
+    phoneField: "Phone",
+    emailField: "Email",
+    addressField: "Address",
+    licenseUpload: "License Photo",
+    registerPhotoHint: "Images over 512KB are compressed before upload.",
+    registerPendingHint: "Registration requires admin approval before login.",
+    enterLoginServer: "Enter a login server",
+    invalidCallsign: "Callsign must be 5-6 uppercase letters or digits",
+    enterName: "Enter your name",
+    invalidPhone: "Enter a valid phone number with at least 11 digits",
+    enterPassword: "Enter a password",
+    enterAddress: "Enter an address",
+    invalidEmail: "Enter a valid email address",
+    uploadLicense: "Upload your radio license photo",
+    imageTooLarge: "Image is still too large after compression",
+    imageReadFailed: "Image processing failed",
+    registerFailed: "Registration failed. Please try again later.",
+    registerSuccess: "Registration submitted. Please wait for review.",
     pttHint: (key: string) => `Tap to toggle TX, hold to talk, release to stop. Hotkey: ${key}`,
     ptt: "PTT",
     txActive: "Transmitting",
@@ -1010,11 +1218,81 @@ async function closeFloatingWindow() {
 
 async function loginPlatform() {
   loginError.value = "";
+  registerSuccess.value = "";
   try {
     await platform.login();
+    showRegister.value = false;
     showLogin.value = false;
   } catch (error) {
     loginError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function submitRegister() {
+  resetRegisterState();
+  const host = resolveAuthHost();
+  if (!host) {
+    registerError.value = t.value.enterLoginServer;
+    return;
+  }
+
+  const payload: PlatformRegisterPayload = {
+    callsign: registerForm.value.callsign.trim().toUpperCase(),
+    name: registerForm.value.name.trim(),
+    phone: registerForm.value.phone.trim(),
+    password: registerForm.value.password,
+    address: registerForm.value.address.trim(),
+    mail: registerForm.value.mail.trim(),
+  };
+
+  if (!/^[A-Z0-9]{5,6}$/.test(payload.callsign)) {
+    registerError.value = t.value.invalidCallsign;
+    return;
+  }
+  if (!payload.name) {
+    registerError.value = t.value.enterName;
+    return;
+  }
+  if (!/^\d{11,}$/.test(payload.phone)) {
+    registerError.value = t.value.invalidPhone;
+    return;
+  }
+  if (!payload.password) {
+    registerError.value = t.value.enterPassword;
+    return;
+  }
+  if (!payload.address) {
+    registerError.value = t.value.enterAddress;
+    return;
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payload.mail)) {
+    registerError.value = t.value.invalidEmail;
+    return;
+  }
+  if (!registerLicense.value) {
+    registerError.value = t.value.uploadLicense;
+    return;
+  }
+
+  registerBusy.value = true;
+  try {
+    const result = await platformRegister(
+      host,
+      payload,
+      registerLicense.value.name,
+      registerLicense.value.bytes,
+    );
+    if (result.code !== 20000) {
+      registerError.value = result.message || t.value.registerFailed;
+      return;
+    }
+    registerSuccess.value = t.value.registerSuccess;
+    resetRegisterForm();
+    showRegister.value = false;
+  } catch (error) {
+    registerError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    registerBusy.value = false;
   }
 }
 
@@ -1030,9 +1308,6 @@ async function switchGroup(groupId: number) {
 function syncConfigDrafts() {
   pttKeyDraft.value = runtime.config.pttKey;
   voiceSavePathDraft.value = runtime.config.voiceSavePath || "";
-  if (runtime.config.server && platform.servers.some((server) => server.host === runtime.config.server)) {
-    platform.selectedServerHost = runtime.config.server;
-  }
 }
 
 onMounted(async () => {
@@ -1626,44 +1901,134 @@ watch(
 
       <div class="settings-list">
         <div class="setting-form auth-form">
-          <div class="login-server-row">
-            <label class="login-server">
-              <span>{{ t.loginServer }}</span>
-              <select v-model="platform.selectedServerHost">
-                <option v-for="server in platform.servers" :key="server.host" :value="server.host">
-                  {{ server.name }} · {{ server.host }}:{{ server.port }} · {{ server.online }}/{{ server.total }}
-                </option>
-              </select>
+          <div class="auth-switch">
+            <button
+              class="auth-switch-btn"
+              :data-active="!showRegister"
+              @click="backToLoginForm"
+            >
+              {{ t.loginPlatformAction }}
+            </button>
+            <button
+              class="auth-switch-btn"
+              :data-active="showRegister"
+              @click="openRegisterForm"
+            >
+              {{ t.openRegister }}
+            </button>
+          </div>
+          <div class="auth-server-mode">
+            <button
+              class="mode-chip"
+              :data-active="!platform.useCustomServer"
+              @click="platform.useCustomServer = false"
+            >
+              {{ t.serverModeList }}
+            </button>
+            <button
+              class="mode-chip"
+              :data-active="platform.useCustomServer"
+              @click="platform.useCustomServer = true"
+            >
+              {{ t.serverModeCustom }}
+            </button>
+          </div>
+          <template v-if="!platform.useCustomServer">
+            <div class="login-server-row">
+              <label class="login-server">
+                <span>{{ t.loginServer }}</span>
+                <select v-model="platform.selectedServerHost">
+                  <option v-for="server in platform.servers" :key="server.host" :value="server.host">
+                    {{ server.name }} · {{ server.host }}:{{ server.port }} · {{ server.online }}/{{ server.total }}
+                  </option>
+                </select>
+              </label>
+              <button class="icon-btn" :disabled="platform.busy || registerBusy" :title="t.refreshServers" @click="platform.refreshServers()">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 12a8 8 0 0 1 14.9-5.3L21 9v6h-6l2.4-2.4A10 10 0 0 0 4.3 11H2v4h4.3A8 8 0 0 1 4 12z"/>
+                </svg>
+              </button>
+            </div>
+          </template>
+          <label v-else class="full-width">
+            <span>{{ t.customServer }}</span>
+            <input v-model="platform.customServerHost" type="text" :placeholder="t.customServerPlaceholder" />
+          </label>
+
+          <template v-if="!showRegister">
+            <label class="full-width">
+              <span>{{ t.username }}</span>
+              <input v-model="platform.username" type="text" autocomplete="username" />
             </label>
-            <button class="icon-btn" :disabled="platform.busy" :title="t.refreshServers" @click="platform.refreshServers()">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 12a8 8 0 0 1 14.9-5.3L21 9v6h-6l2.4-2.4A10 10 0 0 0 4.3 11H2v4h4.3A8 8 0 0 1 4 12z"/>
-              </svg>
-            </button>
-          </div>
-          <label class="full-width">
-            <span>{{ t.username }}</span>
-            <input v-model="platform.username" type="text" autocomplete="username" />
-          </label>
-          <label class="full-width">
-            <span>{{ t.password }}</span>
-            <input
-              v-model="platform.password"
-              type="password"
-              autocomplete="current-password"
-              @keydown.enter.prevent="loginPlatform"
-            />
-          </label>
-          <div class="login-btn-wrapper">
-            <button class="primary-btn" :disabled="platform.busy" @click="loginPlatform">
-              {{ platform.busy ? t.loggingIn : platform.loggedIn ? t.relogin : t.loginPlatformAction }}
-            </button>
-          </div>
+            <label class="full-width">
+              <span>{{ t.password }}</span>
+              <input
+                v-model="platform.password"
+                type="password"
+                autocomplete="current-password"
+                @keydown.enter.prevent="loginPlatform"
+              />
+            </label>
+            <div class="auth-actions">
+              <button class="ghost-btn" :disabled="platform.busy" @click="openRegisterForm">
+                {{ t.openRegister }}
+              </button>
+              <button class="primary-btn" :disabled="platform.busy" @click="loginPlatform">
+                {{ platform.busy ? t.loggingIn : platform.loggedIn ? t.relogin : t.loginPlatformAction }}
+              </button>
+            </div>
+          </template>
+          <template v-else>
+            <label>
+              <span>{{ t.callsignField }}</span>
+              <input v-model="registerForm.callsign" type="text" maxlength="6" />
+            </label>
+            <label>
+              <span>{{ t.realName }}</span>
+              <input v-model="registerForm.name" type="text" />
+            </label>
+            <label>
+              <span>{{ t.phoneField }}</span>
+              <input v-model="registerForm.phone" type="text" inputmode="numeric" />
+            </label>
+            <label>
+              <span>{{ t.emailField }}</span>
+              <input v-model="registerForm.mail" type="email" />
+            </label>
+            <label class="full-width">
+              <span>{{ t.password }}</span>
+              <input v-model="registerForm.password" type="password" autocomplete="new-password" />
+            </label>
+            <label class="full-width">
+              <span>{{ t.addressField }}</span>
+              <input v-model="registerForm.address" type="text" />
+            </label>
+            <label class="full-width upload-field">
+              <span>{{ t.licenseUpload }}</span>
+              <input type="file" accept="image/*" @change="onRegisterImageChange" />
+              <small>{{ t.registerPhotoHint }}</small>
+              <strong v-if="registerLicense">{{ registerLicense.name }} · {{ formatBytes(registerLicense.size) }}</strong>
+            </label>
+            <div class="auth-tip">
+              {{ t.registerPendingHint }}
+            </div>
+            <div class="auth-actions">
+              <button class="ghost-btn" :disabled="registerBusy" @click="backToLoginForm">
+                {{ t.backToLogin }}
+              </button>
+              <button class="primary-btn" :disabled="registerBusy" @click="submitRegister">
+                {{ registerBusy ? t.registering : t.registerAction }}
+              </button>
+            </div>
+          </template>
         </div>
 
-        <div v-if="loginError" class="auth-error">{{ loginError }}</div>
+        <div v-if="showRegister ? registerError : loginError" class="auth-error">
+          {{ showRegister ? registerError : loginError }}
+        </div>
+        <div v-if="registerSuccess" class="auth-success">{{ registerSuccess }}</div>
 
-        <template v-if="platform.loggedIn && platform.user">
+        <template v-if="!showRegister && platform.loggedIn && platform.user">
           <div class="setting-row">
             <span>{{ t.currentAccount }}</span>
             <strong>{{ platform.user.name || platform.user.callsign }}</strong>

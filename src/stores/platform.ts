@@ -18,9 +18,12 @@ import type {
 } from "@/types";
 
 export const usePlatformStore = defineStore("platform", () => {
+  const DEFAULT_CUSTOM_SERVER_PORT = "60050";
   const runtime = useRuntimeStore();
   const servers = ref<PlatformServer[]>([]);
   const selectedServerHost = ref("");
+  const useCustomServer = ref(false);
+  const customServerHost = ref("");
   const username = ref("");
   const password = ref("");
   const apiBase = ref("");
@@ -42,18 +45,10 @@ export const usePlatformStore = defineStore("platform", () => {
       return;
     }
     await refreshServers();
-    selectedServerHost.value = runtime.config.server || servers.value[0]?.host || "";
+    hydrateServerSelection(runtime.config.server || "");
     username.value = runtime.config.loginUsername || "";
-    if (runtime.config.apiBase && runtime.config.authToken && selectedServerHost.value) {
-      const server =
-        servers.value.find((item) => item.host === selectedServerHost.value) ??
-        ({
-          name: runtime.config.serverName || selectedServerHost.value,
-          host: selectedServerHost.value,
-          port: String(runtime.config.port || 10024),
-          online: 0,
-          total: 0,
-        } as PlatformServer);
+    const server = resolveSelectedServer();
+    if (runtime.config.apiBase && runtime.config.authToken && server) {
       try {
         const data = await platformRestoreSession(
           runtime.config.apiBase,
@@ -71,6 +66,55 @@ export const usePlatformStore = defineStore("platform", () => {
 
   async function refreshServers() {
     servers.value = await fetchPlatformServers();
+    if (!useCustomServer.value && selectedServerHost.value) {
+      const matched = servers.value.find((item) => item.host === selectedServerHost.value);
+      if (!matched) {
+        selectedServerHost.value = servers.value[0]?.host || "";
+      }
+    } else if (!useCustomServer.value && !selectedServerHost.value) {
+      selectedServerHost.value = servers.value[0]?.host || "";
+    }
+  }
+
+  function hydrateServerSelection(serverHost: string) {
+    const trimmed = serverHost.trim();
+    if (!trimmed) {
+      useCustomServer.value = false;
+      customServerHost.value = "";
+      selectedServerHost.value = servers.value[0]?.host || "";
+      return;
+    }
+    const matched = servers.value.find((item) => item.host === trimmed);
+    if (matched) {
+      useCustomServer.value = false;
+      customServerHost.value = "";
+      selectedServerHost.value = matched.host;
+      return;
+    }
+    useCustomServer.value = true;
+    customServerHost.value = trimmed;
+    selectedServerHost.value = "";
+  }
+
+  function resolveSelectedServer(): PlatformServer | null {
+    if (useCustomServer.value) {
+      const host = customServerHost.value.trim().replace(/\/+$/, "");
+      if (!host) {
+        return null;
+      }
+      const savedPort =
+        runtime.config.server === host && runtime.config.port
+          ? String(runtime.config.port)
+          : DEFAULT_CUSTOM_SERVER_PORT;
+      return {
+        name: runtime.config.serverName || host,
+        host,
+        port: savedPort,
+        online: 0,
+        total: 0,
+      };
+    }
+    return servers.value.find((item) => item.host === selectedServerHost.value) ?? null;
   }
 
   function applyBootstrap(data: LoginBootstrap) {
@@ -80,7 +124,7 @@ export const usePlatformStore = defineStore("platform", () => {
     groups.value = data.groups;
     devices.value = data.devices;
     currentGroupId.value = data.currentGroupId;
-    selectedServerHost.value = data.server.host;
+    hydrateServerSelection(data.server.host);
   }
 
   function shouldReconnectAfterLogin(data: LoginBootstrap) {
@@ -95,9 +139,9 @@ export const usePlatformStore = defineStore("platform", () => {
   }
 
   async function login() {
-    const server = servers.value.find((item) => item.host === selectedServerHost.value);
+    const server = resolveSelectedServer();
     if (!server) {
-      throw new Error("请选择登录服务器");
+      throw new Error(useCustomServer.value ? "请输入登录服务器" : "请选择登录服务器");
     }
     busy.value = true;
     try {
@@ -106,21 +150,22 @@ export const usePlatformStore = defineStore("platform", () => {
       applyBootstrap(data);
       const currentGroupName =
         data.groups.find((group) => group.id === data.currentGroupId)?.name ?? runtime.config.roomName;
-      await runtime.saveConfig({
+      const nextConfig = {
         ...runtime.config,
         server: data.server.host,
         port: Number(data.server.port),
-        serverName: data.server.name,
+        serverName: data.server.name || server.name,
         apiBase: data.apiBase,
         authToken: data.token,
         loginUsername: username.value.trim(),
         callsign: data.user.callsign || runtime.config.callsign,
         roomName: currentGroupName,
         currentGroupId: data.currentGroupId,
-      });
+      };
       if (reconnectNeeded) {
-        await runtime.disconnect();
-        await runtime.connect();
+        await runtime.reconnectWithConfig(nextConfig);
+      } else {
+        await runtime.saveConfig(nextConfig);
       }
       password.value = "";
     } finally {
@@ -199,6 +244,8 @@ export const usePlatformStore = defineStore("platform", () => {
   return {
     servers,
     selectedServerHost,
+    useCustomServer,
+    customServerHost,
     username,
     password,
     apiBase,
@@ -214,6 +261,7 @@ export const usePlatformStore = defineStore("platform", () => {
     loggedIn,
     bootstrap,
     refreshServers,
+    resolveSelectedServer,
     login,
     refreshGroups,
     switchGroup,

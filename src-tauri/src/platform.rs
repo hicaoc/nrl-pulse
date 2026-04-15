@@ -1,7 +1,7 @@
 use std::net::IpAddr;
 use std::str::FromStr;
 
-use reqwest::Client;
+use reqwest::{multipart, Client};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -94,6 +94,23 @@ pub struct GroupSnapshot {
     pub devices: Vec<PlatformDevice>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformRegisterPayload {
+    pub callsign: String,
+    pub name: String,
+    pub phone: String,
+    pub password: String,
+    pub address: String,
+    pub mail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformRegisterResult {
+    pub code: i32,
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct LoginEnvelope {
     code: i32,
@@ -172,6 +189,34 @@ pub async fn restore_session(
 ) -> Result<LoginBootstrap, String> {
     let client = http_client()?;
     restore_session_with_client(&client, api_base, token, server, current_group_id).await
+}
+
+pub async fn register(
+    host: String,
+    payload: PlatformRegisterPayload,
+    license_filename: String,
+    license_bytes: Vec<u8>,
+) -> Result<PlatformRegisterResult, String> {
+    let client = http_client()?;
+    let candidates = base_candidates(&host);
+    let (_api_base, value): (String, Value) = post_multipart_candidates(
+        &client,
+        &candidates,
+        "/user/reg/create",
+        &payload,
+        &license_filename,
+        &license_bytes,
+    )
+    .await?;
+    let code = value
+        .get("code")
+        .and_then(Value::as_i64)
+        .unwrap_or_default() as i32;
+    let message = value
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok(PlatformRegisterResult { code, message })
 }
 
 pub async fn fetch_groups(
@@ -341,6 +386,32 @@ fn base_candidates(host: &str) -> Vec<String> {
     }
 }
 
+fn build_register_form(
+    payload: PlatformRegisterPayload,
+    license_filename: String,
+    license_bytes: Vec<u8>,
+) -> Result<multipart::Form, String> {
+    let mime = if license_filename.ends_with(".png") {
+        "image/png"
+    } else if license_filename.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    };
+    let license_part = multipart::Part::bytes(license_bytes)
+        .file_name(license_filename)
+        .mime_str(mime)
+        .map_err(|err| format!("build upload part failed: {err}"))?;
+    Ok(multipart::Form::new()
+        .text("callsign", payload.callsign)
+        .text("name", payload.name)
+        .text("phone", payload.phone)
+        .text("password", payload.password)
+        .text("address", payload.address)
+        .text("mail", payload.mail)
+        .part("license", license_part))
+}
+
 async fn post_json_candidates<T: DeserializeOwned>(
     client: &Client,
     candidates: &[String],
@@ -371,6 +442,54 @@ async fn post_json_exact<T: DeserializeOwned>(
         request = request.header("x-token", token);
     }
     let response = request
+        .send()
+        .await
+        .map_err(|err| format!("request failed: {err}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|err| format!("read response failed: {err}"))?;
+    if !status.is_success() {
+        return Err(format!("http {} {}", status.as_u16(), text));
+    }
+    serde_json::from_str::<T>(&text)
+        .map_err(|err| format!("decode response failed: {err}; body={text}"))
+}
+
+async fn post_multipart_candidates<T: DeserializeOwned>(
+    client: &Client,
+    candidates: &[String],
+    path: &str,
+    payload: &PlatformRegisterPayload,
+    license_filename: &str,
+    license_bytes: &[u8],
+) -> Result<(String, T), String> {
+    let mut last_error = String::new();
+    for base in candidates {
+        let current_form = build_register_form(
+            payload.clone(),
+            license_filename.to_string(),
+            license_bytes.to_vec(),
+        )?;
+        match post_multipart_exact(client, base, path, current_form).await {
+            Ok(value) => return Ok((base.clone(), value)),
+            Err(err) => last_error = err,
+        }
+    }
+    Err(last_error)
+}
+
+async fn post_multipart_exact<T: DeserializeOwned>(
+    client: &Client,
+    api_base: &str,
+    path: &str,
+    form: multipart::Form,
+) -> Result<T, String> {
+    let url = format!("{}{}", api_base.trim_end_matches('/'), path);
+    let response = client
+        .post(url)
+        .multipart(form)
         .send()
         .await
         .map_err(|err| format!("request failed: {err}"))?;
