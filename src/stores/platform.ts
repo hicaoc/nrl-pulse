@@ -83,6 +83,17 @@ export const usePlatformStore = defineStore("platform", () => {
     selectedServerHost.value = data.server.host;
   }
 
+  function shouldReconnectAfterLogin(data: LoginBootstrap) {
+    if (runtime.snapshot.connection !== "connected") {
+      return false;
+    }
+    return (
+      runtime.config.server !== data.server.host ||
+      runtime.config.port !== Number(data.server.port) ||
+      runtime.config.callsign !== (data.user.callsign || runtime.config.callsign)
+    );
+  }
+
   async function login() {
     const server = servers.value.find((item) => item.host === selectedServerHost.value);
     if (!server) {
@@ -91,6 +102,7 @@ export const usePlatformStore = defineStore("platform", () => {
     busy.value = true;
     try {
       const data = await platformLogin(server, username.value.trim(), password.value);
+      const reconnectNeeded = shouldReconnectAfterLogin(data);
       applyBootstrap(data);
       const currentGroupName =
         data.groups.find((group) => group.id === data.currentGroupId)?.name ?? runtime.config.roomName;
@@ -106,6 +118,10 @@ export const usePlatformStore = defineStore("platform", () => {
         roomName: currentGroupName,
         currentGroupId: data.currentGroupId,
       });
+      if (reconnectNeeded) {
+        await runtime.disconnect();
+        await runtime.connect();
+      }
       password.value = "";
     } finally {
       busy.value = false;
