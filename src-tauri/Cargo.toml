@@ -1,6 +1,6 @@
 [package]
 name = "nrl-pulse"
-version = "0.0.6"
+version = "0.0.7"
 description = "Modern cross-platform NRL desktop client"
 authors = ["Codex"]
 edition = "2021"

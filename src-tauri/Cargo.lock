@@ -2672,7 +2672,7 @@ dependencies = [
 
 [[package]]
 name = "nrl-pulse"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "audioadapter-buffers",
  "chrono",
