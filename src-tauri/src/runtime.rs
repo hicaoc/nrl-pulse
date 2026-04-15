@@ -12,8 +12,8 @@ use tokio::sync::RwLock;
 use crate::audio::AudioEngine;
 use crate::config::RuntimeConfig;
 use crate::models::{
-    AtState, ChatMessageEvent, DeviceSettings, PresenceItem, RuntimeBootstrap, SessionSnapshot,
-    TimelineEvent,
+    AtState, ChatMessageEvent, DeviceSettings, PresenceItem, RealtimeAudioState,
+    RuntimeBootstrap, SessionSnapshot, TimelineEvent,
 };
 use crate::udp::UdpSession;
 
@@ -143,6 +143,8 @@ pub struct RuntimeState {
     heartbeat_watchdog_running: Arc<AtomicBool>,
     /// 上次向前端 emit snapshot 的时间（ms），用于限速，避免每包都 emit 导致事件积压
     last_snapshot_emit_ms: Arc<AtomicU64>,
+    /// 上次向前端 emit audio-state 的时间（ms），用于高频音频状态单独限速
+    last_audio_emit_ms: Arc<AtomicU64>,
 }
 
 struct RuntimeData {
@@ -203,6 +205,7 @@ impl RuntimeState {
             voice_watchdog_running: Arc::new(AtomicBool::new(false)),
             heartbeat_watchdog_running: Arc::new(AtomicBool::new(false)),
             last_snapshot_emit_ms: Arc::new(AtomicU64::new(0)),
+            last_audio_emit_ms: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -224,18 +227,48 @@ impl RuntimeState {
         self.inner.read().await.snapshot.clone()
     }
 
-    /// 限速 snapshot emit：每 80ms 最多发一次，避免每个 UDP 包都 emit 造成前端事件积压
+    pub async fn realtime_audio_state(&self) -> RealtimeAudioState {
+        let guard = self.inner.read().await;
+        RealtimeAudioState {
+            active_speaker: guard.snapshot.active_speaker.clone(),
+            active_speaker_ssid: guard.snapshot.active_speaker_ssid,
+            rx_level: guard.snapshot.rx_level,
+            tx_level: guard.snapshot.tx_level,
+            rx_spectrum: guard.snapshot.rx_spectrum.clone(),
+            tx_spectrum: guard.snapshot.tx_spectrum.clone(),
+            queued_frames: guard.snapshot.queued_frames,
+            uplink_kbps: guard.snapshot.uplink_kbps,
+            downlink_kbps: guard.snapshot.downlink_kbps,
+            is_transmitting: guard.snapshot.is_transmitting,
+        }
+    }
+
+    /// 限速 snapshot emit：低频整包同步，避免高频语音状态拖慢前端整页渲染
     pub async fn throttled_emit_snapshot(&self, app: &AppHandle) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
         let last = self.last_snapshot_emit_ms.load(Ordering::Relaxed);
-        if now_ms.saturating_sub(last) < 80 {
+        if now_ms.saturating_sub(last) < 250 {
             return;
         }
         self.last_snapshot_emit_ms.store(now_ms, Ordering::Relaxed);
         let _ = app.emit("runtime://snapshot", self.snapshot().await);
+    }
+
+    /// 高频音频状态走轻量事件，减少主界面在收音期间的整包重渲染
+    pub async fn throttled_emit_audio_state(&self, app: &AppHandle) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let last = self.last_audio_emit_ms.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last) < 40 {
+            return;
+        }
+        self.last_audio_emit_ms.store(now_ms, Ordering::Relaxed);
+        let _ = app.emit("runtime://audio-state", self.realtime_audio_state().await);
     }
 
     pub async fn connect(&self, config: RuntimeConfig) -> SessionSnapshot {
@@ -574,7 +607,7 @@ impl RuntimeState {
             guard.snapshot.uplink_kbps = packet_kbps(samples / 2);
         }
         if let Some(app) = self.app.read().await.clone() {
-            let _ = app.emit("runtime://snapshot", self.snapshot().await);
+            self.throttled_emit_audio_state(&app).await;
         }
     }
 
@@ -817,6 +850,7 @@ impl RuntimeState {
                     // 语音结束后主动推一次 snapshot，通知前端 rx_level/rx_spectrum 已归零
                     // watchdog 已将这些字段清零（write lock 内），但没有 emit，前端会一直显示旧波形
                     if let Some(app) = runtime.app.read().await.clone() {
+                        let _ = app.emit("runtime://audio-state", runtime.realtime_audio_state().await);
                         let _ = app.emit("runtime://snapshot", runtime.snapshot().await);
                     }
                 }

@@ -30,6 +30,19 @@ export interface RuntimeConfig {
   voiceSavePath: string;
 }
 
+export interface RealtimeAudioState {
+  activeSpeaker: string;
+  activeSpeakerSsid: number;
+  rxLevel: number;
+  txLevel: number;
+  rxSpectrum: number[];
+  txSpectrum: number[];
+  queuedFrames: number;
+  uplinkKbps: number;
+  downlinkKbps: number;
+  isTransmitting: boolean;
+}
+
 export interface SessionSnapshot {
   roomName: string;
   callsign: string;

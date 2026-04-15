@@ -1038,7 +1038,7 @@ function syncConfigDrafts() {
 onMounted(async () => {
   try {
     const version = await getVersion();
-    const title = `NRL Pulse v${version} © BH4RPN 2026 , BA4RN BG6FCS BH4TDV BD4RFG BD4VKI BI4UMD BA4QAO ...  `;
+    const title = `NRL Pulse v${version} © BH4RPN 2026 , BA4RN BG6FCS BH4TDV BD4RFG BD4VKI BI4UMD BA4QAO BA4QGT ...  `;
     document.title = title;
     await getCurrentWindow().setTitle(title);
   } catch { /* 权限未授予时不影响后续初始化 */ }

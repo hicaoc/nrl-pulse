@@ -247,6 +247,7 @@ async fn handle_packet(
                     &pcm,
                 )
                 .await;
+            runtime.throttled_emit_audio_state(app).await;
             // 限速 emit：每 80ms 最多推一次 snapshot，防止高频 UDP 包导致前端事件积压
             runtime.throttled_emit_snapshot(app).await;
         }

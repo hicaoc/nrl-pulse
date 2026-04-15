@@ -7,6 +7,7 @@ import {
   connectSession,
   disconnectSession,
   loadRuntimeConfig,
+  onRealtimeAudioState,
   onPresence,
   onRuntimeConfig,
   onRuntimeSnapshot,
@@ -21,6 +22,7 @@ import {
 } from "@/lib/tauri";
 import type {
   PresenceItem,
+  RealtimeAudioState,
   RuntimeConfig,
   SessionSnapshot,
   TimelineEvent,
@@ -79,6 +81,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const bootstrapped = ref(false);
   const busy = ref(false);
   const unlisteners: UnlistenFn[] = [];
+  let pendingSnapshot: SessionSnapshot | null = null;
+  let snapshotRafId = 0;
 
   const connectionText = computed(() => {
     const map: Record<SessionSnapshot["connection"], string> = {
@@ -100,6 +104,33 @@ export const useRuntimeStore = defineStore("runtime", () => {
     snapshot.value = next;
   }
 
+  function mergeRealtimeAudioState(next: RealtimeAudioState) {
+    snapshot.value.activeSpeaker = next.activeSpeaker;
+    snapshot.value.activeSpeakerSsid = next.activeSpeakerSsid;
+    snapshot.value.rxLevel = next.rxLevel;
+    snapshot.value.txLevel = next.txLevel;
+    snapshot.value.rxSpectrum = next.rxSpectrum;
+    snapshot.value.txSpectrum = next.txSpectrum;
+    snapshot.value.queuedFrames = next.queuedFrames;
+    snapshot.value.uplinkKbps = next.uplinkKbps;
+    snapshot.value.downlinkKbps = next.downlinkKbps;
+    snapshot.value.isTransmitting = next.isTransmitting;
+  }
+
+  function scheduleSnapshotFlush(next: SessionSnapshot) {
+    pendingSnapshot = next;
+    if (snapshotRafId) {
+      return;
+    }
+    snapshotRafId = window.requestAnimationFrame(() => {
+      snapshotRafId = 0;
+      if (pendingSnapshot) {
+        snapshot.value = pendingSnapshot;
+        pendingSnapshot = null;
+      }
+    });
+  }
+
   function pushTimeline(event: TimelineEvent) {
     timeline.value = [event, ...timeline.value].slice(0, 10);
   }
@@ -111,7 +142,12 @@ export const useRuntimeStore = defineStore("runtime", () => {
     // 先订阅事件，再拉初始数据，避免两步之间的 emit 丢失
     // 保存 unlisten 引用，防止 listener 被 GC 回收
     unlisteners.push(await onRuntimeSnapshot((next) => {
-      snapshot.value = next;
+      // 高频 snapshot 只保留最新一帧，避免音频持续接收时前端事件排队，
+      // 导致 UI 补播旧状态而表现为“页面卡住、显示慢于语音”。
+      scheduleSnapshotFlush(next);
+    }));
+    unlisteners.push(await onRealtimeAudioState((next) => {
+      mergeRealtimeAudioState(next);
     }));
     unlisteners.push(await onPresence((next) => {
       presence.value = next;

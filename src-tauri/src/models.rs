@@ -91,6 +91,21 @@ pub struct RuntimeBootstrap {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RealtimeAudioState {
+    pub active_speaker: String,
+    pub active_speaker_ssid: u8,
+    pub rx_level: f32,
+    pub tx_level: f32,
+    pub rx_spectrum: Vec<f32>,
+    pub tx_spectrum: Vec<f32>,
+    pub queued_frames: u32,
+    pub uplink_kbps: f32,
+    pub downlink_kbps: f32,
+    pub is_transmitting: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AtState {
     pub volume: u8,
     pub duck_mic: bool,

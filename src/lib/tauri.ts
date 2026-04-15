@@ -9,6 +9,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ChatMessageEvent,
   PresenceItem,
+  RealtimeAudioState,
   RuntimeConfig,
   SessionSnapshot,
   TimelineEvent,
@@ -92,6 +93,12 @@ export async function onRuntimeSnapshot(
   handler: (snapshot: SessionSnapshot) => void,
 ): Promise<UnlistenFn> {
   return listen<SessionSnapshot>("runtime://snapshot", (event) => handler(event.payload));
+}
+
+export async function onRealtimeAudioState(
+  handler: (audioState: RealtimeAudioState) => void,
+): Promise<UnlistenFn> {
+  return listen<RealtimeAudioState>("runtime://audio-state", (event) => handler(event.payload));
 }
 
 export async function onRuntimeConfig(
