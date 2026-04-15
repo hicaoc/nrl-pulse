@@ -1080,11 +1080,19 @@ async function doUpdate() {
   updateDownloading.value = true;
   updateProgress.value = 0;
   updateTotal.value = 0;
-  await downloadAndInstallUpdate((downloaded, total) => {
-    updateProgress.value = downloaded;
-    updateTotal.value = total ?? 0;
-  });
-  updateDownloading.value = false;
+  try {
+    await downloadAndInstallUpdate((downloaded, total) => {
+      updateProgress.value = downloaded;
+      updateTotal.value = total ?? 0;
+    });
+  } catch (err) {
+    // 下载失败（404、签名校验失败、网络中断等）必须复位 UI，
+    // 否则横幅会永远停在"下载中..."。
+    flog("[update] download/install failed:", String(err));
+    alert(`更新失败: ${String(err)}`);
+  } finally {
+    updateDownloading.value = false;
+  }
 }
 
 async function manualCheckUpdate() {

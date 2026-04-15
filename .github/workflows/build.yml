@@ -354,4 +354,6 @@ jobs:
             nrl-pulse-linux
             nrl-pulse-mac-arm.dmg
             nrl-pulse-mac-x64.dmg
+            nrl-pulse-mac-arm.app.tar.gz
+            nrl-pulse-mac-x64.app.tar.gz
             latest.json
