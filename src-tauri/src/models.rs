@@ -2,6 +2,19 @@ use serde::Serialize;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SerialTunnelSnapshot {
+    pub running: bool,
+    pub supported: bool,
+    pub mode: String,
+    pub port_name: String,
+    pub status: String,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub last_error: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeviceSettings {
     pub input_device: String,
     pub output_device: String,
@@ -87,6 +100,7 @@ pub struct RuntimeBootstrap {
     pub snapshot: SessionSnapshot,
     pub presence: Vec<PresenceItem>,
     pub timeline: Vec<TimelineEvent>,
+    pub serial_tunnel: SerialTunnelSnapshot,
 }
 
 #[derive(Clone, Serialize)]

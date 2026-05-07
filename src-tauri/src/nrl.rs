@@ -104,6 +104,10 @@ impl NrlPacket {
         Self::base_packet(callsign, ssid, 11, data)
     }
 
+    pub fn serial_tunnel(callsign: &str, ssid: u8, data: Vec<u8>) -> Self {
+        Self::base_packet(callsign, ssid, 12, data)
+    }
+
     pub fn callsign_string(&self) -> String {
         String::from_utf8_lossy(&self.callsign)
             .trim_matches(char::from(0))

@@ -6,17 +6,22 @@ import {
   bootstrapRuntime,
   connectSession,
   disconnectSession,
+  getSerialTunnelStatus,
+  listSerialPorts,
   loadRuntimeConfig,
   onRealtimeAudioState,
   onPresence,
   onRuntimeConfig,
   onRuntimeSnapshot,
+  onSerialTunnel,
   onTimeline,
   reconfigureSession,
   saveRuntimeConfig,
   sendTextMessage,
   setTransmit,
+  startSerialTunnel,
   syncAtState,
+  stopSerialTunnel,
   toggleMonitor,
   toggleTransmit,
   updateJitterBuffer,
@@ -25,6 +30,8 @@ import type {
   PresenceItem,
   RealtimeAudioState,
   RuntimeConfig,
+  SerialTunnelConfig,
+  SerialTunnelSnapshot,
   SessionSnapshot,
   TimelineEvent,
 } from "@/types";
@@ -78,7 +85,28 @@ export const useRuntimeStore = defineStore("runtime", () => {
     volume: 1,
     pttKey: "Space",
     voiceSavePath: "",
+    serialTunnel: {
+      mode: "physical",
+      autoStart: false,
+      portName: "",
+      baudRate: 115200,
+      dataBits: 8,
+      parity: "none",
+      stopBits: "one",
+      flowControl: "none",
+    },
   });
+  const serialTunnel = ref<SerialTunnelSnapshot>({
+    running: false,
+    supported: true,
+    mode: "physical",
+    portName: "",
+    status: "stopped",
+    rxBytes: 0,
+    txBytes: 0,
+    lastError: "",
+  });
+  const serialPorts = ref<string[]>([]);
   const bootstrapped = ref(false);
   const busy = ref(false);
   const unlisteners: UnlistenFn[] = [];
@@ -159,13 +187,19 @@ export const useRuntimeStore = defineStore("runtime", () => {
     unlisteners.push(await onRuntimeConfig((next) => {
       config.value = next;
     }));
+    unlisteners.push(await onSerialTunnel((next) => {
+      serialTunnel.value = next;
+    }));
 
     const data = await bootstrapRuntime();
     flog("[runtime] bootstrap snapshot connection=", data.snapshot.connection);
     snapshot.value = data.snapshot;
     presence.value = data.presence;
     timeline.value = data.timeline;
+    serialTunnel.value = data.serialTunnel;
     config.value = await loadRuntimeConfig();
+    serialTunnel.value = await getSerialTunnelStatus();
+    serialPorts.value = await listSerialPorts();
     bootstrapped.value = true;
   }
 
@@ -234,11 +268,36 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await runAction(syncAtState);
   }
 
+  async function startSerial(serialConfig: SerialTunnelConfig) {
+    try {
+      serialTunnel.value = await startSerialTunnel(serialConfig);
+      config.value = { ...config.value, serialTunnel: serialConfig };
+    } catch (e) {
+      flog("[runtime] start serial tunnel error:", String(e));
+      serialTunnel.value = await getSerialTunnelStatus();
+      throw e;
+    }
+  }
+
+  async function stopSerial() {
+    try {
+      serialTunnel.value = await stopSerialTunnel();
+    } catch (e) {
+      flog("[runtime] stop serial tunnel error:", String(e));
+    }
+  }
+
+  async function refreshSerialPorts() {
+    serialPorts.value = await listSerialPorts();
+  }
+
   return {
     snapshot,
     presence,
     timeline,
     config,
+    serialTunnel,
+    serialPorts,
     bootstrapped,
     busy,
     connectionText,
@@ -254,5 +313,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     saveConfig,
     reconnectWithConfig,
     syncAt,
+    startSerial,
+    stopSerial,
+    refreshSerialPorts,
   };
 });

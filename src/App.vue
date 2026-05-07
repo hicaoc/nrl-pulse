@@ -19,7 +19,7 @@ import {
 import type { UpdateInfo } from "@/lib/tauri";
 import { usePlatformStore } from "@/stores/platform";
 import { useRuntimeStore } from "@/stores/runtime";
-import type { ChatMessageEvent, PlatformRegisterPayload } from "@/types";
+import type { ChatMessageEvent, PlatformRegisterPayload, SerialTunnelConfig } from "@/types";
 
 type Lang = "zh" | "en";
 
@@ -64,6 +64,16 @@ const isPttWindow = window.location.hash === "#ptt";
 const draftMessage = ref("");
 const pttKeyDraft = ref("Space");
 const voiceSavePathDraft = ref("");
+const serialTunnelDraft = ref<SerialTunnelConfig>({
+  mode: "physical",
+  autoStart: false,
+  portName: "",
+  baudRate: 115200,
+  dataBits: 8,
+  parity: "none",
+  stopBits: "one",
+  flowControl: "none",
+});
 const defaultAudioPath = ref("");
 const showSettings = ref(false);
 const showLogs = ref(false);
@@ -83,7 +93,12 @@ const holdActivated = ref(false);
 const holdTimerId = ref<number | null>(null);
 const animationTimerId = ref<number | null>(null);
 const clockTimerId = ref<number | null>(null);
+const serialRateTimerId = ref<number | null>(null);
 const animationTick = ref(0);
+const serialRxBps = ref(0);
+const serialTxBps = ref(0);
+const serialRxActive = ref(false);
+const serialTxActive = ref(false);
 const language = ref<Lang>((localStorage.getItem("nrl-pulse-lang") as Lang) || "zh");
 const chatMessages = shallowRef<
   ChatMessageEvent[]
@@ -118,6 +133,7 @@ const meterPeakLevel = new Map<"rx" | "tx", number>();
 const rxPeakDisplay = ref(0);
 const txPeakDisplay = ref(0);
 const spectrumHoverIndex = ref<number | null>(null);
+let serialRateLast = { rxBytes: 0, txBytes: 0, at: 0 };
 const spectrumDisplayLevels = ref<number[]>([]);
 const spectrumPeakLevels = ref<number[]>([]);
 
@@ -714,6 +730,30 @@ const messages = {
     outputDevice: "输出设备",
     sampleRate: "采样率",
     voiceSavePath: "语音保存路径",
+    serialTunnel: "串口透传",
+    serialData: "串口数据",
+    serialRx: "RX",
+    serialTx: "TX",
+    serialModePhysical: "物理串口",
+    serialPort: "选择串口",
+    noSerialPorts: "未发现串口",
+    baudRate: "波特率",
+    dataBits: "数据位",
+    parity: "校验",
+    stopBits: "停止位",
+    flowControl: "流控",
+    serialStats: "收发",
+    startSerial: "启动",
+    stopSerial: "关闭串口",
+    serialUnsupported: "当前系统不支持物理串口桥接",
+    parityNone: "无",
+    parityOdd: "奇",
+    parityEven: "偶",
+    stopOne: "1 位",
+    stopTwo: "2 位",
+    flowNone: "无",
+    flowSoftware: "软件",
+    flowHardware: "硬件",
     jitterBuffer: "抖动缓冲",
     agc: "AGC",
     noiseSuppression: "降噪",
@@ -849,6 +889,30 @@ const messages = {
     outputDevice: "Output",
     sampleRate: "Sample Rate",
     voiceSavePath: "Voice Save Path",
+    serialTunnel: "Serial Tunnel",
+    serialData: "Serial Data",
+    serialRx: "RX",
+    serialTx: "TX",
+    serialModePhysical: "Physical Port",
+    serialPort: "Port",
+    noSerialPorts: "No Serial Ports",
+    baudRate: "Baud Rate",
+    dataBits: "Data Bits",
+    parity: "Parity",
+    stopBits: "Stop Bits",
+    flowControl: "Flow Control",
+    serialStats: "RX/TX",
+    startSerial: "Start",
+    stopSerial: "Stop Serial",
+    serialUnsupported: "Physical serial bridge is not supported on this system",
+    parityNone: "None",
+    parityOdd: "Odd",
+    parityEven: "Even",
+    stopOne: "1 bit",
+    stopTwo: "2 bits",
+    flowNone: "None",
+    flowSoftware: "Software",
+    flowHardware: "Hardware",
     jitterBuffer: "Jitter Buffer",
     agc: "AGC",
     noiseSuppression: "Noise Reduction",
@@ -1026,9 +1090,33 @@ function formatDualDb(primary: number, peak: number): string {
   return `${primaryText} · ${peakText} dB`;
 }
 
+function formatBitRate(value: number): string {
+  return `${Math.max(0, Math.round(value))} bit/s`;
+}
+
 const rxLevelDb = computed(() => formatDualDb(runtime.snapshot.rxLevel, rxPeakDisplay.value));
 
 const txLevelDb = computed(() => formatDualDb(runtime.snapshot.txLevel, txPeakDisplay.value));
+const serialStatusText = computed(() => {
+  if (!runtime.serialTunnel.supported) return t.value.serialUnsupported;
+  if (runtime.serialTunnel.running) {
+    return `${t.value.serialModePhysical} · ${runtime.serialTunnel.portName} · ${runtime.serialTunnel.status}`;
+  }
+  return "";
+});
+const serialPortOptions = computed(() => {
+  return [...runtime.serialPorts];
+});
+
+function normalizedSerialDraft(): SerialTunnelConfig {
+  return {
+    ...serialTunnelDraft.value,
+    mode: "physical",
+    portName: serialTunnelDraft.value.portName.trim(),
+    baudRate: Number(serialTunnelDraft.value.baudRate),
+    dataBits: Number(serialTunnelDraft.value.dataBits),
+  };
+}
 
 function describeCallsignRegion(callsign: string) {
   const match = callsign.toUpperCase().match(/[A-Z]+(\d)/);
@@ -1073,6 +1161,28 @@ function stopClockTimer() {
     window.clearInterval(clockTimerId.value);
     clockTimerId.value = null;
   }
+}
+
+function stopSerialRateTimer() {
+  if (serialRateTimerId.value !== null) {
+    window.clearInterval(serialRateTimerId.value);
+    serialRateTimerId.value = null;
+  }
+}
+
+function updateSerialRates() {
+  const now = performance.now();
+  const elapsedSec = Math.max(0.001, (now - serialRateLast.at) / 1000);
+  const rxBytes = runtime.serialTunnel.rxBytes;
+  const txBytes = runtime.serialTunnel.txBytes;
+  const rxDelta = Math.max(0, rxBytes - serialRateLast.rxBytes);
+  const txDelta = Math.max(0, txBytes - serialRateLast.txBytes);
+
+  serialRxBps.value = (rxDelta * 8) / elapsedSec;
+  serialTxBps.value = (txDelta * 8) / elapsedSec;
+  serialRxActive.value = rxDelta > 0;
+  serialTxActive.value = txDelta > 0;
+  serialRateLast = { rxBytes, txBytes, at: now };
 }
 
 function scheduleHoldActivation() {
@@ -1179,7 +1289,27 @@ async function saveNetworkConfig() {
     ...runtime.config,
     pttKey: pttKeyDraft.value,
     voiceSavePath: voiceSavePathDraft.value,
+    serialTunnel: normalizedSerialDraft(),
   });
+}
+
+async function startSerialTunnelUi() {
+  try {
+    await runtime.startSerial(normalizedSerialDraft());
+  } catch (error) {
+    alert(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function stopSerialTunnelUi() {
+  await runtime.stopSerial();
+}
+
+async function refreshSerialPortsUi() {
+  await runtime.refreshSerialPorts();
+  if (!runtime.serialPorts.includes(serialTunnelDraft.value.portName)) {
+    serialTunnelDraft.value.portName = "";
+  }
 }
 
 async function toggleFloatingPtt() {
@@ -1308,6 +1438,7 @@ async function switchGroup(groupId: number) {
 function syncConfigDrafts() {
   pttKeyDraft.value = runtime.config.pttKey;
   voiceSavePathDraft.value = runtime.config.voiceSavePath || "";
+  serialTunnelDraft.value = { ...runtime.config.serialTunnel };
 }
 
 onMounted(async () => {
@@ -1339,6 +1470,12 @@ onMounted(async () => {
   clockTimerId.value = window.setInterval(() => {
     currentTime.value = new Date();
   }, 1000);
+  serialRateLast = {
+    rxBytes: runtime.serialTunnel.rxBytes,
+    txBytes: runtime.serialTunnel.txBytes,
+    at: performance.now(),
+  };
+  serialRateTimerId.value = window.setInterval(updateSerialRates, 500);
   window.addEventListener("resize", redrawWaveforms);
   window.addEventListener("resize", redrawRealtimeCanvases);
   if (!isPttWindow) {
@@ -1394,6 +1531,7 @@ onBeforeUnmount(() => {
   clearHoldTimer();
   stopAnimationTimer();
   stopClockTimer();
+  stopSerialRateTimer();
   window.removeEventListener("keydown", handleGlobalKeydown);
   window.removeEventListener("keyup", handleGlobalKeyup);
   window.removeEventListener("resize", redrawWaveforms);
@@ -1429,6 +1567,16 @@ watch(
   () => runtime.config,
   () => {
     syncConfigDrafts();
+  },
+  { deep: true },
+);
+
+watch(
+  () => runtime.serialPorts,
+  (ports) => {
+    if (serialTunnelDraft.value.portName && !ports.includes(serialTunnelDraft.value.portName)) {
+      serialTunnelDraft.value.portName = "";
+    }
   },
   { deep: true },
 );
@@ -1529,6 +1677,20 @@ watch(
               <canvas ref="txMeterCanvas" class="mini-meter-canvas" width="120" height="10"></canvas>
             </div>
             <strong>{{ platform.loggedIn ? txLevelDb : "-∞ dB" }}</strong>
+          </div>
+        </div>
+      </div>
+      <div class="summary-item summary-serial" :title="t.serialData">
+        <div class="serial-rate-stack">
+          <div class="serial-rate-row">
+            <span class="serial-led" :data-active="serialRxActive"></span>
+            <span>{{ t.serialRx }}</span>
+            <strong>{{ formatBitRate(serialRxBps) }}</strong>
+          </div>
+          <div class="serial-rate-row">
+            <span class="serial-led" :data-active="serialTxActive"></span>
+            <span>{{ t.serialTx }}</span>
+            <strong>{{ formatBitRate(serialTxBps) }}</strong>
           </div>
         </div>
       </div>
@@ -1844,6 +2006,84 @@ watch(
             <button class="ghost-btn compact" @click="browseVoicePath">
               {{ language === 'zh' ? '浏览' : 'Browse' }}
             </button>
+          </div>
+        </div>
+        <div class="serial-tunnel-box">
+          <div class="serial-tunnel-head">
+            <div>
+              <span>{{ t.serialTunnel }}</span>
+              <strong>{{ serialStatusText }}</strong>
+            </div>
+          </div>
+          <div class="setting-form serial-form">
+            <div class="serial-port-row">
+              <label class="serial-port-field" :title="t.serialPort">
+                <span>{{ t.serialPort }}</span>
+                <select
+                  v-model="serialTunnelDraft.portName"
+                  @focus="refreshSerialPortsUi"
+                  @pointerdown="refreshSerialPortsUi"
+                  @change="saveNetworkConfig"
+                >
+                  <option value=""></option>
+                  <option v-for="port in serialPortOptions" :key="port" :value="port">
+                    {{ port }}
+                  </option>
+                </select>
+              </label>
+              <button
+                class="ghost-btn compact serial-start-btn"
+                :disabled="runtime.busy || !runtime.serialTunnel.supported || !serialTunnelDraft.portName"
+                @click="runtime.serialTunnel.running ? stopSerialTunnelUi() : startSerialTunnelUi()"
+              >
+                {{ runtime.serialTunnel.running ? t.stopSerial : t.startSerial }}
+              </button>
+            </div>
+            <label>
+              <span>{{ t.baudRate }}</span>
+              <select v-model.number="serialTunnelDraft.baudRate" @change="saveNetworkConfig">
+                <option :value="9600">9600</option>
+                <option :value="19200">19200</option>
+                <option :value="38400">38400</option>
+                <option :value="57600">57600</option>
+                <option :value="115200">115200</option>
+                <option :value="230400">230400</option>
+              </select>
+            </label>
+            <label>
+              <span>{{ t.dataBits }}</span>
+              <select v-model.number="serialTunnelDraft.dataBits" @change="saveNetworkConfig">
+                <option :value="7">7</option>
+                <option :value="8">8</option>
+              </select>
+            </label>
+            <label>
+              <span>{{ t.parity }}</span>
+              <select v-model="serialTunnelDraft.parity" @change="saveNetworkConfig">
+                <option value="none">{{ t.parityNone }}</option>
+                <option value="odd">{{ t.parityOdd }}</option>
+                <option value="even">{{ t.parityEven }}</option>
+              </select>
+            </label>
+            <label>
+              <span>{{ t.stopBits }}</span>
+              <select v-model="serialTunnelDraft.stopBits" @change="saveNetworkConfig">
+                <option value="one">{{ t.stopOne }}</option>
+                <option value="two">{{ t.stopTwo }}</option>
+              </select>
+            </label>
+            <label>
+              <span>{{ t.flowControl }}</span>
+              <select v-model="serialTunnelDraft.flowControl" @change="saveNetworkConfig">
+                <option value="none">{{ t.flowNone }}</option>
+                <option value="software">{{ t.flowSoftware }}</option>
+                <option value="hardware">{{ t.flowHardware }}</option>
+              </select>
+            </label>
+          </div>
+          <div class="setting-row serial-stats-row">
+            <span>{{ t.serialStats }}</span>
+            <strong>{{ formatBytes(runtime.serialTunnel.rxBytes) }} / {{ formatBytes(runtime.serialTunnel.txBytes) }}</strong>
           </div>
         </div>
       </div>

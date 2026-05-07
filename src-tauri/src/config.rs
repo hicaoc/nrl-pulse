@@ -4,6 +4,34 @@ use tauri::{AppHandle, Manager};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+pub struct SerialTunnelConfig {
+    pub mode: String,
+    pub auto_start: bool,
+    pub port_name: String,
+    pub baud_rate: u32,
+    pub data_bits: u8,
+    pub parity: String,
+    pub stop_bits: String,
+    pub flow_control: String,
+}
+
+impl Default for SerialTunnelConfig {
+    fn default() -> Self {
+        Self {
+            mode: "physical".into(),
+            auto_start: false,
+            port_name: String::new(),
+            baud_rate: 115_200,
+            data_bits: 8,
+            parity: "none".into(),
+            stop_bits: "one".into(),
+            flow_control: "none".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct RuntimeConfig {
     pub server: String,
     pub port: u16,
@@ -18,6 +46,7 @@ pub struct RuntimeConfig {
     pub volume: f32,
     pub ptt_key: String,
     pub voice_save_path: String,
+    pub serial_tunnel: SerialTunnelConfig,
 }
 
 impl Default for RuntimeConfig {
@@ -36,6 +65,7 @@ impl Default for RuntimeConfig {
             volume: 1.0,
             ptt_key: "Space".into(),
             voice_save_path: String::new(),
+            serial_tunnel: SerialTunnelConfig::default(),
         }
     }
 }
@@ -50,6 +80,7 @@ pub fn load_or_default(app: &AppHandle) -> RuntimeConfig {
     if config.ptt_key.trim().is_empty() {
         config.ptt_key = "Space".into();
     }
+    normalize_serial_tunnel(&mut config.serial_tunnel);
     config
 }
 
@@ -63,8 +94,43 @@ pub fn save(app: &AppHandle, config: &RuntimeConfig) -> Result<(), String> {
     if normalized.ptt_key.trim().is_empty() {
         normalized.ptt_key = "Space".into();
     }
+    normalize_serial_tunnel(&mut normalized.serial_tunnel);
     let raw = serde_json::to_string_pretty(&normalized).map_err(|err| err.to_string())?;
     std::fs::write(path, raw).map_err(|err| err.to_string())
+}
+
+fn normalize_serial_tunnel(config: &mut SerialTunnelConfig) {
+    config.mode = "physical".into();
+    config.auto_start = false;
+    config.port_name = config.port_name.trim().to_string();
+    #[cfg(target_os = "windows")]
+    {
+        config.port_name = config.port_name.to_uppercase();
+    }
+    #[cfg(target_os = "windows")]
+    if !config.port_name.starts_with("COM")
+        && config.port_name.chars().all(|ch| ch.is_ascii_digit())
+    {
+        config.port_name = format!("COM{}", config.port_name);
+    }
+    if config.baud_rate == 0 {
+        config.baud_rate = SerialTunnelConfig::default().baud_rate;
+    }
+    if !matches!(config.data_bits, 5 | 6 | 7 | 8) {
+        config.data_bits = 8;
+    }
+    if !matches!(config.parity.as_str(), "none" | "odd" | "even") {
+        config.parity = "none".into();
+    }
+    if !matches!(config.stop_bits.as_str(), "one" | "two") {
+        config.stop_bits = "one".into();
+    }
+    if !matches!(
+        config.flow_control.as_str(),
+        "none" | "software" | "hardware"
+    ) {
+        config.flow_control = "none".into();
+    }
 }
 
 fn config_path(app: &AppHandle) -> PathBuf {

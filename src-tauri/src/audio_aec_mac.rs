@@ -5,7 +5,6 @@
 /// noise suppression before delivering samples to the input callback.
 /// Frames are resampled to 8 kHz mono and pushed through the same
 /// `UnboundedSender<Vec<i16>>` used by the cpal path.
-
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,31 +12,26 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 
 use coreaudio_sys::{
-    kAudioUnitManufacturer_Apple,
-    kAudioUnitSubType_VoiceProcessingIO,
-    kAudioUnitType_Output,
+    kAudioFormatFlagIsFloat, kAudioFormatFlagIsPacked, kAudioFormatLinearPCM,
+    kAudioOutputUnitProperty_EnableIO, kAudioUnitManufacturer_Apple,
+    kAudioUnitProperty_StreamFormat, kAudioUnitScope_Global, kAudioUnitScope_Input,
+    kAudioUnitScope_Output, kAudioUnitSubType_VoiceProcessingIO, kAudioUnitType_Output,
     AudioBufferList, AudioComponent, AudioComponentDescription, AudioComponentFindNext,
-    AudioComponentInstanceNew, AudioStreamBasicDescription,
-    AudioTimeStamp, AudioUnit, AudioUnitElement,
-    AudioUnitGetProperty, AudioUnitInitialize, AudioUnitRenderActionFlags,
+    AudioComponentInstanceNew, AudioStreamBasicDescription, AudioTimeStamp, AudioUnit,
+    AudioUnitElement, AudioUnitGetProperty, AudioUnitInitialize, AudioUnitRenderActionFlags,
     AudioUnitSetProperty, OSStatus,
-    kAudioFormatFlagIsFloat, kAudioFormatFlagIsPacked,
-    kAudioFormatLinearPCM,
-    kAudioOutputUnitProperty_EnableIO,
-    kAudioUnitProperty_StreamFormat,
-    kAudioUnitScope_Global, kAudioUnitScope_Input, kAudioUnitScope_Output,
 };
 
-use rubato::{Fft, FixedSync, Resampler};
 use audioadapter_buffers::direct::SequentialSliceOfVecs;
 use rubato::audioadapter::AdapterIterators;
+use rubato::{Fft, FixedSync, Resampler};
 
 const TARGET_RATE: u32 = 8_000;
 const VOICE_FRAME: usize = 160;
 
 // Bus indices for VoiceProcessingIO
 const BUS_OUTPUT: AudioUnitElement = 0; // speaker output
-const BUS_INPUT: AudioUnitElement = 1;  // microphone input
+const BUS_INPUT: AudioUnitElement = 1; // microphone input
 
 // ── public API ───────────────────────────────────────────────────────────────
 
@@ -266,7 +260,13 @@ unsafe extern "C" fn input_render_callback(
 ) -> OSStatus {
     // Reconstruct Arc without consuming it (we'll see it again next callback)
     let state_arc = Arc::from_raw(in_ref_con as *const Mutex<CallbackState>);
-    let result = process_input(&state_arc, _io_action_flags, in_time_stamp, in_bus_number, in_number_frames);
+    let result = process_input(
+        &state_arc,
+        _io_action_flags,
+        in_time_stamp,
+        in_bus_number,
+        in_number_frames,
+    );
     // Keep the Arc alive — put it back
     std::mem::forget(state_arc);
     result
@@ -348,10 +348,7 @@ unsafe fn process_input(
                             let pcm = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
                             frame.push(pcm);
                             if frame.len() == VOICE_FRAME {
-                                let out = std::mem::replace(
-                                    frame,
-                                    Vec::with_capacity(VOICE_FRAME),
-                                );
+                                let out = std::mem::replace(frame, Vec::with_capacity(VOICE_FRAME));
                                 let _ = sender.send(out);
                             }
                         }
@@ -364,10 +361,7 @@ unsafe fn process_input(
             let pcm = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
             frame.push(pcm);
             if frame.len() == VOICE_FRAME {
-                let out = std::mem::replace(
-                    frame,
-                    Vec::with_capacity(VOICE_FRAME),
-                );
+                let out = std::mem::replace(frame, Vec::with_capacity(VOICE_FRAME));
                 let _ = sender.send(out);
             }
         }

@@ -103,6 +103,19 @@ impl UdpSession {
         .await
     }
 
+    pub async fn send_serial_tunnel(
+        &self,
+        config: &RuntimeConfig,
+        data: Vec<u8>,
+    ) -> Result<(), String> {
+        self.send_packet(NrlPacket::serial_tunnel(
+            &config.callsign,
+            config.ssid,
+            data,
+        ))
+        .await
+    }
+
     pub async fn send_voice_frame(
         &self,
         config: &RuntimeConfig,
@@ -285,6 +298,13 @@ async fn handle_packet(
                     .push_runtime_event("AT 解析失败", "收到无法识别的 AT 数据", "warn")
                     .await;
             }
+        }
+        12 => {
+            runtime
+                .note_remote_activity(&packet.callsign_string(), packet.ssid, "online")
+                .await;
+            runtime.write_serial_tunnel_data(&packet.data).await;
+            runtime.throttled_emit_snapshot(app).await;
         }
         _ => {
             runtime

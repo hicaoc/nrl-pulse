@@ -470,7 +470,7 @@ textarea {
 
 .topbar {
   display: grid;
-  grid-template-columns: auto minmax(180px, 1fr) auto;
+  grid-template-columns: auto minmax(180px, 1fr) auto auto;
   align-items: center;
   gap: var(--gap-md);
   margin-bottom: var(--gap-lg);
@@ -566,6 +566,70 @@ textarea {
   width: 100%;
   min-width: 0;
   max-width: none;
+}
+
+.summary-serial {
+  width: 154px;
+  min-width: 154px;
+  max-width: 154px;
+  display: grid;
+  align-content: center;
+}
+
+.serial-rate-stack {
+  display: grid;
+  gap: 5px;
+}
+
+.serial-rate-row {
+  display: grid;
+  grid-template-columns: 9px 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.serial-rate-row span,
+.serial-rate-row strong {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.serial-rate-row span:not(.serial-led) {
+  color: var(--text-dim);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+}
+
+.serial-rate-row strong {
+  min-width: 0;
+  color: #f7f2e8;
+  font-size: 0.75rem;
+  font-weight: 650;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.serial-led {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(104, 123, 139, 0.58);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+  transition:
+    background 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.12s ease;
+}
+
+.serial-led[data-active="true"] {
+  background: #66e3a3;
+  box-shadow:
+    0 0 0 1px rgba(223, 255, 238, 0.2) inset,
+    0 0 12px rgba(102, 227, 163, 0.64);
+  transform: scale(1.18);
 }
 
 .signal-stack {
@@ -1441,6 +1505,73 @@ textarea {
   background: rgba(255, 255, 255, 0.1);
 }
 
+.serial-tunnel-box {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.serial-tunnel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.serial-tunnel-head div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.serial-tunnel-head span,
+.serial-stats-row span {
+  color: var(--text-dim);
+}
+
+.serial-tunnel-head strong {
+  color: #f7f2e8;
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.serial-form {
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 0.58fr) minmax(0, 0.92fr) minmax(0, 0.9fr);
+  margin-bottom: 0;
+}
+
+.serial-port-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.76fr) auto;
+  grid-column: span 3;
+  align-items: end;
+  gap: 10px;
+}
+
+.serial-port-row label {
+  min-width: 0;
+}
+
+.serial-port-field {
+  align-self: end;
+}
+
+.serial-start-btn {
+  min-height: 46px;
+}
+
+.serial-stats-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
 .jitter-editor {
   margin: 22px 0;
   padding: 16px;
@@ -1845,6 +1976,22 @@ input[type="range"] {
 }
 
 @media (max-width: 720px) {
+  .topbar {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .summary-serial {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+  }
+
   .card {
     border-radius: 22px;
   }
@@ -1864,6 +2011,11 @@ input[type="range"] {
   .flag-grid,
   .setting-form {
     grid-template-columns: 1fr;
+  }
+
+  .serial-port-row {
+    grid-template-columns: 1fr;
+    grid-column: span 1;
   }
 
   .signal-row {

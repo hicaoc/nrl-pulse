@@ -1,18 +1,18 @@
 use audioadapter_buffers::direct::SequentialSliceOfVecs;
-use rubato::audioadapter::AdapterIterators;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
+use rubato::audioadapter::AdapterIterators;
 use rubato::{Fft, FixedSync, Resampler};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-use crate::models::DeviceSettings;
-#[cfg(target_os = "windows")]
-use crate::audio_aec_win::AecCapture;
 #[cfg(target_os = "macos")]
 use crate::audio_aec_mac::AecCapture;
+#[cfg(target_os = "windows")]
+use crate::audio_aec_win::AecCapture;
+use crate::models::DeviceSettings;
 
 const TARGET_SAMPLE_RATE: u32 = 8_000;
 const VOICE_FRAME_SAMPLES: usize = 160;
@@ -79,7 +79,11 @@ impl PlaybackState {
                     buf.pop_front();
                 }
             }
-            PlaybackRenderer::Resampling { ring, out_buf, resampler } => {
+            PlaybackRenderer::Resampling {
+                ring,
+                out_buf,
+                resampler,
+            } => {
                 for &sample in pcm.iter() {
                     ring.push_back(sample as f32 / 32768.0);
                 }
@@ -192,7 +196,11 @@ impl CaptureProcessor {
 
     fn process(&mut self, mono_input: &[i16]) {
         match self {
-            CaptureProcessor::Passthrough { sender, frame, transmitting } => {
+            CaptureProcessor::Passthrough {
+                sender,
+                frame,
+                transmitting,
+            } => {
                 if !transmitting.load(Ordering::Relaxed) {
                     frame.clear();
                     return;
@@ -242,7 +250,10 @@ impl CaptureProcessor {
                                     let s = (sample * 32768.0).clamp(-32768.0, 32767.0) as i16;
                                     frame.push(s);
                                     if frame.len() == VOICE_FRAME_SAMPLES {
-                                        let out = std::mem::replace(frame, Vec::with_capacity(VOICE_FRAME_SAMPLES));
+                                        let out = std::mem::replace(
+                                            frame,
+                                            Vec::with_capacity(VOICE_FRAME_SAMPLES),
+                                        );
                                         let _ = sender.send(out);
                                     }
                                 }
@@ -341,7 +352,10 @@ impl AudioEngine {
         let mut input_rate = TARGET_SAMPLE_RATE;
         let mut input_resampling = false;
         let mut input_stream = None;
-        #[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(unused_mut))]
+        #[cfg_attr(
+            not(any(target_os = "windows", target_os = "macos")),
+            allow(unused_mut)
+        )]
         let mut aec_enabled = false;
         {
             let mut rx_guard = self
@@ -440,21 +454,26 @@ impl AudioEngine {
         inner.output_stream = Some(output_stream);
         inner.input_stream = input_stream;
         #[cfg(any(target_os = "windows", target_os = "macos"))]
-        { inner.aec_capture = aec_capture; }
+        {
+            inner.aec_capture = aec_capture;
+        }
 
-        Ok((DeviceSettings {
-            input_device: input_name,
-            output_device: output_name,
-            sample_rate: TARGET_SAMPLE_RATE,
-            input_device_rate: input_rate,
-            output_device_rate: output_rate,
-            input_resampling,
-            output_resampling,
-            jitter_buffer_ms: 120,
-            agc_enabled: false,
-            noise_suppression: false,
-            aec_enabled,
-        }, logs))
+        Ok((
+            DeviceSettings {
+                input_device: input_name,
+                output_device: output_name,
+                sample_rate: TARGET_SAMPLE_RATE,
+                input_device_rate: input_rate,
+                output_device_rate: output_rate,
+                input_resampling,
+                output_resampling,
+                jitter_buffer_ms: 120,
+                agc_enabled: false,
+                noise_suppression: false,
+                aec_enabled,
+            },
+            logs,
+        ))
     }
 
     pub fn stop(&self) {
@@ -463,11 +482,17 @@ impl AudioEngine {
             inner.input_stream = None;
             inner.output_stream = None;
             #[cfg(any(target_os = "windows", target_os = "macos"))]
-            { inner.aec_capture = None; }
+            {
+                inner.aec_capture = None;
+            }
             if let Ok(mut playback) = inner.playback.lock() {
                 match &mut playback.renderer {
                     PlaybackRenderer::Passthrough(buf) => buf.clear(),
-                    PlaybackRenderer::Resampling { ring, out_buf, resampler } => {
+                    PlaybackRenderer::Resampling {
+                        ring,
+                        out_buf,
+                        resampler,
+                    } => {
                         ring.clear();
                         out_buf.clear();
                         resampler.reset();
@@ -508,7 +533,9 @@ fn build_input_stream(
     let channels = config.channels as usize;
     eprintln!(
         "[Audio] Input stream: {}Hz, {} ch, format={:?}",
-        config.sample_rate.0, channels, supported.sample_format()
+        config.sample_rate.0,
+        channels,
+        supported.sample_format()
     );
     let state = Arc::new(Mutex::new(CaptureProcessor::new(
         config.sample_rate.0,
@@ -562,7 +589,9 @@ fn build_output_stream(
     let channels = config.channels as usize;
     eprintln!(
         "[Audio] Output stream: {}Hz, {} ch, format={:?}",
-        config.sample_rate.0, channels, supported.sample_format()
+        config.sample_rate.0,
+        channels,
+        supported.sample_format()
     );
     match supported.sample_format() {
         SampleFormat::F32 => {

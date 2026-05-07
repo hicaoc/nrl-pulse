@@ -9,35 +9,30 @@
 /// The resulting 8 kHz mono frames go through the same
 /// `UnboundedSender<Vec<i16>>` used by the cpal fallback path, so upper
 /// layers see no difference.
-
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use audioadapter_buffers::direct::SequentialSliceOfVecs;
+use rubato::audioadapter::AdapterIterators;
+use rubato::{Fft, FixedSync, Resampler};
 use tokio::sync::mpsc::UnboundedSender;
 use windows::{
     core::{Interface, GUID, PCWSTR},
     Win32::{
         Foundation::{CloseHandle, FALSE, WAIT_OBJECT_0},
         Media::Audio::{
-            eCapture, eCommunications, eRender,
-            AudioCategory_Communications,
-            AudioClientProperties,
-            IAudioCaptureClient, IAudioClient, IAudioClient2,
-            IMMDeviceEnumerator, MMDeviceEnumerator,
-            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            AUDCLNT_STREAMOPTIONS_NONE, WAVEFORMATEX,
+            eCapture, eCommunications, eRender, AudioCategory_Communications,
+            AudioClientProperties, IAudioCaptureClient, IAudioClient, IAudioClient2,
+            IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMOPTIONS_NONE, WAVEFORMATEX,
         },
         System::Com::{
-            CoCreateInstance, CoInitializeEx, CoTaskMemFree,
-            CLSCTX_ALL, COINIT_MULTITHREADED,
+            CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED,
         },
         System::Threading::{CreateEventW, WaitForSingleObject},
     },
 };
-use rubato::{Fft, FixedSync, Resampler};
-use audioadapter_buffers::direct::SequentialSliceOfVecs;
-use rubato::audioadapter::AdapterIterators;
 
 const TARGET_RATE: u32 = 8_000;
 const VOICE_FRAME: usize = 160;
@@ -86,9 +81,7 @@ impl AecCapture {
                 device_rate: rate,
                 device_name: name,
             }),
-            Ok(Err(e)) => {
-                Err(e)
-            }
+            Ok(Err(e)) => Err(e),
             Err(_) => Err("AEC init timed out".into()),
         }
     }
@@ -289,8 +282,7 @@ fn run_aec_thread(
 
                 // Convert interleaved float32 to mono f32
                 let total_samples = frames_available as usize * capture_channels;
-                let float_slice =
-                    std::slice::from_raw_parts(data_ptr as *const f32, total_samples);
+                let float_slice = std::slice::from_raw_parts(data_ptr as *const f32, total_samples);
 
                 for frame_chunk in float_slice.chunks(capture_channels.max(1)) {
                     let sum: f32 = frame_chunk.iter().copied().sum();
@@ -306,14 +298,12 @@ fn run_aec_thread(
                     while in_ring.len() >= chunk_size {
                         let chunk: Vec<f32> = in_ring.drain(..chunk_size).collect();
                         let input_data = vec![chunk];
-                        if let Ok(adapter) =
-                            SequentialSliceOfVecs::new(&input_data, 1, chunk_size)
+                        if let Ok(adapter) = SequentialSliceOfVecs::new(&input_data, 1, chunk_size)
                         {
                             if let Ok(out) = rs.process(&adapter, 0, None) {
                                 if let Some(iter) = out.iter_channel(0) {
                                     for s in iter {
-                                        let pcm =
-                                            (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
+                                        let pcm = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
                                         frame.push(pcm);
                                         if frame.len() == VOICE_FRAME {
                                             let out = std::mem::replace(
@@ -333,10 +323,8 @@ fn run_aec_thread(
                         let pcm = (s * 32768.0).clamp(-32768.0, 32767.0) as i16;
                         frame.push(pcm);
                         if frame.len() == VOICE_FRAME {
-                            let out = std::mem::replace(
-                                &mut frame,
-                                Vec::with_capacity(VOICE_FRAME),
-                            );
+                            let out =
+                                std::mem::replace(&mut frame, Vec::with_capacity(VOICE_FRAME));
                             let _ = sender.send(out);
                         }
                     }
@@ -355,14 +343,16 @@ fn run_aec_thread(
 unsafe fn get_device_friendly_name(
     device: &windows::Win32::Media::Audio::IMMDevice,
 ) -> Result<String, String> {
-    use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
-    use windows::Win32::System::Com::STGM_READ;
     use windows::core::PROPVARIANT;
+    use windows::Win32::System::Com::STGM_READ;
+    use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 
     // PKEY_Device_FriendlyName
     let pkey = windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY {
         fmtid: GUID::from_values(
-            0xa45c254e, 0xdf1c, 0x4efd,
+            0xa45c254e,
+            0xdf1c,
+            0x4efd,
             [0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0],
         ),
         pid: 14,

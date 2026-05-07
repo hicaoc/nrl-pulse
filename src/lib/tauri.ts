@@ -11,6 +11,8 @@ import type {
   PresenceItem,
   RealtimeAudioState,
   RuntimeConfig,
+  SerialTunnelConfig,
+  SerialTunnelSnapshot,
   SessionSnapshot,
   TimelineEvent,
 } from "@/types";
@@ -19,6 +21,7 @@ export interface RuntimeBootstrap {
   snapshot: SessionSnapshot;
   presence: PresenceItem[];
   timeline: TimelineEvent[];
+  serialTunnel: SerialTunnelSnapshot;
 }
 
 export async function bootstrapRuntime(): Promise<RuntimeBootstrap> {
@@ -69,6 +72,22 @@ export async function syncAtState(): Promise<SessionSnapshot> {
   return invoke<SessionSnapshot>("sync_at_state");
 }
 
+export async function getSerialTunnelStatus(): Promise<SerialTunnelSnapshot> {
+  return invoke<SerialTunnelSnapshot>("get_serial_tunnel_status");
+}
+
+export async function startSerialTunnel(config: SerialTunnelConfig): Promise<SerialTunnelSnapshot> {
+  return invoke<SerialTunnelSnapshot>("start_serial_tunnel", { config });
+}
+
+export async function stopSerialTunnel(): Promise<SerialTunnelSnapshot> {
+  return invoke<SerialTunnelSnapshot>("stop_serial_tunnel");
+}
+
+export async function listSerialPorts(): Promise<string[]> {
+  return invoke<string[]>("list_serial_ports");
+}
+
 export async function getDefaultAudioDir(): Promise<string> {
   return invoke<string>("get_default_audio_dir");
 }
@@ -109,6 +128,12 @@ export async function onRuntimeConfig(
   handler: (config: RuntimeConfig) => void,
 ): Promise<UnlistenFn> {
   return listen<RuntimeConfig>("runtime://config", (event) => handler(event.payload));
+}
+
+export async function onSerialTunnel(
+  handler: (snapshot: SerialTunnelSnapshot) => void,
+): Promise<UnlistenFn> {
+  return listen<SerialTunnelSnapshot>("runtime://serial-tunnel", (event) => handler(event.payload));
 }
 
 export async function onPresence(

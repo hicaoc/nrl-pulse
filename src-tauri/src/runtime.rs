@@ -1,20 +1,21 @@
+use rustfft::num_complex::Complex32;
+use rustfft::{Fft, FftPlanner};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
-use rustfft::num_complex::Complex32;
-use rustfft::{Fft, FftPlanner};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
 
 use crate::audio::AudioEngine;
-use crate::config::RuntimeConfig;
+use crate::config::{RuntimeConfig, SerialTunnelConfig};
 use crate::models::{
-    AtState, ChatMessageEvent, DeviceSettings, PresenceItem, RealtimeAudioState,
-    RuntimeBootstrap, SessionSnapshot, TimelineEvent,
+    AtState, ChatMessageEvent, DeviceSettings, PresenceItem, RealtimeAudioState, RuntimeBootstrap,
+    SerialTunnelSnapshot, SessionSnapshot, TimelineEvent,
 };
+use crate::serial_tunnel::SerialTunnel;
 use crate::udp::UdpSession;
 
 fn chrono_local_now() -> String {
@@ -56,51 +57,50 @@ fn save_voice_to_wav(file_path: &Path, audio_data: &[i16]) -> Result<(), String>
     let block_align = num_channels * (bits_per_sample / 8);
     let data_size = audio_data.len() * 2;
 
-    let mut file = File::create(file_path)
-        .map_err(|e| format!("Failed to create file: {}", e))?;
+    let mut file = File::create(file_path).map_err(|e| format!("Failed to create file: {}", e))?;
 
     file.write_all(b"RIFF")
         .map_err(|e| format!("Failed to write RIFF: {}", e))?;
-    
+
     let chunk_size: u32 = 36 + data_size as u32;
     file.write_all(&chunk_size.to_le_bytes())
         .map_err(|e| format!("Failed to write chunk size: {}", e))?;
-    
+
     file.write_all(b"WAVE")
         .map_err(|e| format!("Failed to write WAVE: {}", e))?;
-    
+
     file.write_all(b"fmt ")
         .map_err(|e| format!("Failed to write fmt: {}", e))?;
-    
+
     let subchunk1_size: u32 = 16;
     file.write_all(&subchunk1_size.to_le_bytes())
         .map_err(|e| format!("Failed to write subchunk1 size: {}", e))?;
-    
+
     let audio_format: u16 = 1;
     file.write_all(&audio_format.to_le_bytes())
         .map_err(|e| format!("Failed to write audio format: {}", e))?;
-    
+
     file.write_all(&num_channels.to_le_bytes())
         .map_err(|e| format!("Failed to write num channels: {}", e))?;
-    
+
     file.write_all(&sample_rate.to_le_bytes())
         .map_err(|e| format!("Failed to write sample rate: {}", e))?;
-    
+
     file.write_all(&byte_rate.to_le_bytes())
         .map_err(|e| format!("Failed to write byte rate: {}", e))?;
-    
+
     file.write_all(&block_align.to_le_bytes())
         .map_err(|e| format!("Failed to write block align: {}", e))?;
-    
+
     file.write_all(&bits_per_sample.to_le_bytes())
         .map_err(|e| format!("Failed to write bits per sample: {}", e))?;
-    
+
     file.write_all(b"data")
         .map_err(|e| format!("Failed to write data: {}", e))?;
-    
+
     file.write_all(&(data_size as u32).to_le_bytes())
         .map_err(|e| format!("Failed to write data size: {}", e))?;
-    
+
     for &sample in audio_data {
         file.write_all(&sample.to_le_bytes())
             .map_err(|e| format!("Failed to write sample: {}", e))?;
@@ -136,6 +136,7 @@ fn build_waveform_preview(audio_data: &[i16], samples: usize) -> Vec<f32> {
 pub struct RuntimeState {
     inner: Arc<RwLock<RuntimeData>>,
     udp: UdpSession,
+    serial_tunnel: SerialTunnel,
     audio: AudioEngine,
     app: Arc<RwLock<Option<AppHandle>>>,
     capture_task_running: Arc<AtomicBool>,
@@ -199,6 +200,7 @@ impl RuntimeState {
         Self {
             inner: Arc::new(RwLock::new(RuntimeData::seed())),
             udp: UdpSession::new(),
+            serial_tunnel: SerialTunnel::new(),
             audio: AudioEngine::new(),
             app: Arc::new(RwLock::new(None)),
             capture_task_running: Arc::new(AtomicBool::new(false)),
@@ -215,16 +217,32 @@ impl RuntimeState {
     }
 
     pub async fn bootstrap(&self) -> RuntimeBootstrap {
-        let guard = self.inner.read().await;
+        let (snapshot, presence, timeline) = {
+            let guard = self.inner.read().await;
+            (
+                guard.snapshot.clone(),
+                guard.presence.clone(),
+                guard.timeline.clone(),
+            )
+        };
         RuntimeBootstrap {
-            snapshot: guard.snapshot.clone(),
-            presence: guard.presence.clone(),
-            timeline: guard.timeline.clone(),
+            snapshot,
+            presence,
+            timeline,
+            serial_tunnel: self.serial_tunnel.snapshot().await,
         }
     }
 
     pub async fn snapshot(&self) -> SessionSnapshot {
         self.inner.read().await.snapshot.clone()
+    }
+
+    pub async fn apply_config(&self, config: RuntimeConfig) {
+        let mut guard = self.inner.write().await;
+        guard.config = config.clone();
+        guard.snapshot.callsign = config.callsign;
+        guard.snapshot.ssid = config.ssid;
+        guard.snapshot.room_name = config.room_name;
     }
 
     pub async fn realtime_audio_state(&self) -> RealtimeAudioState {
@@ -364,7 +382,7 @@ impl RuntimeState {
         }
         guard.snapshot.is_transmitting = enabled;
         self.audio.set_transmitting(enabled);
-        
+
         let detail = if enabled {
             guard.outgoing_voice_data.clear();
             guard.outgoing_voice_start = Some(Instant::now());
@@ -373,7 +391,8 @@ impl RuntimeState {
             guard.snapshot.tx_level = 0.0;
             guard.snapshot.tx_spectrum.fill(0.0);
             guard.snapshot.uplink_kbps = 0.0;
-            let duration_ms = guard.outgoing_voice_start
+            let duration_ms = guard
+                .outgoing_voice_start
                 .map(|s| s.elapsed().as_millis())
                 .unwrap_or(0);
             let voice_data = guard.outgoing_voice_data.clone();
@@ -383,7 +402,8 @@ impl RuntimeState {
                 let data_copy = voice_data.clone();
                 let dur_copy = duration_ms;
                 drop(guard);
-                self.emit_outgoing_voice_message_with_data(data_copy, dur_copy).await;
+                self.emit_outgoing_voice_message_with_data(data_copy, dur_copy)
+                    .await;
                 let mut guard = self.inner.write().await;
                 guard.push_event("发射切换", "发射结束，返回监听模式", "accent");
                 return guard.snapshot.clone();
@@ -457,6 +477,70 @@ impl RuntimeState {
         lines: &[String],
     ) -> Result<(), String> {
         self.udp.send_at_state(config, lines).await
+    }
+
+    pub async fn serial_tunnel_snapshot(&self) -> SerialTunnelSnapshot {
+        self.serial_tunnel.snapshot().await
+    }
+
+    async fn emit_serial_tunnel_snapshot(&self) {
+        if let Some(app) = self.app.read().await.clone() {
+            let _ = app.emit(
+                "runtime://serial-tunnel",
+                self.serial_tunnel.snapshot().await,
+            );
+        }
+    }
+
+    pub async fn start_serial_tunnel(
+        &self,
+        config: SerialTunnelConfig,
+    ) -> Result<SerialTunnelSnapshot, String> {
+        let (read_tx, mut read_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let snapshot = self.serial_tunnel.start(config.clone(), read_tx).await?;
+        {
+            let mut guard = self.inner.write().await;
+            guard.config.serial_tunnel = config;
+            guard.push_event("串口透传", "物理/虚拟串口桥接已启动", "accent");
+        }
+        let runtime = self.clone();
+        tauri::async_runtime::spawn(async move {
+            while let Some(data) = read_rx.recv().await {
+                let config = runtime.current_config().await;
+                match runtime.udp.send_serial_tunnel(&config, data).await {
+                    Ok(()) => {
+                        runtime.emit_serial_tunnel_snapshot().await;
+                    }
+                    Err(err) => {
+                        runtime
+                            .push_runtime_event("串口透传发送失败", &err, "warn")
+                            .await;
+                    }
+                }
+            }
+        });
+        Ok(snapshot)
+    }
+
+    pub async fn stop_serial_tunnel(&self) -> SerialTunnelSnapshot {
+        let snapshot = self.serial_tunnel.stop().await;
+        {
+            let mut guard = self.inner.write().await;
+            guard.push_event("串口透传", "串口透传已关闭", "info");
+        }
+        snapshot
+    }
+
+    pub async fn write_serial_tunnel_data(&self, data: &[u8]) {
+        match self.serial_tunnel.write(data).await {
+            Ok(()) => {
+                self.emit_serial_tunnel_snapshot().await;
+            }
+            Err(err) => {
+                self.push_runtime_event("串口透传写入失败", &err, "warn")
+                    .await;
+            }
+        }
     }
 
     pub async fn current_config(&self) -> RuntimeConfig {
@@ -543,7 +627,8 @@ impl RuntimeState {
                         guard.voice_session = Some(session);
                         None
                     } else {
-                        let remaining = MAX_VOICE_SESSION_SAMPLES.saturating_sub(session.audio_data.len());
+                        let remaining =
+                            MAX_VOICE_SESSION_SAMPLES.saturating_sub(session.audio_data.len());
                         if remaining > 0 {
                             session.audio_data.extend_from_slice(&pcm_data[..remaining]);
                         }
@@ -556,7 +641,9 @@ impl RuntimeState {
                             audio_data: Vec::new(),
                         };
                         if remaining < pcm_data.len() {
-                            new_session.audio_data.extend_from_slice(&pcm_data[remaining..]);
+                            new_session
+                                .audio_data
+                                .extend_from_slice(&pcm_data[remaining..]);
                         }
                         guard.voice_session = Some(new_session);
                         Some((session, elapsed))
@@ -589,7 +676,7 @@ impl RuntimeState {
                 }
             }
         }; // 写锁在此处释放
-        // 锁释放后再 emit，避免 emit_voice_message 内的 inner.read() 与写锁死锁
+           // 锁释放后再 emit，避免 emit_voice_message 内的 inner.read() 与写锁死锁
         if let Some((session, elapsed)) = finished_session {
             self.emit_voice_message(&session, elapsed).await;
         }
@@ -702,7 +789,10 @@ impl RuntimeState {
         eprintln!("[Runtime] ensure_audio_started: calling audio.start()");
         match self.audio.start() {
             Ok((devices, logs)) => {
-                eprintln!("[Runtime] audio.start() OK: input={} output={}", devices.input_device, devices.output_device);
+                eprintln!(
+                    "[Runtime] audio.start() OK: input={} output={}",
+                    devices.input_device, devices.output_device
+                );
                 {
                     let mut guard = self.inner.write().await;
                     guard.snapshot.devices = devices.clone();
@@ -725,8 +815,7 @@ impl RuntimeState {
                     "音频链已启动",
                     &format!(
                         "输入: {}({}) / 输出: {}({})",
-                        devices.input_device, input_mode,
-                        devices.output_device, output_mode
+                        devices.input_device, input_mode, devices.output_device, output_mode
                     ),
                     "accent",
                 )
@@ -850,7 +939,10 @@ impl RuntimeState {
                     // 语音结束后主动推一次 snapshot，通知前端 rx_level/rx_spectrum 已归零
                     // watchdog 已将这些字段清零（write lock 内），但没有 emit，前端会一直显示旧波形
                     if let Some(app) = runtime.app.read().await.clone() {
-                        let _ = app.emit("runtime://audio-state", runtime.realtime_audio_state().await);
+                        let _ = app.emit(
+                            "runtime://audio-state",
+                            runtime.realtime_audio_state().await,
+                        );
                         let _ = app.emit("runtime://snapshot", runtime.snapshot().await);
                     }
                 }
@@ -929,7 +1021,12 @@ impl RuntimeState {
                 id: format!("chat-{id}"),
                 side: "remote".into(),
                 text: String::new(),
-                meta: format!("{}-{}-{}", session.callsign, session.ssid, format!("{:.1}s", duration_sec)),
+                meta: format!(
+                    "{}-{}-{}",
+                    session.callsign,
+                    session.ssid,
+                    format!("{:.1}s", duration_sec)
+                ),
                 time,
                 type_: Some("voice".into()),
                 waveform: Some(build_waveform_preview(&session.audio_data, 40)),
@@ -966,7 +1063,11 @@ impl RuntimeState {
         let (callsign, ssid, voice_save_path) = {
             let guard = self.inner.read().await;
             let config = &guard.config;
-            (config.callsign.clone(), config.ssid, config.voice_save_path.clone())
+            (
+                config.callsign.clone(),
+                config.ssid,
+                config.voice_save_path.clone(),
+            )
         };
 
         if audio_data.is_empty() || duration_ms < 100 {
@@ -1157,7 +1258,7 @@ pub(crate) fn analyze_pcm_frame(samples: &[i16]) -> FrameAnalysis {
             - 0.5
                 * ((2.0 * std::f32::consts::PI * i as f32)
                     / (sample_count.saturating_sub(1).max(1) as f32))
-                .cos();
+                    .cos();
         input[i] = Complex32::new(normalized * window, 0.0);
     }
 

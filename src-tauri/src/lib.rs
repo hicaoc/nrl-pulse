@@ -10,10 +10,11 @@ mod models;
 mod nrl;
 mod platform;
 mod runtime;
+mod serial_tunnel;
 mod udp;
 
-use config::RuntimeConfig;
-use models::{RuntimeBootstrap, SessionSnapshot};
+use config::{RuntimeConfig, SerialTunnelConfig};
+use models::{RuntimeBootstrap, SerialTunnelSnapshot, SessionSnapshot};
 use platform::{
     GroupSnapshot, LoginBootstrap, PlatformDevice, PlatformRegisterPayload, PlatformRegisterResult,
     PlatformServer,
@@ -28,8 +29,20 @@ fn frontend_log(window: tauri::Window, msg: String) {
 
 #[tauri::command]
 async fn bootstrap_runtime(
+    app: tauri::AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, RuntimeState>,
 ) -> Result<RuntimeBootstrap, String> {
+    let config = config::load_or_default(&app);
+    state.apply_config(config.clone()).await;
+    if window.label() == "main"
+        && config.serial_tunnel.auto_start
+        && !config.serial_tunnel.port_name.trim().is_empty()
+    {
+        let _ = state
+            .start_serial_tunnel(config.serial_tunnel.clone())
+            .await;
+    }
     Ok(state.bootstrap().await)
 }
 
@@ -151,6 +164,43 @@ async fn sync_at_state(
         .push_runtime_event("AT 状态同步", "本地 AT 状态已下发到远端节点", "accent")
         .await;
     Ok(state.snapshot().await)
+}
+
+#[tauri::command]
+async fn get_serial_tunnel_status(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<SerialTunnelSnapshot, String> {
+    Ok(state.serial_tunnel_snapshot().await)
+}
+
+#[tauri::command]
+async fn start_serial_tunnel(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RuntimeState>,
+    mut config: SerialTunnelConfig,
+) -> Result<SerialTunnelSnapshot, String> {
+    config.mode = "physical".into();
+    let mut runtime_config = config::load_or_default(&app);
+    runtime_config.serial_tunnel = config.clone();
+    config::save(&app, &runtime_config)?;
+    let snapshot = state.start_serial_tunnel(config).await?;
+    let _ = app.emit("runtime://serial-tunnel", snapshot.clone());
+    Ok(snapshot)
+}
+
+#[tauri::command]
+async fn stop_serial_tunnel(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<SerialTunnelSnapshot, String> {
+    let snapshot = state.stop_serial_tunnel().await;
+    let _ = app.emit("runtime://serial-tunnel", snapshot.clone());
+    Ok(snapshot)
+}
+
+#[tauri::command]
+async fn list_serial_ports() -> Result<Vec<String>, String> {
+    Ok(serial_tunnel::available_port_names())
 }
 
 #[tauri::command]
@@ -324,6 +374,10 @@ pub fn run() {
             save_runtime_config,
             reconfigure_session,
             sync_at_state,
+            get_serial_tunnel_status,
+            start_serial_tunnel,
+            stop_serial_tunnel,
+            list_serial_ports,
             fetch_platform_servers,
             platform_login,
             platform_register,

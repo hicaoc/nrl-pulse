@@ -28,6 +28,29 @@ export interface RuntimeConfig {
   volume: number;
   pttKey: string;
   voiceSavePath: string;
+  serialTunnel: SerialTunnelConfig;
+}
+
+export interface SerialTunnelConfig {
+  mode: "physical";
+  autoStart: boolean;
+  portName: string;
+  baudRate: number;
+  dataBits: number;
+  parity: "none" | "odd" | "even";
+  stopBits: "one" | "two";
+  flowControl: "none" | "software" | "hardware";
+}
+
+export interface SerialTunnelSnapshot {
+  running: boolean;
+  supported: boolean;
+  mode: "physical";
+  portName: string;
+  status: string;
+  rxBytes: number;
+  txBytes: number;
+  lastError: string;
 }
 
 export interface RealtimeAudioState {
