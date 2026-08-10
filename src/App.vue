@@ -1091,8 +1091,9 @@ const messages = {
 
 const t = computed(() => messages[language.value]);
 
-// 悬浮窗双 PTT：各自独立的禁用条件与状态文案
-const nrlPttDisabled = computed(() => runtime.busy || nrlLinkState.value !== "online");
+// 悬浮窗双 PTT：各自独立的禁用条件与状态文案。
+// 注意不含 busy：发射动作本身会短暂置 busy，含进去会让按钮在发射时闪禁止态（误导）。
+const nrlPttDisabled = computed(() => nrlLinkState.value !== "online");
 const fmoPttDisabled = computed(() => fmo.busy || fmo.state.mqttState !== "connected");
 const nrlStatusText = computed(() => {
   const zh = language.value === "zh";
@@ -2138,7 +2139,15 @@ watch(
       </div>
       <nav class="topbar-actions">
         <button class="ghost-btn lang-btn" @click="toggleLanguage">
-          {{ language === "zh" ? "EN" : t.language }}
+          {{ language === "zh" ? "EN" : "中" }}
+        </button>
+        <button
+          class="ghost-btn"
+          :class="{ 'status-connected': platform.loggedIn }"
+          :disabled="platform.busy"
+          @click="showLogin = !showLogin"
+        >
+          {{ platform.loggedIn ? t.platformLoggedIn : t.platformLogin }}
         </button>
         <button class="ghost-btn" :disabled="runtime.busy" @click="showSettings = !showSettings">
           {{ showSettings ? t.closeSettings : t.openSettings }}
