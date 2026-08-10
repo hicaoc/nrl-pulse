@@ -5,9 +5,11 @@ mod audio_aec_mac;
 #[cfg(target_os = "windows")]
 mod audio_aec_win;
 mod config;
+mod fmo;
 mod g711;
 mod models;
 mod nrl;
+mod opus;
 mod platform;
 mod runtime;
 mod serial_tunnel;
@@ -88,6 +90,19 @@ async fn set_transmit(
     enabled: bool,
 ) -> Result<SessionSnapshot, String> {
     let snapshot = state.set_transmit(enabled).await;
+    broadcast_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+async fn set_transmit_proto(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RuntimeState>,
+    protocol: String,
+    enabled: bool,
+) -> Result<SessionSnapshot, String> {
+    state.set_tx_protocol(&protocol).await;
+    let snapshot = state.set_transmit_proto(&protocol, enabled).await;
     broadcast_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -285,9 +300,10 @@ async fn open_ptt_window(app: tauri::AppHandle) -> Result<bool, String> {
     }
 
     WebviewWindowBuilder::new(&app, LABEL, WebviewUrl::App("index.html#ptt".into()))
-        .title("NRL PTT")
-        .inner_size(340.0, 150.0)
-        .min_inner_size(300.0, 140.0)
+        .title("PTT")
+        // 双 PTT（NRL + FMO）并排 + 呼号显示行，区域加大
+        .inner_size(440.0, 214.0)
+        .min_inner_size(400.0, 190.0)
         .resizable(false)
         .decorations(false)
         .transparent(true)
@@ -336,6 +352,207 @@ async fn read_voice_file(file_path: String) -> Result<Vec<u8>, String> {
         .map_err(|err| format!("read voice file failed: {err}"))
 }
 
+// ---------------------------------------------------------------- FMO commands
+
+#[tauri::command]
+async fn fmo_state_snapshot(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<serde_json::Value, String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    let mut out = serde_json::json!({
+        "identity": {
+            "callsign": fmo.current_callsign(),
+            "uid": fmo.current_uid(),
+        },
+        "certCallsign": fmo.current_callsign(),
+        "passcode": fmo::fmo_auth::aprs_passcode(&fmo.current_callsign()),
+        "certs": fmo.cert_store.list().await,
+        "favorites": fmo.favorites_list().await,
+        "servers": fmo.server_table.to_list().await,
+        "mqttState": fmo.mqtt_client.state_str().await,
+        "mqttDetail": fmo.mqtt_client.detail.lock().await.clone(),
+        "aprsState": fmo.aprs_client.state.lock().await.clone(),
+        "aprsDetail": fmo.aprs_client.detail.lock().await.clone(),
+        "selectedServer": fmo.selected_server.lock().await.clone(),
+        "rxPlay": *fmo.rx_play_enabled.lock().unwrap(),
+        "rxLoop": *fmo.rx_loop_enabled.lock().unwrap(),
+    });
+    out["mqttDetail"] = serde_json::Value::String(fmo.mqtt_client.detail.lock().await.clone());
+    out["aprsDetail"] = serde_json::Value::String(fmo.aprs_client.detail.lock().await.clone());
+    Ok(out)
+}
+
+#[tauri::command]
+async fn fmo_cert_import_json(
+    state: tauri::State<'_, RuntimeState>,
+    name: String,
+    cert: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    Ok(fmo.cert_store.import_json(&name, cert, "json").await)
+}
+
+#[tauri::command]
+async fn fmo_cert_import_file(
+    state: tauri::State<'_, RuntimeState>,
+    file_path: String,
+    name: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    let stem = std::path::Path::new(&file_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("imported")
+        .to_string();
+    let raw = tokio::task::spawn_blocking(move || std::fs::read(&file_path))
+        .await
+        .map_err(|err| format!("read cert file task failed: {err}"))?
+        .map_err(|err| format!("read cert file failed: {err}"))?;
+    let obj: serde_json::Value =
+        serde_json::from_slice(&raw).map_err(|err| format!("JSON 解析失败: {err}"))?;
+    let name = name.unwrap_or_else(|| {
+        if ["cert_user", "cert_devicekey", "cert_int", "cert_root"].contains(&stem.as_str()) {
+            stem
+        } else {
+            "imported".into()
+        }
+    });
+    Ok(fmo.cert_store.import_json(&name, obj, "upload").await)
+}
+
+#[tauri::command]
+async fn fmo_aprs_connect(
+    state: tauri::State<'_, RuntimeState>,
+    callsign: String,
+    passcode: String,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    let params = fmo::aprs::AprsParams {
+        host: fmo::aprs::DEFAULT_HOST.to_string(),
+        port: fmo::aprs::DEFAULT_PORT,
+        callsign,
+        passcode,
+        lat: 39.9,
+        lon: 116.4,
+        dist: 500.0,
+    };
+    fmo.aprs_client.connect_to(params).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn fmo_aprs_disconnect(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    fmo.aprs_client.disconnect().await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn fmo_server_select(
+    state: tauri::State<'_, RuntimeState>,
+    server: serde_json::Value,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    let mut sel = fmo.selected_server.lock().await;
+    *sel = server;
+    Ok(())
+}
+
+#[tauri::command]
+async fn fmo_mqtt_connect(
+    state: tauri::State<'_, RuntimeState>,
+    tls: Option<bool>,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    // 确保音频引擎已启动（FMO 独立连接，不依赖 config.protocol）
+    state.ensure_audio_running().await;
+    fmo.connect_mqtt(tls.unwrap_or(false)).await
+}
+
+#[tauri::command]
+async fn fmo_mqtt_disconnect(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    fmo.disconnect_mqtt().await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn fmo_favorites_add(
+    state: tauri::State<'_, RuntimeState>,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    Ok(fmo.favorites_add(body).await)
+}
+
+#[tauri::command]
+async fn fmo_favorites_remove(
+    state: tauri::State<'_, RuntimeState>,
+    key: String,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    fmo.favorites_remove(&key).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn fmo_rx_play(
+    state: tauri::State<'_, RuntimeState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    *fmo.rx_play_enabled.lock().unwrap() = enabled;
+    Ok(())
+}
+
+#[tauri::command]
+async fn fmo_rx_loop(
+    state: tauri::State<'_, RuntimeState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    *fmo.rx_loop_enabled.lock().unwrap() = enabled;
+    Ok(())
+}
+
+#[tauri::command]
+async fn fmo_stats_snapshot(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<serde_json::Value, String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    Ok(fmo.stats_snapshot().await)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -367,6 +584,7 @@ pub fn run() {
             disconnect_session,
             toggle_transmit,
             set_transmit,
+            set_transmit_proto,
             toggle_monitor,
             update_jitter_buffer,
             send_text_message,
@@ -390,7 +608,20 @@ pub fn run() {
             start_ptt_window_drag,
             close_ptt_window,
             get_default_audio_dir,
-            read_voice_file
+            read_voice_file,
+            fmo_state_snapshot,
+            fmo_cert_import_json,
+            fmo_cert_import_file,
+            fmo_aprs_connect,
+            fmo_aprs_disconnect,
+            fmo_server_select,
+            fmo_mqtt_connect,
+            fmo_mqtt_disconnect,
+            fmo_favorites_add,
+            fmo_favorites_remove,
+            fmo_rx_play,
+            fmo_rx_loop,
+            fmo_stats_snapshot
         ])
         .run(tauri::generate_context!())
         .expect("failed to run NRL Pulse");

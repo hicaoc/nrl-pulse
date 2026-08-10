@@ -1,0 +1,23 @@
+{
+ "sn": 1,
+ "type": "rootCA",
+ "issuer": {
+  "name": "BG5ESN",
+  "email": "xifengzui@yeah.net"
+ },
+ "subject": {
+  "name": "BG5ESN",
+  "publicKey": "DCeeVS320f36ToVP2eOADVN-Q0LzpMYmiVkmNYzuysY"
+ },
+ "extensions": {
+  "isCA": true,
+  "pathLen": 1,
+  "crl": "https://bg5esn.com/share/ca/root_crl.json",
+  "license": "https://bg5esn.com/share/ca/license.md",
+  "keyId": "1"
+ },
+ "iat": 1779886213,
+ "exp": 2095505415,
+ "signatureAlgorithm": "Ed25519",
+ "signature": "9QTm906Da0Hf5z2HMdvT02tuYCHyYOcPTNi3Y1Bi-cqpos-Pms_ok7rScAwt2pUSQN34cuKydkyKwdus0N_6CA"
+}

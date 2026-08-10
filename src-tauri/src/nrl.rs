@@ -92,6 +92,27 @@ impl NrlPacket {
         }
     }
 
+    /// type=8：Opus 语音帧（16kHz / 20ms / VOIP，见 `crate::opus`）。
+    pub fn voice_frame_opus(callsign: &str, ssid: u8, frame: Vec<u8>) -> Self {
+        let mut cs = [0_u8; 6];
+        for (slot, byte) in cs.iter_mut().zip(callsign.as_bytes().iter().copied()) {
+            *slot = byte;
+        }
+
+        Self {
+            version: *b"NRL2",
+            length: (NRL_HEADER_LEN + frame.len()) as u16,
+            cpuid: NRL_CPUID_UNUSED,
+            packet_type: 8,
+            status: 1,
+            count: 0,
+            callsign: cs,
+            ssid,
+            dev_mode: NRL_DEVICE_MODE,
+            data: frame,
+        }
+    }
+
     pub fn heartbeat(callsign: &str, ssid: u8) -> Self {
         Self::base_packet(callsign, ssid, 2, Vec::new())
     }

@@ -9,12 +9,14 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::RwLock;
 
-use crate::audio::AudioEngine;
+use crate::audio::{AudioEngine, RxChannel};
 use crate::config::{RuntimeConfig, SerialTunnelConfig};
+use crate::fmo::state::FmoState;
 use crate::models::{
     AtState, ChatMessageEvent, DeviceSettings, PresenceItem, RealtimeAudioState, RuntimeBootstrap,
     SerialTunnelSnapshot, SessionSnapshot, TimelineEvent,
 };
+use crate::opus::{NrlOpusDecoder, NrlOpusEncoder};
 use crate::serial_tunnel::SerialTunnel;
 use crate::udp::UdpSession;
 
@@ -139,6 +141,12 @@ pub struct RuntimeState {
     serial_tunnel: SerialTunnel,
     audio: AudioEngine,
     app: Arc<RwLock<Option<AppHandle>>>,
+    /// FMO 运行时状态（NRL 与 FMO 协议共存）
+    fmo: Arc<RwLock<Option<Arc<FmoState>>>>,
+    /// NRL type=8 Opus 发射编码器
+    nrl_opus_tx: Arc<std::sync::Mutex<Option<NrlOpusEncoder>>>,
+    /// NRL type=8 Opus 接收解码器
+    nrl_opus_rx: Arc<std::sync::Mutex<Option<NrlOpusDecoder>>>,
     capture_task_running: Arc<AtomicBool>,
     voice_watchdog_running: Arc<AtomicBool>,
     heartbeat_watchdog_running: Arc<AtomicBool>,
@@ -146,6 +154,12 @@ pub struct RuntimeState {
     last_snapshot_emit_ms: Arc<AtomicU64>,
     /// 上次向前端 emit audio-state 的时间（ms），用于高频音频状态单独限速
     last_audio_emit_ms: Arc<AtomicU64>,
+    /// 当前接收语音编码（"G711" | "OPUS"）
+    rx_codec: Arc<std::sync::Mutex<String>>,
+    /// 接收语音帧序号（每帧递增）
+    rx_voice_seq: Arc<AtomicU64>,
+    /// 最近一次收到 NRL UDP 报文的时间（epoch ms，0=从未收到）
+    nrl_last_rx_ms: Arc<AtomicU64>,
 }
 
 struct RuntimeData {
@@ -154,7 +168,14 @@ struct RuntimeData {
     presence: Vec<PresenceItem>,
     timeline: Vec<TimelineEvent>,
     at_state: AtState,
-    voice_session: Option<VoiceSession>,
+    /// 当前发射协议（"nrl" | "fmo"），独立于 config.protocol，供双协议各自 PTT
+    tx_protocol: String,
+    /// NRL 链路是否已连接（独立于 FMO，供 NRL box 状态显示）
+    nrl_connected: bool,
+    /// 接收录音会话按协议分槽：NRL/FMO 同时来语音时互不顶会话，
+    /// 避免交替产生大量 0 秒语音消息
+    voice_session_nrl: Option<VoiceSession>,
+    voice_session_fmo: Option<VoiceSession>,
     outgoing_voice_data: Vec<i16>,
     outgoing_voice_start: Option<Instant>,
     last_heartbeat_at: Option<Instant>,
@@ -170,6 +191,8 @@ struct RuntimeData {
 struct VoiceSession {
     callsign: String,
     ssid: u8,
+    /// 来源协议（"nrl" | "fmo"），用于录音消息标题前缀
+    protocol: &'static str,
     started_at: Instant,
     last_seen_at: Instant,
     audio_data: Vec<i16>,
@@ -203,17 +226,177 @@ impl RuntimeState {
             serial_tunnel: SerialTunnel::new(),
             audio: AudioEngine::new(),
             app: Arc::new(RwLock::new(None)),
+            fmo: Arc::new(RwLock::new(None)),
+            nrl_opus_tx: Arc::new(std::sync::Mutex::new(None)),
+            nrl_opus_rx: Arc::new(std::sync::Mutex::new(None)),
             capture_task_running: Arc::new(AtomicBool::new(false)),
             voice_watchdog_running: Arc::new(AtomicBool::new(false)),
             heartbeat_watchdog_running: Arc::new(AtomicBool::new(false)),
             last_snapshot_emit_ms: Arc::new(AtomicU64::new(0)),
             last_audio_emit_ms: Arc::new(AtomicU64::new(0)),
+            rx_codec: Arc::new(std::sync::Mutex::new(String::new())),
+            rx_voice_seq: Arc::new(AtomicU64::new(0)),
+            nrl_last_rx_ms: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// 记录收到任意 NRL UDP 报文（语音/心跳等），供链路活跃判定（10s 无报文则闪烁）
+    pub fn note_nrl_rx(&self) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.nrl_last_rx_ms.store(now_ms, Ordering::Relaxed);
+    }
+
+    /// 记录一帧接收语音的编码类型（NRL：G711/OPUS），并递增帧序号
+    pub fn note_rx_voice_frame_codec(&self, codec: &str) {
+        if let Ok(mut c) = self.rx_codec.lock() {
+            *c = codec.to_string();
+        }
+        self.rx_voice_seq.fetch_add(1, Ordering::Relaxed);
     }
 
     pub async fn set_app_handle(&self, app: AppHandle) {
         let mut guard = self.app.write().await;
         *guard = Some(app);
+    }
+
+    /// 挂载 FMO 运行时状态：设置 app、安装 raw 解码、桥接事件到 runtime。
+    pub async fn attach_fmo(&self, fmo: Arc<FmoState>) {
+        let app = self.app.read().await.clone();
+        if let Some(app) = app {
+            fmo.set_app(app).await;
+        }
+        // 事件桥接：FMO log/mqtt/aprs 事件 → runtime timeline/snapshot
+        let runtime = self.clone();
+        let bridge: Arc<dyn Fn(serde_json::Value) + Send + Sync> = Arc::new(move |ev| {
+            let ty = ev.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let runtime = runtime.clone();
+            tauri::async_runtime::spawn(async move {
+                match ty.as_str() {
+                    "log" => {
+                        let level = ev.get("level").and_then(|l| l.as_str()).unwrap_or("info");
+                        let msg = ev.get("msg").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                        let tone = match level {
+                            "error" => "warn",
+                            "warn" => "warn",
+                            _ => "info",
+                        };
+                        runtime.push_runtime_event("FMO 事件", &msg, tone).await;
+                    }
+                    "mqtt_state" => {
+                        let state = ev.get("state").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                        let detail = ev.get("detail").and_then(|d| d.as_str()).unwrap_or("").to_string();
+                        runtime.apply_fmo_mqtt_state(&state, &detail).await;
+                    }
+                    "aprs_state" => {
+                        let detail = ev.get("detail").and_then(|d| d.as_str()).unwrap_or("").to_string();
+                        runtime.push_runtime_event("FMO APRS", &detail, "info").await;
+                    }
+                    _ => {}
+                }
+            });
+        });
+        *fmo.bridge.lock().unwrap() = Some(bridge);
+
+        // FMO 解码 PCM → 本地回放 + FMO 独立指标 + 独立频谱推送
+        let runtime = self.clone();
+        let speaker = fmo.current_speaker.clone();
+        let fmo_stats = fmo.stats.clone();
+        let fmo_last_arrival = std::sync::Arc::new(std::sync::Mutex::new(None::<Instant>));
+        *fmo.rx_audio.on_pcm.lock().unwrap() = Some(Box::new(move |pcm: &[i16]| {
+            let samples = pcm.to_vec();
+            let callsign = speaker.lock().unwrap().clone();
+            let runtime = runtime.clone();
+            let fmo_stats = fmo_stats.clone();
+            let fmo_last_arrival = fmo_last_arrival.clone();
+            // 同步入队：保证 40ms 音频块严格按到达顺序进播放缓冲。
+            // 之前放在下方 spawn 的异步任务里，多线程 runtime 并行调度会乱序，听感为破音。
+            runtime.enqueue_received_pcm(&samples, RxChannel::Fmo);
+            tauri::async_runtime::spawn(async move {
+                let analysis = analyze_pcm_frame(&samples);
+                let sample_count = samples.len();
+                // FMO 独立显示电平/频谱 + 抖动/队列/码率（不覆盖 NRL）
+                {
+                    let now = Instant::now();
+                    let expected_ms = (sample_count as f32 / 8.0).max(1.0);
+                    let mut jitter = *fmo_stats.jitter_ms.lock().unwrap();
+                    if let Some(prev) = *fmo_last_arrival.lock().unwrap() {
+                        let delta_ms = now.saturating_duration_since(prev).as_secs_f32() * 1000.0;
+                        let dev = (delta_ms - expected_ms).abs();
+                        let next = jitter as f32 + (dev - jitter as f32) / 16.0;
+                        jitter = next.round().max(0.0) as u32;
+                    }
+                    *fmo_last_arrival.lock().unwrap() = Some(now);
+                    *fmo_stats.jitter_ms.lock().unwrap() = jitter;
+                    *fmo_stats.queued_frames.lock().unwrap() = (sample_count / 160).max(1) as u32;
+                    *fmo_stats.downlink_kbps.lock().unwrap() =
+                        ((sample_count / 2 * 8) as f32) / 1000.0;
+                    *fmo_stats.rx_level.lock().unwrap() = analysis.level;
+                    *fmo_stats.rx_spectrum.lock().unwrap() = analysis.spectrum.to_vec();
+                }
+                runtime
+                    .note_fmo_voice_frame(
+                        callsign,
+                        sample_count,
+                        analysis.level,
+                        &analysis.spectrum,
+                        &samples,
+                    )
+                    .await;
+                // 高频独立事件：驱动 FMO 顶栏 VU / 频谱实时刷新（与 NRL 分开）
+                if let Some(app) = runtime.app.read().await.clone() {
+                    let _ = app.emit(
+                        "fmo://audio-state",
+                        serde_json::json!({
+                            "rxLevel": *fmo_stats.rx_level.lock().unwrap(),
+                            "rxSpectrum": fmo_stats.rx_spectrum.lock().unwrap().clone(),
+                            "txLevel": *fmo_stats.tx_level.lock().unwrap(),
+                            "txSpectrum": fmo_stats.tx_spectrum.lock().unwrap().clone(),
+                            "jitterMs": *fmo_stats.jitter_ms.lock().unwrap(),
+                            "queuedFrames": *fmo_stats.queued_frames.lock().unwrap(),
+                            "downlinkKbps": *fmo_stats.downlink_kbps.lock().unwrap(),
+                            "rxCodec": fmo_stats.rx_codec.lock().unwrap().clone(),
+                            "rxFrames": fmo_stats.rx_frames.load(std::sync::atomic::Ordering::Relaxed),
+                        }),
+                    );
+                }
+            });
+        }));
+
+        fmo.install_raw_handler();
+        fmo.ensure_aprs_task();
+        fmo.auto_connect_aprs().await;
+        fmo.select_default_server().await;
+
+        let mut guard = self.fmo.write().await;
+        *guard = Some(fmo);
+    }
+
+    pub async fn fmo_state(&self) -> Option<Arc<FmoState>> {
+        self.fmo.read().await.clone()
+    }
+
+    pub async fn apply_fmo_mqtt_state(&self, state: &str, detail: &str) {
+        {
+            let mut guard = self.inner.write().await;
+            // FMO 连接状态独立于 NRL（snapshot.connection 只代表 NRL），
+            // FMO 用前端 fmo.state.mqttState 显示，这里不覆盖 NRL connection。
+            guard.snapshot.last_text_message = format!("FMO MQTT: {detail}");
+            if state == "connected" {
+                guard.push_event("FMO MQTT 已连接", detail, "accent");
+            } else if state == "error" {
+                guard.push_event("FMO MQTT 错误", detail, "warn");
+            } else if state == "connecting" {
+                guard.push_event("FMO MQTT 连接中", detail, "info");
+            } else {
+                guard.push_event("FMO MQTT 已断开", detail, "info");
+            }
+        }
+        if let Some(app) = self.app.read().await.clone() {
+            let _ = app.emit("runtime://snapshot", self.snapshot().await);
+        }
     }
 
     pub async fn bootstrap(&self) -> RuntimeBootstrap {
@@ -234,10 +417,18 @@ impl RuntimeState {
     }
 
     pub async fn snapshot(&self) -> SessionSnapshot {
-        self.inner.read().await.snapshot.clone()
+        let mut snap = self.inner.read().await.snapshot.clone();
+        // 链路活跃时间存在原子里（避免每报文抢写锁），emit 时注入
+        snap.nrl_last_rx_ms = self.nrl_last_rx_ms.load(Ordering::Relaxed);
+        snap
     }
 
     pub async fn apply_config(&self, config: RuntimeConfig) {
+        // 同步 FMO 独立呼号配置
+        let fmo_callsign = config.fmo_callsign.clone();
+        if let Some(fmo) = self.fmo_state().await {
+            *fmo.configured_callsign.lock().unwrap() = fmo_callsign;
+        }
         let mut guard = self.inner.write().await;
         guard.config = config.clone();
         guard.snapshot.callsign = config.callsign;
@@ -258,6 +449,8 @@ impl RuntimeState {
             uplink_kbps: guard.snapshot.uplink_kbps,
             downlink_kbps: guard.snapshot.downlink_kbps,
             is_transmitting: guard.snapshot.is_transmitting,
+            rx_codec: self.rx_codec.lock().map(|c| c.clone()).unwrap_or_default(),
+            rx_seq: self.rx_voice_seq.load(Ordering::Relaxed),
         }
     }
 
@@ -275,14 +468,15 @@ impl RuntimeState {
         let _ = app.emit("runtime://snapshot", self.snapshot().await);
     }
 
-    /// 高频音频状态走轻量事件，减少主界面在收音期间的整包重渲染
+    /// 高频音频状态走轻量事件，减少主界面在收音期间的整包重渲染。
+    /// 限速 16ms：NRL 语音 20ms 一帧，40ms 限速会丢掉一半帧的频谱数据，波形肉眼可见地卡。
     pub async fn throttled_emit_audio_state(&self, app: &AppHandle) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
         let last = self.last_audio_emit_ms.load(Ordering::Relaxed);
-        if now_ms.saturating_sub(last) < 40 {
+        if now_ms.saturating_sub(last) < 16 {
             return;
         }
         self.last_audio_emit_ms.store(now_ms, Ordering::Relaxed);
@@ -291,6 +485,7 @@ impl RuntimeState {
 
     pub async fn connect(&self, config: RuntimeConfig) -> SessionSnapshot {
         let maybe_app = self.app.read().await.clone();
+        let is_fmo = config.protocol == "fmo";
         {
             let mut guard = self.inner.write().await;
             guard.config = config.clone();
@@ -310,7 +505,11 @@ impl RuntimeState {
             guard.snapshot.rx_spectrum.fill(0.0);
             guard.snapshot.tx_spectrum.fill(0.0);
             guard.snapshot.queued_frames = 0;
-            guard.snapshot.last_text_message = "正在等待服务器心跳确认".into();
+            guard.snapshot.last_text_message = if is_fmo {
+                "正在等待 FMO MQTT 连接".into()
+            } else {
+                "正在等待服务器心跳确认".into()
+            };
             guard.last_heartbeat_at = None;
             guard.heartbeat_timeout_reported = false;
             guard.last_heartbeat_sent_at = None;
@@ -319,14 +518,35 @@ impl RuntimeState {
             guard.jitter_ewma_ms = None;
             guard.presence.clear();
             guard.push_presence(&config.callsign, config.ssid, "本机", "online");
-            guard.push_event(
-                "开始连接",
-                "已发起 NRL UDP 会话，等待服务器心跳确认",
-                "accent",
-            );
+            guard.tx_protocol = if is_fmo { "fmo".into() } else { "nrl".into() };
+            if is_fmo {
+                guard.push_event("开始连接", "已发起 FMO MQTT 会话，等待服务器确认", "accent");
+            } else {
+                guard.push_event(
+                    "开始连接",
+                    "已发起 NRL UDP 会话，等待服务器心跳确认",
+                    "accent",
+                );
+            }
         }
         if let Some(app) = maybe_app {
-            if let Err(err) = self.udp.connect(app, self.clone(), config.clone()).await {
+            if is_fmo {
+                if let Some(fmo) = self.fmo_state().await {
+                    if let Err(err) = fmo.connect_mqtt(false).await {
+                        let mut guard = self.inner.write().await;
+                        guard.snapshot.connection = "disconnected".into();
+                        guard.snapshot.last_text_message = format!("FMO 连接失败: {err}");
+                        guard.push_event("FMO 连接失败", &err, "warn");
+                        return guard.snapshot.clone();
+                    }
+                } else {
+                    let mut guard = self.inner.write().await;
+                    guard.snapshot.connection = "disconnected".into();
+                    guard.snapshot.last_text_message = "FMO 状态未初始化".into();
+                    guard.push_event("FMO 初始化失败", "请重新启动应用", "warn");
+                    return guard.snapshot.clone();
+                }
+            } else if let Err(err) = self.udp.connect(app, self.clone(), config.clone()).await {
                 let mut guard = self.inner.write().await;
                 guard.snapshot.connection = "disconnected".into();
                 guard.snapshot.last_text_message = format!("连接失败: {err}");
@@ -337,18 +557,44 @@ impl RuntimeState {
         self.ensure_audio_started().await;
         self.spawn_capture_forwarder();
         self.spawn_voice_session_watchdog();
-        self.spawn_heartbeat_watchdog();
+        if !is_fmo {
+            self.spawn_heartbeat_watchdog();
+        }
+        self.snapshot().await
+    }
+
+    /// 确保音频引擎与采集已启动（FMO 独立连接时调用，不依赖 config.protocol）。
+    pub async fn ensure_audio_running(&self) -> SessionSnapshot {
+        self.ensure_audio_started().await;
+        self.spawn_capture_forwarder();
+        self.spawn_voice_session_watchdog();
         self.snapshot().await
     }
 
     pub async fn disconnect(&self) -> SessionSnapshot {
-        self.udp.disconnect().await;
-        self.audio.stop();
-        self.capture_task_running.store(false, Ordering::Relaxed);
+        let is_fmo = self.inner.read().await.config.protocol == "fmo";
+        if is_fmo {
+            if let Some(fmo) = self.fmo_state().await {
+                fmo.stop_tx().await;
+                fmo.disconnect_mqtt().await;
+            }
+        } else {
+            self.udp.disconnect().await;
+        }
+        // 双协议共存：断开时不停止音频引擎与采集，保证另一协议仍可 PTT/收声
         self.heartbeat_watchdog_running
             .store(false, Ordering::Relaxed);
+        if let Ok(mut tx) = self.nrl_opus_tx.lock() {
+            if let Some(e) = tx.as_mut() {
+                e.reset();
+            }
+        }
+        if let Ok(mut rx) = self.nrl_opus_rx.lock() {
+            *rx = None;
+        }
         let mut guard = self.inner.write().await;
         guard.snapshot.connection = "disconnected".into();
+        guard.nrl_connected = false;
         guard.snapshot.is_transmitting = false;
         guard.snapshot.rx_level = 0.0;
         guard.snapshot.tx_level = 0.0;
@@ -358,7 +604,8 @@ impl RuntimeState {
         guard.snapshot.last_text_message = "会话已断开".into();
         guard.snapshot.active_speaker.clear();
         guard.snapshot.active_speaker_ssid = 0;
-        guard.voice_session = None;
+        guard.voice_session_nrl = None;
+        guard.voice_session_fmo = None;
         guard.last_heartbeat_at = None;
         guard.heartbeat_timeout_reported = false;
         guard.last_heartbeat_sent_at = None;
@@ -376,17 +623,46 @@ impl RuntimeState {
     }
 
     pub async fn set_transmit(&self, enabled: bool) -> SessionSnapshot {
+        let proto = self.inner.read().await.tx_protocol.clone();
+        self.set_transmit_proto(&proto, enabled).await
+    }
+
+    /// 按指定协议发射（NRL/FMO 各自独立 PTT）。
+    pub async fn set_transmit_proto(&self, protocol: &str, enabled: bool) -> SessionSnapshot {
         let mut guard = self.inner.write().await;
         if guard.snapshot.is_transmitting == enabled {
             return guard.snapshot.clone();
         }
         guard.snapshot.is_transmitting = enabled;
+        let is_fmo = protocol == "fmo";
         self.audio.set_transmitting(enabled);
 
         let detail = if enabled {
             guard.outgoing_voice_data.clear();
             guard.outgoing_voice_start = Some(Instant::now());
-            "发射链路进入发送状态，等待真实麦克风与编码器挂接"
+            if is_fmo {
+                let mode = guard.config.fmo_voice_mode.clone();
+                drop(guard);
+                let fmo = self.fmo_state().await;
+                if let Some(fmo) = fmo {
+                    if let Err(err) = fmo.start_tx(&mode).await {
+                        let mut guard = self.inner.write().await;
+                        guard.snapshot.is_transmitting = false;
+                        self.audio.set_transmitting(false);
+                        guard.push_event("FMO 发射失败", &err, "warn");
+                        return guard.snapshot.clone();
+                    }
+                }
+                let mut guard = self.inner.write().await;
+                let mode_label = if mode == "opus" { "Opus" } else { "IMA ADPCM" };
+                guard.push_event(
+                    "发射切换",
+                    &format!("FMO 发射链路进入发送状态（{mode_label}）"),
+                    "accent",
+                );
+                return guard.snapshot.clone();
+            }
+            "NRL 发射链路进入发送状态，等待真实麦克风与编码器挂接"
         } else {
             guard.snapshot.tx_level = 0.0;
             guard.snapshot.tx_spectrum.fill(0.0);
@@ -398,20 +674,45 @@ impl RuntimeState {
             let voice_data = guard.outgoing_voice_data.clone();
             guard.outgoing_voice_data.clear();
             guard.outgoing_voice_start = None;
+            if is_fmo {
+                drop(guard);
+                if let Some(fmo) = self.fmo_state().await {
+                    fmo.stop_tx().await;
+                }
+                if !voice_data.is_empty() && duration_ms > 100 {
+                    let data_copy = voice_data.clone();
+                    let dur_copy = duration_ms;
+                    self.emit_outgoing_voice_message_with_data(data_copy, dur_copy, "FMO")
+                        .await;
+                }
+                let mut guard = self.inner.write().await;
+                guard.push_event("发射切换", "FMO 发射结束，返回监听模式", "accent");
+                return guard.snapshot.clone();
+            }
             if !voice_data.is_empty() && duration_ms > 100 {
                 let data_copy = voice_data.clone();
                 let dur_copy = duration_ms;
                 drop(guard);
-                self.emit_outgoing_voice_message_with_data(data_copy, dur_copy)
+                self.emit_outgoing_voice_message_with_data(data_copy, dur_copy, "NRL")
                     .await;
                 let mut guard = self.inner.write().await;
-                guard.push_event("发射切换", "发射结束，返回监听模式", "accent");
+                guard.push_event("发射切换", "NRL 发射结束，返回监听模式", "accent");
                 return guard.snapshot.clone();
             }
-            "发射结束，返回监听模式"
+            "NRL 发射结束，返回监听模式"
         };
         guard.push_event("发射切换", detail, "accent");
         guard.snapshot.clone()
+    }
+
+    /// 设置当前发射协议（NRL/FMO 各自 PTT 前调用）。
+    pub async fn set_tx_protocol(&self, protocol: &str) {
+        let mut guard = self.inner.write().await;
+        if protocol == "fmo" {
+            guard.tx_protocol = "fmo".into();
+        } else {
+            guard.tx_protocol = "nrl".into();
+        }
     }
 
     pub async fn toggle_monitor(&self) -> SessionSnapshot {
@@ -443,6 +744,17 @@ impl RuntimeState {
         config: &RuntimeConfig,
         message: String,
     ) -> SessionSnapshot {
+        if config.protocol == "fmo" {
+            // FMO 无统一文本通道：仅在本地记录
+            {
+                let mut guard = self.inner.write().await;
+                guard.snapshot.last_text_message = "FMO 文本消息（本地记录）".into();
+                guard.push_event("FMO 文本", &message, "info");
+            }
+            self.emit_chat_message("self", &message, &config.callsign, config.ssid)
+                .await;
+            return self.snapshot().await;
+        }
         let _ = self.udp.send_text(config, &message).await;
         {
             let mut guard = self.inner.write().await;
@@ -590,6 +902,35 @@ impl RuntimeState {
         spectrum: &[f32],
         pcm_data: &[i16],
     ) {
+        self.note_voice_frame_impl(callsign, ssid, samples, level, spectrum, pcm_data, true, "nrl")
+            .await
+    }
+
+    /// FMO 专用：录音与会话逻辑与 NRL 一致，但不更新共享显示字段
+    /// （rx_spectrum/rx_level/active_speaker 等保持 NRL 独立，FMO 用自己的 fmo.stats）。
+    pub async fn note_fmo_voice_frame(
+        &self,
+        callsign: String,
+        samples: usize,
+        level: f32,
+        spectrum: &[f32],
+        pcm_data: &[i16],
+    ) {
+        self.note_voice_frame_impl(callsign, 0, samples, level, spectrum, pcm_data, false, "fmo")
+            .await
+    }
+
+    async fn note_voice_frame_impl(
+        &self,
+        callsign: String,
+        ssid: u8,
+        samples: usize,
+        level: f32,
+        spectrum: &[f32],
+        pcm_data: &[i16],
+        update_display: bool,
+        protocol: &'static str,
+    ) {
         let now = Instant::now();
         let emitted = Vec::new();
         // 在持有写锁期间收集需要 emit 的旧会话，锁释放后再发送
@@ -597,34 +938,42 @@ impl RuntimeState {
         // 内持有写锁再等读锁会永久死锁，导致所有后续锁操作（包括群组切换的 save_config）卡住
         let finished_session: Option<(VoiceSession, u128)> = {
             let mut guard = self.inner.write().await;
-            // RFC 3550 风格的抖动估算：|到达间隔 - 期望间隔| 的 EWMA，期望间隔=20ms（160 样本 @ 8kHz）
-            if let Some(prev) = guard.last_voice_arrival_at {
-                let delta_ms = now.saturating_duration_since(prev).as_secs_f32() * 1000.0;
-                let expected_ms = (samples as f32 / 8.0).max(1.0);
-                let dev = (delta_ms - expected_ms).abs();
-                let next = match guard.jitter_ewma_ms {
-                    Some(prev) => prev + (dev - prev) / 16.0,
-                    None => dev,
-                };
-                guard.jitter_ewma_ms = Some(next);
-                guard.snapshot.jitter_ms = next.round().max(0.0) as u32;
+            if update_display {
+                // RFC 3550 风格的抖动估算：|到达间隔 - 期望间隔| 的 EWMA，期望间隔=20ms（160 样本 @ 8kHz）
+                if let Some(prev) = guard.last_voice_arrival_at {
+                    let delta_ms = now.saturating_duration_since(prev).as_secs_f32() * 1000.0;
+                    let expected_ms = (samples as f32 / 8.0).max(1.0);
+                    let dev = (delta_ms - expected_ms).abs();
+                    let next = match guard.jitter_ewma_ms {
+                        Some(prev) => prev + (dev - prev) / 16.0,
+                        None => dev,
+                    };
+                    guard.jitter_ewma_ms = Some(next);
+                    guard.snapshot.jitter_ms = next.round().max(0.0) as u32;
+                }
+                guard.last_voice_arrival_at = Some(now);
+                guard.snapshot.active_speaker = callsign.clone();
+                guard.snapshot.active_speaker_ssid = ssid;
+                guard.snapshot.rx_level = level;
+                guard.snapshot.rx_spectrum = spectrum.to_vec();
+                guard.snapshot.queued_frames = (samples / 160).max(1) as u32;
+                guard.snapshot.downlink_kbps = packet_kbps(samples / 2);
+                guard.push_presence(&callsign, ssid, "远端节点", "speaking");
             }
-            guard.last_voice_arrival_at = Some(now);
-            guard.snapshot.active_speaker = callsign.clone();
-            guard.snapshot.active_speaker_ssid = ssid;
-            guard.snapshot.rx_level = level;
-            guard.snapshot.rx_spectrum = spectrum.to_vec();
-            guard.snapshot.queued_frames = (samples / 160).max(1) as u32;
-            guard.snapshot.downlink_kbps = packet_kbps(samples / 2);
-            guard.push_presence(&callsign, ssid, "远端节点", "speaking");
 
-            match guard.voice_session.take() {
+            // 按协议选槽：NRL/FMO 各自独立，同协议不同说话人才顶会话
+            let slot = if protocol == "fmo" {
+                &mut guard.voice_session_fmo
+            } else {
+                &mut guard.voice_session_nrl
+            };
+            match slot.take() {
                 Some(mut session) if session.callsign == callsign && session.ssid == ssid => {
                     session.last_seen_at = now;
                     let next_len = session.audio_data.len().saturating_add(pcm_data.len());
                     if next_len <= MAX_VOICE_SESSION_SAMPLES {
                         session.audio_data.extend_from_slice(pcm_data);
-                        guard.voice_session = Some(session);
+                        *slot = Some(session);
                         None
                     } else {
                         let remaining =
@@ -636,6 +985,7 @@ impl RuntimeState {
                         let mut new_session = VoiceSession {
                             callsign: callsign.clone(),
                             ssid,
+                            protocol,
                             started_at: now,
                             last_seen_at: now,
                             audio_data: Vec::new(),
@@ -645,7 +995,7 @@ impl RuntimeState {
                                 .audio_data
                                 .extend_from_slice(&pcm_data[remaining..]);
                         }
-                        guard.voice_session = Some(new_session);
+                        *slot = Some(new_session);
                         Some((session, elapsed))
                     }
                 }
@@ -654,24 +1004,26 @@ impl RuntimeState {
                     let mut new_session = VoiceSession {
                         callsign: callsign.clone(),
                         ssid,
+                        protocol,
                         started_at: now,
                         last_seen_at: now,
                         audio_data: Vec::new(),
                     };
                     new_session.audio_data.extend_from_slice(pcm_data);
-                    guard.voice_session = Some(new_session);
+                    *slot = Some(new_session);
                     Some((session, elapsed))
                 }
                 None => {
                     let mut new_session = VoiceSession {
                         callsign: callsign.clone(),
                         ssid,
+                        protocol,
                         started_at: now,
                         last_seen_at: now,
                         audio_data: Vec::new(),
                     };
                     new_session.audio_data.extend_from_slice(pcm_data);
-                    guard.voice_session = Some(new_session);
+                    *slot = Some(new_session);
                     None
                 }
             }
@@ -698,8 +1050,8 @@ impl RuntimeState {
         }
     }
 
-    pub fn enqueue_received_pcm(&self, pcm: &[i16]) {
-        self.audio.enqueue_received_pcm(pcm);
+    pub fn enqueue_received_pcm(&self, pcm: &[i16], channel: RxChannel) {
+        self.audio.enqueue_received_pcm(pcm, channel);
     }
 
     pub async fn note_remote_activity(&self, callsign: &str, ssid: u8, state: &str) {
@@ -731,6 +1083,7 @@ impl RuntimeState {
                 guard.snapshot.latency_ms = next.round().max(0.0) as u32;
             }
             guard.push_presence(callsign, ssid, "远端节点", "online");
+            guard.nrl_connected = true;
             guard.snapshot.connection = "connected".into();
             guard.snapshot.last_text_message = format!("收到 {}-{} 心跳确认", callsign, ssid);
             guard.last_heartbeat_at = Some(now);
@@ -840,6 +1193,7 @@ impl RuntimeState {
         tauri::async_runtime::spawn(async move {
             while let Some(frame) = rx.recv().await {
                 let config = runtime.current_config().await;
+                let tx_proto = runtime.inner.read().await.tx_protocol.clone();
                 let analysis = analyze_pcm_frame(&frame);
                 runtime
                     .note_transmit_frame(frame.len(), analysis.level, &analysis.spectrum)
@@ -849,10 +1203,89 @@ impl RuntimeState {
                     let mut guard = runtime.inner.write().await;
                     guard.outgoing_voice_data.extend_from_slice(&frame);
                 }
-                let _ = runtime.udp.send_voice_frame(&config, &frame).await;
+                if tx_proto == "fmo" {
+                    if is_transmitting {
+                        if let Some(fmo) = runtime.fmo_state().await {
+                            fmo.feed_pcm(&frame).await;
+                        }
+                    }
+                } else if config.voice_codec == "opus" {
+                    runtime.send_nrl_opus_voice(&config, &frame).await;
+                } else {
+                    let _ = runtime.udp.send_voice_frame(&config, &frame).await;
+                }
             }
             runtime.capture_task_running.store(false, Ordering::Relaxed);
         });
+    }
+
+    /// NRL type=8 Opus 接收解码：16k 解码 → 8k 下采样 → i16。
+    pub async fn decode_nrl_opus_frame(&self, packet: &[u8]) -> Option<Vec<i16>> {
+        let mut init_err: Option<String> = None;
+        let decoded = {
+            let mut decoder = self.nrl_opus_rx.lock().unwrap();
+            if decoder.is_none() {
+                match NrlOpusDecoder::new() {
+                    Ok(d) => {
+                        *decoder = Some(d);
+                        decoder.as_mut().unwrap().decode(packet).ok()
+                    }
+                    Err(err) => {
+                        init_err = Some(err);
+                        None
+                    }
+                }
+            } else {
+                decoder.as_mut().unwrap().decode(packet).ok()
+            }
+        };
+        if let Some(err) = init_err {
+            self.push_runtime_event("Opus 解码器初始化失败", &err, "warn")
+                .await;
+            return None;
+        }
+        decoded.map(|pcm16| crate::opus::resample_16k_to_8k(&pcm16))
+    }
+
+    /// NRL type=8 Opus 发射：8k PCM → 16k 上采样 → Opus 包 → UDP。
+    async fn send_nrl_opus_voice(&self, config: &RuntimeConfig, frame: &[i16]) {
+        let mut init_err: Option<String> = None;
+        let packets: Vec<Vec<u8>> = {
+            let mut encoder = self.nrl_opus_tx.lock().unwrap();
+            if encoder.is_none() {
+                match NrlOpusEncoder::new() {
+                    Ok(e) => {
+                        *encoder = Some(e);
+                        match encoder.as_mut().unwrap().feed(frame) {
+                            Ok(pkts) => pkts,
+                            Err(err) => {
+                                init_err = Some(err);
+                                Vec::new()
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        init_err = Some(err);
+                        Vec::new()
+                    }
+                }
+            } else {
+                match encoder.as_mut().unwrap().feed(frame) {
+                    Ok(pkts) => pkts,
+                    Err(err) => {
+                        init_err = Some(err);
+                        Vec::new()
+                    }
+                }
+            }
+        };
+        if let Some(err) = init_err {
+            self.push_runtime_event("Opus 编码失败", &err, "warn").await;
+            return;
+        }
+        for pkt in packets {
+            let _ = self.udp.send_voice_frame_opus(config, &pkt).await;
+        }
     }
 
     fn spawn_heartbeat_watchdog(&self) {
@@ -881,6 +1314,7 @@ impl RuntimeState {
                         continue;
                     }
                     guard.heartbeat_timeout_reported = true;
+                    guard.nrl_connected = false;
                     guard.snapshot.connection = "disconnected".into();
                     guard.snapshot.is_transmitting = false;
                     guard.snapshot.last_text_message = "服务器心跳超时，链路已断开".into();
@@ -914,28 +1348,46 @@ impl RuntimeState {
                     if guard.snapshot.connection == "disconnected" {
                         break;
                     }
-                    let Some(session) = guard.voice_session.take() else {
-                        continue;
-                    };
-                    if session.last_seen_at.elapsed() < Duration::from_secs(1) {
-                        guard.voice_session = Some(session);
-                        continue;
+                    // NRL/FMO 两个槽各自检查超时（1s 无新帧视为发言结束）
+                    let mut finished = Vec::new();
+                    {
+                        // 解构出两个字段的可变引用（MutexGuard 不支持两次 DerefMut 借用它）
+                        let RuntimeData {
+                            voice_session_nrl,
+                            voice_session_fmo,
+                            ..
+                        } = &mut *guard;
+                        for slot in [voice_session_nrl, voice_session_fmo] {
+                            let Some(session) = slot.take() else {
+                                continue;
+                            };
+                            if session.last_seen_at.elapsed() < Duration::from_secs(1) {
+                                *slot = Some(session);
+                                continue;
+                            }
+                            let elapsed = session
+                                .last_seen_at
+                                .duration_since(session.started_at)
+                                .as_millis();
+                            finished.push((session, elapsed));
+                        }
                     }
-                    let elapsed = session
-                        .last_seen_at
-                        .duration_since(session.started_at)
-                        .as_millis();
-                    guard.snapshot.rx_level = 0.0;
-                    guard.snapshot.rx_spectrum.fill(0.0);
-                    guard.snapshot.queued_frames = 0;
-                    guard.snapshot.downlink_kbps = 0.0;
-                    guard.snapshot.active_speaker.clear();
-                    guard.snapshot.active_speaker_ssid = 0;
-                    guard.last_voice_arrival_at = None;
-                    Some((session, elapsed))
+                    // 只有 NRL 会话结束时才清 NRL 的显示状态（FMO 有独立统计）
+                    if finished.iter().any(|(s, _)| s.protocol == "nrl") {
+                        guard.snapshot.rx_level = 0.0;
+                        guard.snapshot.rx_spectrum.fill(0.0);
+                        guard.snapshot.queued_frames = 0;
+                        guard.snapshot.downlink_kbps = 0.0;
+                        guard.snapshot.active_speaker.clear();
+                        guard.snapshot.active_speaker_ssid = 0;
+                        guard.last_voice_arrival_at = None;
+                    }
+                    finished
                 };
-                if let Some((session, elapsed)) = session_info {
-                    runtime.emit_voice_message(&session, elapsed).await;
+                if !session_info.is_empty() {
+                    for (session, elapsed) in session_info {
+                        runtime.emit_voice_message(&session, elapsed).await;
+                    }
                     // 语音结束后主动推一次 snapshot，通知前端 rx_level/rx_spectrum 已归零
                     // watchdog 已将这些字段清零（write lock 内），但没有 emit，前端会一直显示旧波形
                     if let Some(app) = runtime.app.read().await.clone() {
@@ -990,6 +1442,10 @@ impl RuntimeState {
     }
 
     async fn emit_voice_message(&self, session: &VoiceSession, duration_ms: u128) {
+        // 过短的碎片会话（<100ms）不产生消息/录音，与发射侧口径一致
+        if duration_ms < 100 {
+            return;
+        }
         let voice_save_path = {
             let guard = self.inner.read().await;
             guard.config.voice_save_path.clone()
@@ -1022,7 +1478,8 @@ impl RuntimeState {
                 side: "remote".into(),
                 text: String::new(),
                 meta: format!(
-                    "{}-{}-{}",
+                    "{}-{}-{}-{}",
+                    session.protocol.to_uppercase(),
                     session.callsign,
                     session.ssid,
                     format!("{:.1}s", duration_sec)
@@ -1059,7 +1516,12 @@ impl RuntimeState {
         // 不 await：文件写在后台异步完成，调用方立即返回
     }
 
-    async fn emit_outgoing_voice_message_with_data(&self, audio_data: Vec<i16>, duration_ms: u128) {
+    async fn emit_outgoing_voice_message_with_data(
+        &self,
+        audio_data: Vec<i16>,
+        duration_ms: u128,
+        protocol: &str,
+    ) {
         let (callsign, ssid, voice_save_path) = {
             let guard = self.inner.read().await;
             let config = &guard.config;
@@ -1095,7 +1557,13 @@ impl RuntimeState {
                 id: format!("chat-{id}"),
                 side: "self".into(),
                 text: String::new(),
-                meta: format!("{}-{}-{}", callsign, ssid, format!("{:.1}s", duration_sec)),
+                meta: format!(
+                    "{}-{}-{}-{}",
+                    protocol,
+                    callsign,
+                    ssid,
+                    format!("{:.1}s", duration_sec)
+                ),
                 time,
                 type_: Some("voice".into()),
                 waveform: Some(build_waveform_preview(&audio_data, 40)),
@@ -1128,6 +1596,8 @@ impl RuntimeData {
     fn seed() -> Self {
         Self {
             config: RuntimeConfig::default(),
+            tx_protocol: "nrl".into(),
+            nrl_connected: false,
             snapshot: SessionSnapshot {
                 room_name: "NRL East Hub".into(),
                 callsign: "B1NRL".into(),
@@ -1135,6 +1605,8 @@ impl RuntimeData {
                 active_speaker: String::new(),
                 active_speaker_ssid: 0,
                 connection: "disconnected".into(),
+                nrl_connected: false,
+                nrl_last_rx_ms: 0,
                 packet_loss: 0.0,
                 latency_ms: 0,
                 jitter_ms: 0,
@@ -1171,7 +1643,8 @@ impl RuntimeData {
                 duck_scale: 50,
                 last_command: "AT+VOLUME=100".into(),
             },
-            voice_session: None,
+            voice_session_nrl: None,
+            voice_session_fmo: None,
             outgoing_voice_data: vec![],
             outgoing_voice_start: None,
             last_heartbeat_at: None,
@@ -1227,6 +1700,15 @@ pub fn manage(app: &mut tauri::App) {
     let state = RuntimeState::new();
     app.manage(state.clone());
     tauri::async_runtime::block_on(state.set_app_handle(app.handle().clone()));
+
+    // FMO 数据目录：app_config_dir/fmo
+    let fmo_dir = app
+        .path()
+        .app_config_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join("fmo");
+    let fmo = Arc::new(FmoState::new(fmo_dir));
+    tauri::async_runtime::block_on(state.attach_fmo(fmo));
 
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_title("NRL Pulse");

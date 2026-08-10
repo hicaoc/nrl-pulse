@@ -33,6 +33,14 @@ impl Default for SerialTunnelConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RuntimeConfig {
+    /// "nrl" | "fmo"：当前协议
+    pub protocol: String,
+    /// "alaw" | "opus"：NRL 语音编码（type 8 = opus）
+    pub voice_codec: String,
+    /// "adpcm" | "opus"：FMO 语音编码
+    pub fmo_voice_mode: String,
+    /// FMO 独立呼号（为空时从证书读取）
+    pub fmo_callsign: String,
     pub server: String,
     pub port: u16,
     pub server_name: String,
@@ -52,6 +60,10 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
+            protocol: "nrl".into(),
+            voice_codec: "alaw".into(),
+            fmo_voice_mode: "opus".into(),
+            fmo_callsign: String::new(),
             server: "127.0.0.1".into(),
             port: 10024,
             server_name: "Local".into(),
@@ -80,7 +92,7 @@ pub fn load_or_default(app: &AppHandle) -> RuntimeConfig {
     if config.ptt_key.trim().is_empty() {
         config.ptt_key = "Space".into();
     }
-    normalize_serial_tunnel(&mut config.serial_tunnel);
+    normalize_config(&mut config);
     config
 }
 
@@ -94,9 +106,23 @@ pub fn save(app: &AppHandle, config: &RuntimeConfig) -> Result<(), String> {
     if normalized.ptt_key.trim().is_empty() {
         normalized.ptt_key = "Space".into();
     }
-    normalize_serial_tunnel(&mut normalized.serial_tunnel);
+    normalize_config(&mut normalized);
     let raw = serde_json::to_string_pretty(&normalized).map_err(|err| err.to_string())?;
     std::fs::write(path, raw).map_err(|err| err.to_string())
+}
+
+fn normalize_config(config: &mut RuntimeConfig) {
+    if config.protocol != "fmo" {
+        config.protocol = "nrl".into();
+    }
+    if config.voice_codec != "opus" {
+        config.voice_codec = "alaw".into();
+    }
+    // UI 已不再提供选择：默认 Opus 发射；adpcm 仅保留为配置文件手动可选
+    if config.fmo_voice_mode != "adpcm" {
+        config.fmo_voice_mode = "opus".into();
+    }
+    normalize_serial_tunnel(&mut config.serial_tunnel);
 }
 
 fn normalize_serial_tunnel(config: &mut SerialTunnelConfig) {

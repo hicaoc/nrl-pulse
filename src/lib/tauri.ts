@@ -8,6 +8,9 @@ export function flog(...args: unknown[]): void {
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ChatMessageEvent,
+  FmoEvent,
+  FmoStateSnapshot,
+  FmoStatsSnapshot,
   PresenceItem,
   RealtimeAudioState,
   RuntimeConfig,
@@ -42,6 +45,10 @@ export async function toggleTransmit(): Promise<SessionSnapshot> {
 
 export async function setTransmit(enabled: boolean): Promise<SessionSnapshot> {
   return invoke<SessionSnapshot>("set_transmit", { enabled });
+}
+
+export async function setTransmitProto(protocol: "nrl" | "fmo", enabled: boolean): Promise<SessionSnapshot> {
+  return invoke<SessionSnapshot>("set_transmit_proto", { protocol, enabled });
 }
 
 export async function toggleMonitor(): Promise<SessionSnapshot> {
@@ -152,6 +159,88 @@ export async function onChatMessage(
   handler: (event: ChatMessageEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<ChatMessageEvent>("runtime://chat-message", (event) => handler(event.payload));
+}
+
+// ---------------------------------------------------------------- FMO
+
+export async function fmoStateSnapshot(): Promise<FmoStateSnapshot> {
+  return invoke<FmoStateSnapshot>("fmo_state_snapshot");
+}
+
+export async function fmoStatsSnapshot(): Promise<FmoStatsSnapshot> {
+  return invoke<FmoStatsSnapshot>("fmo_stats_snapshot");
+}
+
+export async function fmoCertImportJson(
+  name: string,
+  cert: Record<string, unknown>,
+): Promise<unknown> {
+  return invoke("fmo_cert_import_json", { name, cert });
+}
+
+export async function fmoCertImportFile(
+  filePath: string,
+  name?: string,
+): Promise<unknown> {
+  return invoke("fmo_cert_import_file", { filePath, name });
+}
+
+export async function fmoAprsConnect(callsign: string, passcode: string): Promise<void> {
+  return invoke("fmo_aprs_connect", { callsign, passcode });
+}
+
+export async function fmoAprsDisconnect(): Promise<void> {
+  return invoke("fmo_aprs_disconnect");
+}
+
+export async function fmoServerSelect(server: Record<string, unknown>): Promise<void> {
+  return invoke("fmo_server_select", { server });
+}
+
+export async function fmoMqttConnect(tls?: boolean): Promise<void> {
+  return invoke("fmo_mqtt_connect", { tls: tls ?? false });
+}
+
+export async function fmoMqttDisconnect(): Promise<void> {
+  return invoke("fmo_mqtt_disconnect");
+}
+
+export async function fmoFavoritesAdd(body: Record<string, unknown>): Promise<unknown> {
+  return invoke("fmo_favorites_add", { body });
+}
+
+export async function fmoFavoritesRemove(key: string): Promise<void> {
+  return invoke("fmo_favorites_remove", { key });
+}
+
+export async function fmoRxPlay(enabled: boolean): Promise<void> {
+  return invoke("fmo_rx_play", { enabled });
+}
+
+export async function fmoRxLoop(enabled: boolean): Promise<void> {
+  return invoke("fmo_rx_loop", { enabled });
+}
+
+export async function onFmoEvent(handler: (event: FmoEvent) => void): Promise<UnlistenFn> {
+  return listen<FmoEvent>("fmo://event", (event) => handler(event.payload));
+}
+
+export interface FmoAudioState {
+  rxLevel: number;
+  rxSpectrum: number[];
+  txLevel: number;
+  txSpectrum: number[];
+  jitterMs?: number;
+  queuedFrames?: number;
+  downlinkKbps?: number;
+  rxCodec?: string;
+  rxFrames?: number;
+}
+
+export async function onFmoAudioState(
+  handler: (state: FmoAudioState) => void,
+): Promise<UnlistenFn> {
+  return listen<FmoAudioState>("fmo://audio-state", (event) => handler(event.payload));
 }
 
 export interface UpdateInfo {

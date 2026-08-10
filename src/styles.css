@@ -244,11 +244,56 @@ textarea {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  /* 双 PTT 拨盘（NRL / FMO）均布 */
+  grid-template-columns: 1fr 1fr;
   align-items: center;
   gap: 14px;
   min-height: 0;
   min-width: 0;
+}
+
+.ptt-dial-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* 拨盘下方：当前说话人呼号（来电呼号） */
+.ptt-dial-talker {
+  max-width: 100%;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #f5fbff;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.is-tx .ptt-dial-talker {
+  color: #ffe4e4;
+}
+
+.ptt-dial-status {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.ptt-dial-status.online {
+  color: rgba(102, 227, 163, 0.95);
+}
+
+/* 协议色：NRL 橙 / FMO 蓝 */
+.ptt-dial-nrl .ptt-dial-ring {
+  border-color: rgba(255, 145, 87, 0.4);
+}
+
+.ptt-dial-fmo .ptt-dial-ring {
+  border-color: rgba(91, 192, 255, 0.4);
 }
 
 .ptt-dial {
@@ -384,93 +429,9 @@ textarea {
   opacity: 0.72;
 }
 
-.ptt-console-info {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 4px;
-  min-width: 0;
-}
-
-.ptt-info-kicker {
-  font-size: 0.62rem;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: rgba(173, 218, 240, 0.62);
-}
-
-.ptt-info-callsign {
-  font-size: 1.25rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: #f5fbff;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-shadow: 0 2px 10px rgba(91, 192, 255, 0.28);
-}
-
-.ptt-console.is-tx .ptt-info-callsign {
-  color: #ffe4e4;
-  text-shadow: 0 2px 12px rgba(255, 110, 110, 0.4);
-}
-
-.ptt-info-meta {
-  display: flex;
-  gap: 6px;
-  flex-wrap: nowrap;
-  align-items: center;
-  margin-top: 4px;
-  min-width: 0;
-  max-width: 100%;
-}
-
-.ptt-info-chip {
-  display: inline-block;
-  max-width: 100%;
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  font-size: 0.66rem;
-  letter-spacing: 0.06em;
-  color: rgba(226, 246, 255, 0.82);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-
-.ptt-info-room {
-  max-width: 100%;
-}
-
-.ptt-info-kicker.ptt-info-key {
-  display: inline-block;
-  width: fit-content;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(91, 192, 255, 0.12);
-  border: 1px solid rgba(91, 192, 255, 0.22);
-  color: rgba(178, 232, 255, 0.95);
-  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: none;
-}
-
-.ptt-info-chip.ptt-info-key {
-  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
-  font-weight: 600;
-  color: rgba(178, 232, 255, 0.95);
-  background: rgba(91, 192, 255, 0.12);
-  border-color: rgba(91, 192, 255, 0.22);
-}
-
 .topbar {
   display: grid;
-  grid-template-columns: auto minmax(180px, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--gap-md);
   margin-bottom: var(--gap-lg);
@@ -483,6 +444,20 @@ textarea {
     padding 0.28s ease,
     border-radius 0.28s ease,
     gap 0.28s ease;
+}
+
+/* NRL 顶栏与 FMO 一致：单容器 flex-wrap，缩屏自然换行不重叠 */
+.topbar .topbar-summary {
+  flex-wrap: wrap;
+}
+
+/* NRL 电平表可伸缩填充剩余空间，防重叠 */
+.topbar .nrl-vu {
+  flex: 1 1 0%;
+  flex-grow: 1;
+  min-width: 180px;
+  max-width: none;
+  width: auto;
 }
 
 .topbar-actions {
@@ -777,7 +752,7 @@ textarea {
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.4fr) minmax(360px, 0.95fr);
+  grid-template-columns: minmax(0, 1.618fr) minmax(360px, 1fr);
   gap: var(--gap-lg);
   align-items: stretch;
   transition: gap 0.28s ease;
@@ -789,13 +764,24 @@ textarea {
 
 .focus-card {
   min-width: 0;
+  /* 纵向 flex：让 ops-grid 填满卡片剩余高度，左右栏底部对齐 */
+  display: flex;
+  flex-direction: column;
+}
+
+/* 呼号区顶部条带：左系统时钟、右端悬浮窗按钮（落在大padding空条内，不挤压盒子） */
+.callsign-stage-head {
+  position: absolute;
+  top: 12px;
+  left: 24px;
+  right: 16px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .system-clock {
-  position: absolute;
-  top: 22px;
-  left: 24px;
-  z-index: 3;
   pointer-events: none;
 }
 
@@ -864,16 +850,6 @@ textarea {
     padding 0.28s ease,
     border-radius 0.28s ease;
   isolation: isolate;
-}
-
-.callsign-tools {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  gap: 10px;
 }
 
 .tool-pill {
@@ -963,6 +939,21 @@ textarea {
   width: 100%;
   height: 100%;
   cursor: crosshair;
+}
+
+/* 每个呼号 box 内的独立窄柱频谱 */
+.callsign-mini-spectrum {
+  width: 92%;
+  margin: 8px auto 0;
+  opacity: 0.9;
+}
+
+.callsign-mini-spectrum-canvas {
+  display: block;
+  width: 100%;
+  height: 52px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .callsign-label {
@@ -1124,6 +1115,20 @@ textarea {
   gap: 18px;
   margin-top: 28px;
   min-width: 0;
+  /* 填满 focus-card 剩余高度，两个面板等高等底 */
+  flex: 1;
+  min-height: 0;
+}
+
+/* 两栏：NRL 群组 / FMO 服务器 同时显示 */
+.ops-grid-3col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 1000px) {
+  .ops-grid-3col {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .ops-panel {
@@ -1131,6 +1136,10 @@ textarea {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.03);
+  /* 纵向 flex：内容区（列表）填满面板，底部对齐 */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .ops-head {
@@ -1166,7 +1175,10 @@ textarea {
 .group-stack {
   display: grid;
   gap: 10px;
-  max-height: min(42vh, 360px);
+  /* 填满面板剩余高度，超出滚动 */
+  flex: 1;
+  min-height: 0;
+  align-content: start;
   overflow-y: auto;
 }
 
@@ -1642,6 +1654,46 @@ input[type="range"] {
   margin-top: auto;
 }
 
+/* 消息 / 日志 Tab 切换 */
+.chat-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.chat-tab {
+  padding: 6px 14px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: transparent;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.chat-tab:hover {
+  color: rgba(232, 244, 252, 0.85);
+}
+
+.chat-tab.active {
+  color: #cfeaff;
+  background: rgba(91, 192, 255, 0.1);
+  border-color: rgba(91, 192, 255, 0.28);
+}
+
+/* 滚动日志列表：Tab 模式下占满卡片剩余高度 */
+.chat-log-list {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  align-content: start;
+  gap: 2px;
+  /* overflow-y:auto 会让 overflow-x 计算为 auto，1px 溢出也出横条；详情已省略号截断，直接隐藏横向 */
+  overflow-x: hidden;
+}
+
 .chat-row {
   display: flex;
 }
@@ -1779,7 +1831,8 @@ input[type="range"] {
   top: 20px;
   right: 20px;
   bottom: 20px;
-  width: min(420px, calc(100vw - 24px));
+  /* 加宽：FMO 服务器列表要完整显示 名称/host:port/在线数 */
+  width: min(560px, calc(100vw - 24px));
   padding: 24px;
   overflow-y: auto;
   border: 1px solid var(--panel-border);
@@ -1790,24 +1843,6 @@ input[type="range"] {
   transform: translateX(calc(100% + 28px));
   transition: transform 0.28s ease;
   z-index: 30;
-}
-
-.logs-drawer {
-  position: fixed;
-  top: 20px;
-  right: 20px;
-  bottom: 20px;
-  width: min(460px, calc(100vw - 24px));
-  padding: 24px;
-  overflow-y: auto;
-  border: 1px solid var(--panel-border);
-  border-radius: 28px;
-  background: rgba(7, 16, 28, 0.95);
-  box-shadow: 0 18px 80px rgba(0, 0, 0, 0.38);
-  backdrop-filter: blur(22px);
-  transform: translateX(calc(100% + 28px));
-  transition: transform 0.28s ease;
-  z-index: 31;
 }
 
 .auth-drawer {
@@ -1829,10 +1864,6 @@ input[type="range"] {
 }
 
 .settings-drawer[data-open="true"] {
-  transform: translateX(0);
-}
-
-.logs-drawer[data-open="true"] {
   transform: translateX(0);
 }
 
@@ -1860,6 +1891,8 @@ input[type="range"] {
 
 .log-list {
   display: grid;
+  /* minmax(0,1fr)： nowrap 内容的 min-content 不会撑破容器产生横向滚动条 */
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   max-height: calc(100vh - 180px);
   overflow-y: auto;
@@ -1883,47 +1916,50 @@ input[type="range"] {
   background: rgba(255, 255, 255, 0.25);
 }
 
-.log-card {
-  padding: 10px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.025);
+/* 单行日志条目：时间 + 标题 + 详情 一行显示，过长截断（悬停 title 看全文） */
+.log-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  white-space: nowrap;
 }
 
-.log-card[data-tone="accent"] {
-  border-color: rgba(255, 214, 109, 0.28);
-  background: rgba(255, 214, 109, 0.06);
+.log-line-time {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
 }
 
-.log-card[data-tone="warn"] {
-  border-color: rgba(255, 145, 87, 0.28);
+.log-line-title {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: rgba(232, 244, 252, 0.85);
+}
+
+.log-line-detail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-dim);
+}
+
+.log-line[data-tone="accent"] .log-line-title {
+  color: rgba(255, 214, 109, 0.95);
+}
+
+.log-line[data-tone="warn"] {
   background: rgba(255, 145, 87, 0.08);
 }
 
-.log-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 4px;
-}
-
-.log-meta strong {
-  font-size: 0.86rem;
-}
-
-.log-meta span {
-  color: var(--text-dim);
-  font-size: 0.7rem;
-  letter-spacing: 0.06em;
-}
-
-.log-card p {
-  margin: 0;
-  color: var(--text-dim);
-  font-size: 0.8rem;
-  line-height: 1.4;
-  word-break: break-word;
+.log-line[data-tone="warn"] .log-line-title {
+  color: rgba(255, 145, 87, 0.95);
 }
 
 .log-empty {
@@ -1966,6 +2002,28 @@ input[type="range"] {
 
   .chat-thread {
     max-height: min(42vh, 420px);
+  }
+}
+
+/* 宽屏：首屏固定为窗口高度，三栏（收藏/群组/消息日志）高度随窗口自适应，
+   内部列表 flex 填满、条目数量随高度增减、超出滚动 */
+@media (min-width: 1361px) {
+  .shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .dashboard-grid {
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* 确定高度链下由 flex 分配空间，去掉内容驱动的最小/最大高度 */
+  .chat-thread {
+    min-height: 120px;
+    max-height: none;
   }
 }
 
@@ -2045,14 +2103,6 @@ input[type="range"] {
   }
 
   .settings-drawer {
-    top: 12px;
-    right: 12px;
-    bottom: 12px;
-    width: calc(100vw - 24px);
-    border-radius: 22px;
-  }
-
-  .logs-drawer {
     top: 12px;
     right: 12px;
     bottom: 12px;
@@ -2164,4 +2214,874 @@ input[type="range"] {
   color: #22c55e;
   min-width: 36px;
   text-align: right;
+}
+
+/* ---------------------------------------------------------------- FMO 面板 */
+
+.fmo-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(12, 24, 36, 0.35);
+}
+
+.fmo-form {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.fmo-cert-row input[type="file"] {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+}
+
+.fmo-cert-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fmo-cert-chip {
+  padding: 3px 8px;
+  font-size: 0.72rem;
+  color: var(--cool);
+  background: rgba(91, 192, 255, 0.1);
+  border: 1px solid rgba(91, 192, 255, 0.22);
+  border-radius: 999px;
+  overflow-wrap: anywhere;
+}
+
+.fmo-aprs-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.fmo-aprs-input {
+  min-width: 0;
+}
+
+.fmo-server-list,
+.fmo-favorites {
+  display: grid;
+  gap: 6px;
+}
+
+.fmo-server-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.fmo-server-row:hover {
+  background: rgba(91, 192, 255, 0.07);
+}
+
+.fmo-server-row.selected {
+  border-color: rgba(91, 192, 255, 0.5);
+  background: rgba(91, 192, 255, 0.1);
+}
+
+/* 名称与 host:port·在线数 同一行显示，行高减半、列表更紧凑 */
+.fmo-server-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.fmo-server-main strong {
+  flex: 0 1 auto;
+  color: #f7f2e8;
+  font-size: 0.84rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fmo-server-main span {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 0.74rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fmo-server-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fmo-star-btn.active {
+  color: #ffd34f;
+  filter: drop-shadow(0 0 6px rgba(255, 211, 79, 0.55));
+}
+
+/* 群组 chip 的在线数量区域：可点击弹窗 */
+.group-chip-count {
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(91, 192, 255, 0.1);
+  transition: background 0.15s ease;
+}
+
+.group-chip-count:hover {
+  background: rgba(91, 192, 255, 0.25);
+}
+
+/* 群组在线设备弹窗 */
+.device-popup {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(440px, 90vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  z-index: 200;
+  padding: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  background: rgba(14, 28, 42, 0.96);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(18px);
+}
+
+.device-popup-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.device-online-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
+  flex-shrink: 0;
+}
+
+.fmo-server-meta {
+  font-size: 0.7rem;
+  color: var(--accent);
+  background: rgba(255, 145, 87, 0.12);
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+/* 在线人数徽标：有在线设备时绿色高亮 */
+.fmo-server-meta.online-count {
+  color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.06);
+  white-space: nowrap;
+}
+
+.fmo-server-meta.online-count.has-online {
+  color: #66e7a3;
+  background: rgba(102, 227, 163, 0.12);
+}
+
+.fmo-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
+
+.protocol-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.protocol-row .auth-server-mode {
+  flex-shrink: 0;
+}
+
+/* 顶栏协议切换 */
+.protocol-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.protocol-switch-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 4px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.protocol-switch-btn:hover {
+  color: #f7f2e8;
+}
+
+.protocol-switch-btn.active {
+  background: linear-gradient(135deg, rgba(255, 145, 87, 0.28), rgba(91, 192, 255, 0.28));
+  color: #fff;
+  box-shadow: 0 0 14px rgba(91, 192, 255, 0.22);
+}
+
+/* FMO 独立统计栏：单容器 flex-wrap，缩屏自然换行不重叠 */
+.fmo-topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid rgba(91, 192, 255, 0.14);
+  background: linear-gradient(180deg, rgba(91, 192, 255, 0.05), rgba(10, 22, 34, 0.5));
+}
+
+.fmo-topbar .topbar-summary {
+  flex-wrap: wrap;
+  /* 与 NRL 顶栏 gap 一致，保证两排 box 列对齐 */
+  gap: 8px;
+}
+
+/* 普通指标项固定宽度 */
+.fmo-topbar .summary-item:not(.fmo-vu):not(.summary-callsign) {
+  flex: 0 0 66px;
+  width: 66px;
+  min-width: 66px;
+  max-width: 66px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.fmo-topbar .summary-item > span,
+.fmo-topbar .summary-item {
+  color: var(--text-dim);
+}
+
+/* FMO 顶栏本机呼号 box：与上方 NRL 呼号 box 等宽 */
+.fmo-topbar .summary-callsign {
+  flex: 0 0 148px;
+  width: 148px;
+  min-width: 148px;
+  max-width: 148px;
+}
+
+.fmo-topbar .summary-item strong {
+  color: #cfeaff;
+}
+
+.fmo-topbar .summary-item strong .status-ok {
+  color: var(--success, #22c55e);
+}
+
+.fmo-topbar .summary-item strong.status-ok {
+  color: var(--success, #22c55e);
+}
+
+.fmo-topbar .summary-item small {
+  font-size: 0.7rem;
+  color: rgba(207, 234, 255, 0.6);
+  font-weight: 400;
+}
+
+/* FMO 顶栏服务器项：显示名称 + host:port，不折行 */
+.fmo-topbar .summary-server {
+  width: auto;
+  min-width: 0;
+  max-width: 240px;
+  flex: 0 1 auto;
+}
+
+.fmo-topbar .summary-server strong {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.25;
+}
+
+.fmo-topbar .summary-server strong small {
+  font-size: 0.68rem;
+}
+
+/* FMO 顶栏 VU 电平：flex 伸缩，缩屏不重叠（flex-wrap 自然换行） */
+.fmo-topbar .summary-item.fmo-vu {
+  flex: 1 1 0%;
+  flex-grow: 1;
+  min-width: 180px;
+  max-width: none;
+  width: auto;
+  white-space: nowrap;
+}
+
+.fmo-topbar .fmo-vu .signal-stack {
+  display: grid;
+  gap: 6px;
+}
+
+.fmo-topbar .fmo-vu .signal-row {
+  /* 数字列与 NRL 一致（118px），否则 dB 数值被压缩显示成省略号 */
+  grid-template-columns: 36px minmax(0, 1fr) 118px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fmo-topbar .fmo-vu .signal-row strong {
+  font-size: 0.82rem;
+}
+
+/* 双呼号主区域：上 NRL 下 FMO */
+.callsign-duo {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: 100%;
+}
+
+/* 宽屏（≥1400px）：左右排列两个独立呼号区 */
+@media (min-width: 1400px) {
+  .callsign-duo {
+    flex-direction: row;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .callsign-block {
+    flex: 1 1 50%;
+    min-width: 0;
+  }
+}
+
+.callsign-block {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 46px 16px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* 每个呼号 box 右上角工具条：PTT + 静音（宽度贴合内容，不遮挡左上角标签的点击） */
+.callsign-block-tools {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.callsign-block-tools .tool-pill {
+  padding: 6px 10px;
+  font-size: 0.72rem;
+  border-radius: 9px;
+}
+
+/* 呼号 box 内小图标按钮：静音 / 打开悬浮窗等 */
+.block-mute,
+.block-icon-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+}
+
+.block-mute svg,
+.block-icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.block-mute.active {
+  border-color: rgba(255, 120, 120, 0.4);
+  color: #ffd9d9;
+  background: rgba(255, 120, 120, 0.1);
+  box-shadow: 0 0 14px rgba(255, 120, 120, 0.2);
+}
+
+.block-mute .mute-slash {
+  stroke: #ff7070;
+  stroke-width: 2;
+}
+
+.nrl-ptt.ptt-active,
+.fmo-ptt.ptt-active {
+  border-color: #22c55e !important;
+  color: #22c55e !important;
+  background: rgba(34, 197, 94, 0.14) !important;
+  box-shadow: 0 0 16px rgba(34, 197, 94, 0.35);
+}
+
+.callsign-block-nrl {
+  border-color: rgba(255, 145, 87, 0.22);
+  background: rgba(255, 145, 87, 0.04);
+}
+
+.callsign-block-fmo {
+  border-color: rgba(91, 192, 255, 0.24);
+  background: rgba(91, 192, 255, 0.04);
+}
+
+/* 呼号 box 左上角标签组：NRL / FMO / APRS，在线时加亮 */
+.callsign-block-tags {
+  position: absolute;
+  left: 12px;
+  top: 10px;
+  z-index: 2;
+  display: flex;
+  gap: 6px;
+}
+
+.callsign-block-tag {
+  font-family: inherit;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.04);
+  transition:
+    color 0.2s ease,
+    background 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+/* 可点击的连接切换标签（NRL/FMO），APRS 为纯状态指示 */
+.callsign-block-tag.clickable {
+  cursor: pointer;
+}
+
+.callsign-block-tag.clickable:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.callsign-block-tag.clickable:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.callsign-nrl .callsign-block-tag.online {
+  color: var(--accent);
+  background: rgba(255, 145, 87, 0.16);
+  border-color: rgba(255, 145, 87, 0.42);
+  box-shadow: 0 0 10px rgba(255, 145, 87, 0.35);
+}
+
+/* NRL 链路超过 10s 无报文：标签在点亮与熄灭间闪烁告警 */
+.callsign-nrl .callsign-block-tag.stale {
+  animation: nrl-tag-blink 0.9s ease-in-out infinite;
+}
+
+@keyframes nrl-tag-blink {
+  0%,
+  100% {
+    color: var(--accent);
+    background: rgba(255, 145, 87, 0.16);
+    border-color: rgba(255, 145, 87, 0.42);
+    box-shadow: 0 0 10px rgba(255, 145, 87, 0.35);
+  }
+  50% {
+    color: rgba(255, 255, 255, 0.4);
+    background: rgba(255, 255, 255, 0.04);
+    border-color: transparent;
+    box-shadow: none;
+  }
+}
+
+.callsign-fmo .callsign-block-tag.online {
+  color: var(--cool);
+  background: rgba(91, 192, 255, 0.16);
+  border-color: rgba(91, 192, 255, 0.45);
+  box-shadow: 0 0 10px rgba(91, 192, 255, 0.35);
+}
+
+/* 大呼号旁的小字编码标签：相对呼号文本绝对定位，出现/消失不影响呼号居中位置 */
+.callsign-display .callsign-text {
+  position: relative;
+}
+
+.rx-codec-chip {
+  position: absolute;
+  left: calc(100% + 10px);
+  bottom: 0;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+}
+
+.callsign-nrl .rx-codec-chip {
+  color: var(--accent);
+}
+
+.callsign-fmo .rx-codec-chip {
+  color: var(--cool);
+}
+
+/* 双 box 内呼号字体缩小，避免与频谱/顶部挤压 */
+.callsign-duo .callsign-display {
+  font-size: clamp(1.6rem, 3.2vw, 3.2rem);
+  margin-top: 6px;
+  text-align: center;
+}
+
+.callsign-duo .callsign-meta {
+  margin-top: 8px;
+  gap: 8px;
+  justify-content: center;
+}
+
+.callsign-duo .callsign-room {
+  font-size: 0.76rem;
+}
+
+.callsign-divider {
+  display: none;
+}
+
+.callsign-display-fmo {
+  font-size: 0.85em;
+}
+
+.callsign-block-fmo .callsign-display {
+  color: #cfeaff;
+  text-shadow: 0 0 22px rgba(91, 192, 255, 0.55);
+}
+
+.fmo-ops-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.fmo-ops-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  flex: 1;
+}
+
+/* 收藏列表填满面板剩余高度（面板与右侧群组面板等高），超出滚动 */
+.fmo-ops-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  align-content: start;
+}
+
+.fmo-state-chip {
+  padding: 3px 8px;
+  font-size: 0.7rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.fmo-state-chip[data-state="connected"],
+.fmo-state-chip[data-state="verified"] {
+  color: var(--success, #22c55e);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.fmo-state-chip[data-state="connecting"],
+.fmo-state-chip[data-state="logged-in"] {
+  color: var(--cool);
+  background: rgba(91, 192, 255, 0.12);
+}
+
+.fmo-state-chip[data-state="error"] {
+  color: #ff7070;
+  background: rgba(255, 112, 112, 0.12);
+}
+
+.fmo-ops-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+/* ---------------------------------------------------------------- 设置标签页 */
+
+.settings-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 0 20px 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  margin-bottom: 6px;
+}
+
+.settings-tab {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 10px 0 8px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.18s ease;
+}
+
+.settings-tab:hover {
+  color: #f7f2e8;
+}
+
+.settings-tab.active {
+  color: #fff;
+  border-bottom-color: var(--cool);
+}
+
+/* ---------------------------------------------------------------- FMO 面板分区 */
+
+.fmo-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(91, 192, 255, 0.12);
+  border-radius: 14px;
+  background: rgba(12, 24, 36, 0.35);
+}
+
+.fmo-section {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.fmo-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.fmo-section-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: rgba(91, 192, 255, 0.14);
+  color: var(--cool);
+  font-size: 0.72rem;
+}
+
+/* 身份 */
+.fmo-id-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.fmo-id-cell {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.fmo-id-cell span {
+  color: var(--text-dim);
+  font-size: 0.7rem;
+}
+
+.fmo-id-cell strong {
+  color: #f7f2e8;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+/* 证书 4 格 */
+.fmo-cert-count {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--accent);
+  background: rgba(255, 145, 87, 0.12);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.fmo-cert-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.fmo-cert-slot {
+  position: relative;
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.fmo-cert-slot:hover:not(:disabled) {
+  border-color: rgba(91, 192, 255, 0.4);
+  background: rgba(91, 192, 255, 0.05);
+}
+
+.fmo-cert-slot[data-ready="true"] {
+  border-style: solid;
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.06);
+}
+
+.fmo-cert-slot-name {
+  color: #eef4f8;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.fmo-cert-slot-file {
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  font-family: var(--mono, monospace);
+  overflow-wrap: anywhere;
+}
+
+.fmo-cert-slot-ok {
+  color: #22c55e;
+  font-size: 0.72rem;
+}
+
+.fmo-cert-slot-choose {
+  color: var(--cool);
+  font-size: 0.72rem;
+}
+
+.fmo-cert-msg {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+/* 连接 */
+.fmo-conn-row {
+  display: grid;
+  grid-template-columns: 64px 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.fmo-conn-label {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.fmo-conn-value {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.fmo-conn-value[data-state="connected"],
+.fmo-conn-value[data-state="verified"] {
+  color: var(--success, #22c55e);
+}
+
+.fmo-conn-value[data-state="connecting"],
+.fmo-conn-value[data-state="logged-in"] {
+  color: var(--cool);
+}
+
+.fmo-conn-value[data-state="error"] {
+  color: #ff7070;
+}
+
+.fmo-conn-detail {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* 参数 */
+.fmo-param-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.fmo-param-row > span {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+.fmo-param-row .auth-server-mode {
+  flex-shrink: 0;
+}
+
+.fmo-param-row input[type="text"] {
+  min-width: 0;
+  flex: 1;
+  max-width: 180px;
+}
+
+@media (max-width: 480px) {
+  .fmo-cert-grid {
+    grid-template-columns: 1fr;
+  }
 }

@@ -3,7 +3,8 @@ import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRe
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
-import { platformRegister } from "@/lib/platform";
+import { platformFetchGroupDevices, platformRegister } from "@/lib/platform";
+import { useFmoStore } from "@/stores/fmo";
 import {
   checkUpdate,
   closePttWindow,
@@ -14,12 +15,11 @@ import {
   openPttWindow,
   readVoiceFile,
   startPttWindowDrag,
-  togglePttWindow,
 } from "@/lib/tauri";
 import type { UpdateInfo } from "@/lib/tauri";
 import { usePlatformStore } from "@/stores/platform";
 import { useRuntimeStore } from "@/stores/runtime";
-import type { ChatMessageEvent, PlatformRegisterPayload, SerialTunnelConfig } from "@/types";
+import type { ChatMessageEvent, FmoServer, PlatformDevice, PlatformGroup, PlatformRegisterPayload, SerialTunnelConfig, TimelineEvent } from "@/types";
 
 type Lang = "zh" | "en";
 
@@ -59,7 +59,13 @@ type Lang = "zh" | "en";
 const HOLD_THRESHOLD_MS = 320;
 const runtime = useRuntimeStore();
 const platform = usePlatformStore();
+const fmo = useFmoStore();
 const isPttWindow = window.location.hash === "#ptt";
+
+const protocol = computed(() => runtime.config.protocol || "nrl");
+const isFmo = computed(() => protocol.value === "fmo");
+// 顶部仪表/通话标识激活条件：NRL 需平台登录，FMO 只要协议激活即可
+const uiActive = computed(() => platform.loggedIn || isFmo.value);
 
 const draftMessage = ref("");
 const pttKeyDraft = ref("Space");
@@ -76,7 +82,12 @@ const serialTunnelDraft = ref<SerialTunnelConfig>({
 });
 const defaultAudioPath = ref("");
 const showSettings = ref(false);
-const showLogs = ref(false);
+const settingsTab = ref<"nrl" | "fmo">("nrl");
+const logListEl = ref<HTMLElement | null>(null);
+// 用户上翻查看历史时暂停自动跟随，回到底部后恢复
+const logFollowBottom = ref(true);
+// 消息 / 日志 Tab 切换
+const chatTab = ref<"messages" | "logs">("messages");
 const updateInfo = ref<UpdateInfo | null>(null);
 const updateDownloading = ref(false);
 const updateProgress = ref(0);
@@ -91,7 +102,7 @@ const listeningPttKey = ref(false);
 const pttPressed = ref(false);
 const holdActivated = ref(false);
 const holdTimerId = ref<number | null>(null);
-const animationTimerId = ref<number | null>(null);
+const realtimeRafId = ref<number | null>(null);
 const clockTimerId = ref<number | null>(null);
 const serialRateTimerId = ref<number | null>(null);
 const animationTick = ref(0);
@@ -118,6 +129,22 @@ const registerLicense = ref<{
   bytes: Uint8Array;
 } | null>(null);
 
+const fmoAprsCallsign = ref("");
+const fmoCertMsg = ref("");
+const fmoMuted = ref(false);
+
+// FMO 证书：需要完整 4 个
+const fmoCertSlots = [
+  { name: "cert_user", label: "用户证书 User Cert", file: "cert_user.json" },
+  { name: "cert_int", label: "中级证书 Inter CA", file: "cert_int.json" },
+  { name: "cert_root", label: "根证书 Root CA", file: "cert_root.json" },
+  { name: "cert_devicekey", label: "设备密钥 Device Key", file: "cert_devicekey.json" },
+] as const;
+
+const fmoCertReadyCount = computed(
+  () => fmoCertSlots.filter((s) => fmo.state.certs.some((c) => c.name === s.name)).length,
+);
+
 const MAX_REGISTER_IMAGE_BYTES = 512 * 1024;
 
 const playingMessageId = ref<string | null>(null);
@@ -127,11 +154,19 @@ const waveformCanvases = new Map<string, HTMLCanvasElement>();
 const waveformHoverIndex = new Map<string, number | null>();
 const rxMeterCanvas = ref<HTMLCanvasElement | null>(null);
 const txMeterCanvas = ref<HTMLCanvasElement | null>(null);
+const fmoRxMeterCanvas = ref<HTMLCanvasElement | null>(null);
+const fmoTxMeterCanvas = ref<HTMLCanvasElement | null>(null);
+const nrlSpectrumCanvas = ref<HTMLCanvasElement | null>(null);
+const fmoSpectrumCanvas = ref<HTMLCanvasElement | null>(null);
 const spectrumCanvas = ref<HTMLCanvasElement | null>(null);
-const meterDisplayLevel = new Map<"rx" | "tx", number>();
-const meterPeakLevel = new Map<"rx" | "tx", number>();
+const meterDisplayLevel = new Map<"rx" | "tx" | "fmo-rx" | "fmo-tx", number>();
+const meterPeakLevel = new Map<"rx" | "tx" | "fmo-rx" | "fmo-tx", number>();
+// 小频谱柱的逐帧平滑显示值（与电平表同思路：上升快、回落慢），按 nrl/fmo 分开缓存
+const miniSpectrumLevels: Record<"nrl" | "fmo", number[]> = { nrl: [], fmo: [] };
 const rxPeakDisplay = ref(0);
 const txPeakDisplay = ref(0);
+const fmoRxPeakDisplay = ref(0);
+const fmoTxPeakDisplay = ref(0);
 const spectrumHoverIndex = ref<number | null>(null);
 let serialRateLast = { rxBytes: 0, txBytes: 0, at: 0 };
 const spectrumDisplayLevels = ref<number[]>([]);
@@ -256,7 +291,11 @@ function prepareCanvas(canvas: HTMLCanvasElement, fallbackWidth: number, fallbac
   return { ctx, width, height, dpr };
 }
 
-function drawMeter(canvas: HTMLCanvasElement | null, level: number, tone: "rx" | "tx") {
+function drawMeter(
+  canvas: HTMLCanvasElement | null,
+  level: number,
+  tone: "rx" | "tx" | "fmo-rx" | "fmo-tx",
+) {
   if (!canvas) return;
   const prepared = prepareCanvas(canvas, 120, 10);
   if (!prepared) return;
@@ -273,8 +312,12 @@ function drawMeter(canvas: HTMLCanvasElement | null, level: number, tone: "rx" |
   meterPeakLevel.set(tone, peakLevel);
   if (tone === "rx") {
     rxPeakDisplay.value = peakLevel;
-  } else {
+  } else if (tone === "tx") {
     txPeakDisplay.value = peakLevel;
+  } else if (tone === "fmo-rx") {
+    fmoRxPeakDisplay.value = peakLevel;
+  } else if (tone === "fmo-tx") {
+    fmoTxPeakDisplay.value = peakLevel;
   }
   const peakX = Math.max(0, Math.min(width - 2, width * peakLevel));
   const segmentGap = Math.max(1, Math.round(dpr));
@@ -434,9 +477,74 @@ function drawSpectrumCanvas() {
 }
 
 function redrawRealtimeCanvases() {
-  drawMeter(rxMeterCanvas.value, platform.loggedIn ? runtime.snapshot.rxLevel : 0, "rx");
-  drawMeter(txMeterCanvas.value, platform.loggedIn ? runtime.snapshot.txLevel : 0, "tx");
-  drawSpectrumCanvas();
+  drawMeter(rxMeterCanvas.value, uiActive.value ? runtime.snapshot.rxLevel : 0, "rx");
+  drawMeter(txMeterCanvas.value, uiActive.value ? runtime.snapshot.txLevel : 0, "tx");
+  drawMeter(fmoRxMeterCanvas.value, fmo.stats.rxLevel, "fmo-rx");
+  drawMeter(fmoTxMeterCanvas.value, fmo.stats.txLevel, "fmo-tx");
+  drawMiniSpectrum(nrlSpectrumCanvas.value, nrlSpectrumBars.value, "nrl");
+  drawMiniSpectrum(fmoSpectrumCanvas.value, fmoSpectrumBars.value, "fmo");
+}
+
+// 窄柱频谱：NRL / FMO 各自 box 内的独立波形（柱宽小、更密）
+function drawMiniSpectrum(
+  canvas: HTMLCanvasElement | null,
+  bars: number[],
+  tone: "nrl" | "fmo",
+) {
+  if (!canvas) return;
+  const cssWidth = canvas.clientWidth || 460;
+  const cssHeight = canvas.clientHeight || 64;
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.round(cssWidth * dpr));
+  const height = Math.max(1, Math.round(cssHeight * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, width, height);
+
+  // 窄柱：细柱 + 小间隙，约 48 柱
+  const count = 48;
+  const gap = Math.max(1 * dpr, Math.round(width * 0.002));
+  const barWidth = Math.max(1.5 * dpr, (width - gap * (count - 1)) / count);
+  const floorY = height - 3 * dpr;
+  const color =
+    tone === "nrl"
+      ? { c1: "rgba(255,145,87,0.75)", c2: "rgba(255,190,120,0.9)" }
+      : { c1: "rgba(91,192,255,0.75)", c2: "rgba(150,225,255,0.9)" };
+
+  const levels = miniSpectrumLevels[tone];
+  for (let i = 0; i < count; i++) {
+    // 把 28 频段频谱线性映射到 48 窄柱
+    const sourceIndex = Math.min(bars.length - 1, Math.floor((i / count) * bars.length));
+    const base = bars[sourceIndex] ?? 0;
+    // 逐帧平滑：数据低频突发到达（FMO 约 4 次/秒）时柱子也连续起伏，而不是跳变
+    const target = Math.min(1, Math.max(0.05, base));
+    const prev = levels[i] ?? target;
+    const smoothed = target > prev
+      ? prev + (target - prev) * 0.5
+      : prev + (target - prev) * 0.18;
+    levels[i] = smoothed;
+    const shimmer = (Math.sin(animationTick.value * 0.025 + i * 0.6) + 1) * 0.02;
+    const level = Math.min(1, Math.max(0.05, smoothed + shimmer));
+    const barHeight = Math.max(3 * dpr, level * (height - 6 * dpr));
+    const y = floorY - barHeight;
+    const grad = ctx.createLinearGradient(0, y, 0, height);
+    grad.addColorStop(0, color.c2);
+    grad.addColorStop(1, color.c1);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.roundRect(i * (barWidth + gap), y, barWidth, barHeight, Math.min(barWidth / 2, 1.5 * dpr));
+    ctx.fill();
+  }
+  ctx.strokeStyle = "rgba(255,255,255,0.06)";
+  ctx.lineWidth = Math.max(1, dpr * 0.6);
+  ctx.beginPath();
+  ctx.moveTo(0, floorY + 0.5);
+  ctx.lineTo(width, floorY + 0.5);
+  ctx.stroke();
 }
 
 function handleSpectrumHover(event: MouseEvent) {
@@ -983,29 +1091,41 @@ const messages = {
 
 const t = computed(() => messages[language.value]);
 
-const txLabel = computed(() => {
-  if (runtime.snapshot.activeSpeaker) return `${runtime.snapshot.activeSpeaker}-${runtime.snapshot.activeSpeakerSsid}`;
-  if (runtime.snapshot.isTransmitting) return t.value.txActive;
-  return t.value.txIdle;
+// 悬浮窗双 PTT：各自独立的禁用条件与状态文案
+const nrlPttDisabled = computed(() => runtime.busy || nrlLinkState.value !== "online");
+const fmoPttDisabled = computed(() => fmo.busy || fmo.state.mqttState !== "connected");
+const nrlStatusText = computed(() => {
+  const zh = language.value === "zh";
+  if (nrlLinkState.value === "online") return zh ? "在线" : "Online";
+  if (nrlLinkState.value === "stale") return zh ? "断续" : "Weak";
+  return zh ? "离线" : "Offline";
 });
-const pttStatusReason = computed(() => {
-  if (isPttWindow) {
-    flog("[ptt] pttStatusReason check: busy=", runtime.busy, "connection=", runtime.snapshot.connection);
+const fmoStatusText = computed(() => {
+  const zh = language.value === "zh";
+  if (fmo.state.mqttState === "connected") return zh ? "在线" : "Online";
+  if (fmo.state.mqttState === "connecting") return zh ? "连接中" : "Connecting";
+  return zh ? "离线" : "Offline";
+});
+const pttLinksLabel = computed(() => `NRL ${nrlStatusText.value} · FMO ${fmoStatusText.value}`);
+
+// 悬浮窗各协议的当前说话人呼号（本机发射时显示本机呼号）
+const nrlTalkerLabel = computed(() => {
+  if (nrlPttActive.value || runtime.snapshot.isTransmitting) {
+    return `${runtime.snapshot.callsign}-${runtime.snapshot.ssid}`;
   }
-  if (runtime.busy) return "忙碌中";
-  if (runtime.snapshot.connection !== "connected") return "未连接";
-  return "";
+  return runtime.snapshot.activeSpeaker
+    ? `${runtime.snapshot.activeSpeaker}-${runtime.snapshot.activeSpeakerSsid}`
+    : "—";
 });
-const connectionLabel = computed(() => {
-  const map = {
-    connected: t.value.connected,
-    connecting: t.value.connecting,
-    disconnected: t.value.disconnected,
-    recovering: t.value.recovering,
-  } as const;
-  return map[runtime.snapshot.connection];
+const fmoTalkerLabel = computed(() => {
+  if (fmoPttActive.value) return fmo.stats.callsign || "—";
+  return fmo.stats.activeSpeaker || "—";
 });
 const currentTalker = computed(() => {
+  if (isFmo.value) {
+    // FMO 模式下 NRL 区只显示本机 NRL 呼号，互不干扰
+    return `${runtime.config.callsign || "-"}-${runtime.config.ssid}`;
+  }
   if (runtime.snapshot.connection !== "connected") {
     return "-";
   }
@@ -1018,6 +1138,9 @@ const currentTalker = computed(() => {
   return `${runtime.snapshot.activeSpeaker}-${runtime.snapshot.activeSpeakerSsid}`;
 });
 const currentTalkerRegion = computed(() => {
+  if (isFmo.value) {
+    return describeCallsignRegion(runtime.config.callsign);
+  }
   if (runtime.snapshot.connection !== "connected") {
     return t.value.regionUnknown;
   }
@@ -1029,7 +1152,6 @@ const currentTalkerRegion = computed(() => {
   }
   return describeCallsignRegion(runtime.snapshot.activeSpeaker);
 });
-const pttKeyLabel = computed(() => normalizeKeyLabel(runtime.config.pttKey));
 const groupSearch = ref("");
 const filteredGroups = computed(() => {
   const q = groupSearch.value.trim().toLowerCase();
@@ -1054,8 +1176,28 @@ const spectrumBars = computed(() => {
     : runtime.snapshot.rxSpectrum;
   return Array.from({ length: 28 }, (_, index) => {
     const base = source[index] ?? 0;
-    const shimmer = (Math.sin(animationTick.value * 0.16 + index * 0.52) + 1) * 0.025;
+    const shimmer = (Math.sin(animationTick.value * 0.022 + index * 0.52) + 1) * 0.025;
     return Math.min(1, Math.max(0.04, base + shimmer));
+  });
+});
+
+// NRL box 内独立波形（28 频段）
+const nrlSpectrumBars = computed(() => {
+  const source = runtime.snapshot.isTransmitting
+    ? runtime.snapshot.txSpectrum
+    : runtime.snapshot.rxSpectrum;
+  return Array.from({ length: 28 }, (_, index) => {
+    const base = source[index] ?? 0;
+    return Math.min(1, Math.max(0.04, base));
+  });
+});
+
+// FMO box 内独立波形（28 频段，来自 fmo stats）
+const fmoSpectrumBars = computed(() => {
+  const source = fmo.stats.rxSpectrum ?? [];
+  return Array.from({ length: 28 }, (_, index) => {
+    const base = source[index] ?? 0;
+    return Math.min(1, Math.max(0.04, base));
   });
 });
 const systemClockText = computed(() =>
@@ -1097,6 +1239,10 @@ function formatBitRate(value: number): string {
 const rxLevelDb = computed(() => formatDualDb(runtime.snapshot.rxLevel, rxPeakDisplay.value));
 
 const txLevelDb = computed(() => formatDualDb(runtime.snapshot.txLevel, txPeakDisplay.value));
+
+const fmoRxLevelDb = computed(() => formatDualDb(fmo.stats.rxLevel, fmoRxPeakDisplay.value));
+
+const fmoTxLevelDb = computed(() => formatDualDb(fmo.stats.txLevel, fmoTxPeakDisplay.value));
 const serialStatusText = computed(() => {
   if (!runtime.serialTunnel.supported) return t.value.serialUnsupported;
   if (runtime.serialTunnel.running) {
@@ -1149,10 +1295,10 @@ function clearHoldTimer() {
   }
 }
 
-function stopAnimationTimer() {
-  if (animationTimerId.value !== null) {
-    window.clearInterval(animationTimerId.value);
-    animationTimerId.value = null;
+function stopRealtimeLoop() {
+  if (realtimeRafId.value !== null) {
+    window.cancelAnimationFrame(realtimeRafId.value);
+    realtimeRafId.value = null;
   }
 }
 
@@ -1233,6 +1379,44 @@ function isMatchingPttKey(event: KeyboardEvent) {
   return normalizeKeyLabel(event.code || event.key) === target;
 }
 
+// NRL box 内 PTT：按下发射，松开停止
+const nrlPttActive = ref(false);
+const fmoPttActive = ref(false);
+
+async function pressNrlPtt(event?: PointerEvent) {
+  if (runtime.busy || nrlPttActive.value || nrlLinkState.value !== "online") {
+    return;
+  }
+  if (event?.currentTarget instanceof Element) {
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* ok */ }
+  }
+  nrlPttActive.value = true;
+  await runtime.setTxProto("nrl", true);
+}
+
+async function releaseNrlPtt() {
+  if (!nrlPttActive.value) return;
+  nrlPttActive.value = false;
+  await runtime.setTxProto("nrl", false);
+}
+
+async function pressFmoPtt(event?: PointerEvent) {
+  if (fmo.busy || fmoPttActive.value || fmo.state.mqttState !== "connected") {
+    return;
+  }
+  if (event?.currentTarget instanceof Element) {
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* ok */ }
+  }
+  fmoPttActive.value = true;
+  await runtime.setTxProto("fmo", true);
+}
+
+async function releaseFmoPtt() {
+  if (!fmoPttActive.value) return;
+  fmoPttActive.value = false;
+  await runtime.setTxProto("fmo", false);
+}
+
 function handleGlobalKeydown(event: KeyboardEvent) {
   if (listeningPttKey.value) {
     event.preventDefault();
@@ -1310,10 +1494,6 @@ async function refreshSerialPortsUi() {
   if (!runtime.serialPorts.includes(serialTunnelDraft.value.portName)) {
     serialTunnelDraft.value.portName = "";
   }
-}
-
-async function toggleFloatingPtt() {
-  await togglePttWindow();
 }
 
 async function browseVoicePath() {
@@ -1441,6 +1621,210 @@ function syncConfigDrafts() {
   serialTunnelDraft.value = { ...runtime.config.serialTunnel };
 }
 
+// ---------------------------------------------------------------- FMO
+
+const fmoServerName = (s: FmoServer | null | undefined) =>
+  (s?.name || s?.callsign || s?.host || "未选定").toString();
+
+async function setProtocol(next: "nrl" | "fmo") {
+  const wasFmo = isFmo.value;
+  if (next === wasFmo) {
+    return;
+  }
+  if (runtime.snapshot.connection === "connected") {
+    await runtime.disconnect();
+  }
+  await runtime.saveConfig({ ...runtime.config, protocol: next });
+  fmoMuted.value = false;
+}
+
+async function toggleFmoMute() {
+  fmoMuted.value = !fmoMuted.value;
+  await fmo.setRxPlay(!fmoMuted.value);
+}
+
+async function onFmoCertSlotChange(name: string) {
+  fmoCertMsg.value = "";
+  try {
+    // 用 dialog 打开文件选择器，返回真实本地路径（input[type=file] 在 Tauri 拿不到路径）
+    const selected = await open({
+      multiple: false,
+      title: language.value === "zh" ? `选择 ${name} 证书文件` : `Select ${name} cert file`,
+      filters: [
+        {
+          name: "JSON",
+          extensions: ["json"],
+        },
+      ],
+    });
+    if (!selected || typeof selected !== "string") {
+      return;
+    }
+    // 明确指定证书类型 name（cert_user/cert_int/cert_root/cert_devicekey）
+    const result = (await fmo.importCertFile(selected, name)) as { name?: string } | undefined;
+    // 导入后立即刷新：身份/呼号/UID/passcode/证书列表
+    await fmo.refresh();
+    const certLabel = fmoCertSlots.find((s) => s.name === name)?.label ?? name;
+    const ready = fmoCertReadyCount.value;
+    if (name === "cert_user") {
+      const cs = fmo.state.identity.callsign;
+      const uid = fmo.state.identity.uid;
+      fmoCertMsg.value = cs
+        ? (language.value === "zh"
+            ? `✓ ${certLabel} 导入成功：呼号 ${cs} · UID ${uid} · passcode ${fmo.state.passcode}`
+            : `✓ ${certLabel} imported: ${cs} · UID ${uid} · passcode ${fmo.state.passcode}`)
+        : (language.value === "zh"
+            ? `✓ ${certLabel} 已导入，但未解析到呼号，请确认文件内容`
+            : `✓ ${certLabel} imported, but no callsign parsed`);
+    } else {
+      fmoCertMsg.value = language.value === "zh"
+        ? `✓ ${certLabel} 导入成功（${ready}/4）`
+        : `✓ ${certLabel} imported (${ready}/4)`;
+    }
+  } catch (e) {
+    fmoCertMsg.value = String(e);
+  }
+}
+
+async function connectFmoAprs() {
+  const cs = (fmo.state.identity.callsign || fmo.state.certCallsign || fmoAprsCallsign.value || "").trim();
+  if (!cs) {
+    alert(language.value === "zh" ? "请输入 FMO 呼号（或先导入证书）" : "Enter FMO callsign");
+    return;
+  }
+  try {
+    await fmo.connectAprs(cs);
+  } catch (e) {
+    alert(String(e));
+  }
+}
+
+async function selectFmoServer(s: FmoServer) {
+  await fmo.selectServer(s);
+}
+
+async function selectFmoServerAndConnect(s: FmoServer) {
+  try {
+    await fmo.selectServer(s);
+    await connectFmoMqtt();
+  } catch (e) {
+    alert(String(e));
+  }
+}
+
+async function connectFmoMqtt() {
+  if (!fmo.selectedServer()) {
+    alert(language.value === "zh"
+      ? "请先在服务器列表中选择一台服务器，再点击 FMO 连接"
+      : "Select a server from the list first, then connect FMO");
+    return;
+  }
+  try {
+    // FMO 专用 MQTT 连接（fmo_mqtt_connect 内部会确保音频引擎启动）
+    await fmo.connectMqtt();
+  } catch (e) {
+    alert(String(e));
+  }
+}
+
+async function toggleFmoServerFavorite(s: FmoServer) {
+  const key = `${s.host}:${s.port ?? 1883}`;
+  const existing = fmo.state.favorites.find((f) => f.key === key);
+  if (existing) {
+    await fmo.removeFavorite(key);
+  } else {
+    await fmo.addFavorite(s);
+  }
+}
+
+// 群组在线设备弹窗
+const groupDevicesPopup = ref<{ group: PlatformGroup; devices: PlatformDevice[] } | null>(null);
+const groupDevicesLoading = ref(false);
+
+async function showGroupDevices(group: PlatformGroup) {
+  if (!platform.apiBase || !platform.token) {
+    return;
+  }
+  groupDevicesPopup.value = { group, devices: [] };
+  groupDevicesLoading.value = true;
+  try {
+    const devices = await platformFetchGroupDevices(platform.apiBase, platform.token, group.id);
+    groupDevicesPopup.value = { group, devices };
+  } catch (e) {
+    groupDevicesPopup.value = { group, devices: [] };
+  } finally {
+    groupDevicesLoading.value = false;
+  }
+}
+
+function isFmoServerFavorited(s: FmoServer): boolean {
+  const key = `${s.host}:${s.port ?? 1883}`;
+  return fmo.state.favorites.some((f) => f.key === key);
+}
+
+const fmoMqttText = computed(() => {
+  const map: Record<string, string> = {
+    connected: language.value === "zh" ? "已连接" : "Connected",
+    connecting: language.value === "zh" ? "连接中" : "Connecting",
+    error: language.value === "zh" ? "错误" : "Error",
+    disconnected: language.value === "zh" ? "未连接" : "Disconnected",
+  };
+  return map[fmo.state.mqttState] ?? fmo.state.mqttState;
+});
+
+const fmoAprsText = computed(() => {
+  const map: Record<string, string> = {
+    verified: language.value === "zh" ? "已校验" : "Verified",
+    "logged-in": language.value === "zh" ? "已登录" : "Logged In",
+    "listen-only": language.value === "zh" ? "仅收听" : "Listen-Only",
+    connecting: language.value === "zh" ? "连接中" : "Connecting",
+    disconnected: language.value === "zh" ? "未连接" : "Disconnected",
+  };
+  return map[fmo.state.aprsState] ?? fmo.state.aprsState;
+});
+
+// APRS 已建立连接（已校验/已登录/仅收听均视为在线），驱动标签加亮
+const fmoAprsOnline = computed(() =>
+  ["verified", "logged-in", "listen-only"].includes(fmo.state.aprsState),
+);
+
+// FMO 服务器列表：按在线设备数从高到低排序
+const sortedFmoServers = computed(() =>
+  [...fmo.state.servers].sort((a, b) => (b.online ?? 0) - (a.online ?? 0)),
+);
+
+// 语音活动检测：接收帧序号/计数变化视为有语音进来，900ms 内在大呼号右下角显示编码角标
+const nrlLastVoiceAt = ref(0);
+const fmoLastVoiceAt = ref(0);
+watch(
+  () => runtime.snapshot.rxSeq,
+  (seq) => {
+    if (seq) nrlLastVoiceAt.value = Date.now();
+  },
+);
+watch(
+  () => fmo.stats.rxFrames,
+  (n) => {
+    if (n) fmoLastVoiceAt.value = Date.now();
+  },
+);
+// NRL 链路状态：10s 内收到过 UDP 报文（语音/心跳等）为在线点亮，超过则闪烁告警
+const nrlLinkState = computed<"off" | "online" | "stale">(() => {
+  void animationTick.value; // 跟随 rAF 渲染循环周期性重估
+  const last = runtime.snapshot.nrlLastRxMs ?? 0;
+  if (!last) return "off";
+  return Date.now() - last < 10_000 ? "online" : "stale";
+});
+
+const nrlVoiceActive = computed(() => {
+  void animationTick.value; // 跟随 rAF 渲染循环周期性重估
+  return Date.now() - nrlLastVoiceAt.value < 900;
+});
+const fmoVoiceActive = computed(() => {
+  void animationTick.value;
+  return Date.now() - fmoLastVoiceAt.value < 900;
+});
+
 onMounted(async () => {
   try {
     const version = await getVersion();
@@ -1453,20 +1837,26 @@ onMounted(async () => {
     document.body.classList.add("ptt-window");
   }
   await runtime.bootstrap();
+  await fmo.bootstrap();
   defaultAudioPath.value = await getDefaultAudioDir();
   if (!isPttWindow) {
     await platform.bootstrap();
   }
   syncConfigDrafts();
-  showLogin.value = !isPttWindow && !platform.loggedIn;
+  showLogin.value = !isPttWindow && !platform.loggedIn && !isFmo.value;
   await onChatMessage((event) => {
     appendChatMessage(event);
   });
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("keyup", handleGlobalKeyup);
-  animationTimerId.value = window.setInterval(() => {
+  // 实时仪表/波形统一走 rAF 渲染循环：按屏幕刷新率绘制，数据事件只更新 store，
+  // 帧率不再受后端事件节奏限制（FMO 数据 240ms 突发到达也能平滑显示）
+  const realtimeLoop = () => {
     animationTick.value += 1;
-  }, 120);
+    redrawRealtimeCanvases();
+    realtimeRafId.value = window.requestAnimationFrame(realtimeLoop);
+  };
+  realtimeRafId.value = window.requestAnimationFrame(realtimeLoop);
   clockTimerId.value = window.setInterval(() => {
     currentTime.value = new Date();
   }, 1000);
@@ -1529,7 +1919,7 @@ onBeforeUnmount(() => {
     document.body.classList.remove("ptt-window");
   }
   clearHoldTimer();
-  stopAnimationTimer();
+  stopRealtimeLoop();
   stopClockTimer();
   stopSerialRateTimer();
   window.removeEventListener("keydown", handleGlobalKeydown);
@@ -1548,17 +1938,56 @@ watch(playingMessageId, () => {
   void nextTick(redrawWaveforms);
 });
 
+// 日志整行按类型着色：色键 = 标题 + 详情前缀（到首个 : 或 " 为止），
+// 使 "FMO 事件" 下的 TELE/广播/状态/APRS 等子类型各有固定颜色。
+// warn/accent 级别色优先（见 CSS），info 行返回三档亮度的同系色。
+interface LogLineColors {
+  time: string;
+  title: string;
+  detail: string;
+}
+
+function logLineColors(entry: TimelineEvent): LogLineColors | undefined {
+  if (entry.tone !== "info") return undefined;
+  const prefix = entry.detail.match(/^[^:"]{0,24}/)?.[0] ?? "";
+  const key = `${entry.title}|${prefix}`;
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  }
+  // 色相限制在 100°–330°（绿/青/蓝/紫），避开红橙黄，防止和 warn/accent 告警色混淆
+  const hue = 100 + (hash % 230);
+  return {
+    time: `hsl(${hue} 45% 52%)`,
+    title: `hsl(${hue} 78% 72%)`,
+    detail: `hsl(${hue} 55% 62%)`,
+  };
+}
+
+// 内嵌滚动日志：时间正序（新日志在底部），每行预计算类型颜色
+const logEntries = computed(() =>
+  [...runtime.timeline]
+    .reverse()
+    .map((entry) => ({ entry, colors: logLineColors(entry) })),
+);
+
+function handleLogScroll() {
+  const el = logListEl.value;
+  if (!el) return;
+  logFollowBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+}
+
+function scrollLogToBottom() {
+  const el = logListEl.value;
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
 watch(
-  [
-    () => platform.loggedIn,
-    () => runtime.snapshot.rxLevel,
-    () => runtime.snapshot.txLevel,
-    () => runtime.snapshot.isTransmitting,
-    () => animationTick.value,
-    spectrumBars,
-  ],
-  () => {
-    void nextTick(redrawRealtimeCanvases);
+  [() => runtime.timeline.length, chatTab],
+  async () => {
+    if (chatTab.value !== "logs" || !logFollowBottom.value) return;
+    await nextTick();
+    scrollLogToBottom();
   },
   { immediate: true },
 );
@@ -1592,10 +2021,10 @@ watch(
 
 <template>
   <main v-if="isPttWindow" class="shell shell-ptt">
-    <section class="ptt-console" :class="{ 'is-tx': runtime.snapshot.isTransmitting, 'is-offline': !!pttStatusReason }">
+    <section class="ptt-console" :class="{ 'is-tx': runtime.snapshot.isTransmitting }">
       <header class="ptt-console-head" @pointerdown="onHeaderPointerDown">
         <span class="ptt-status-led" :data-state="runtime.snapshot.connection"></span>
-        <span class="ptt-status-text">{{ pttStatusReason || connectionLabel }}</span>
+        <span class="ptt-status-text">{{ pttLinksLabel }}</span>
         <span class="ptt-grip" aria-hidden="true"></span>
         <button
           class="ptt-console-close"
@@ -1606,33 +2035,46 @@ watch(
       </header>
 
       <div class="ptt-console-body">
-        <button
-          class="ptt-dial"
-          :class="{
-            active: runtime.snapshot.isTransmitting,
-            pressed: runtime.snapshot.isTransmitting,
-            disabled: !!pttStatusReason,
-          }"
-          @pointerdown.prevent="pressPtt($event)"
-          @pointerup.prevent="releasePtt($event)"
-          @pointercancel.prevent="releasePtt($event)"
-        >
-          <span class="ptt-dial-halo"></span>
-          <span class="ptt-dial-ring"></span>
-          <span class="ptt-dial-core">
-            <span class="ptt-dial-label">PTT</span>
-            <span class="ptt-dial-sub">{{ pttKeyLabel }}</span>
-          </span>
-        </button>
-
-        <div class="ptt-console-info">
-          <span class="ptt-info-kicker ptt-info-key">⌨ {{ pttKeyLabel }}</span>
-          <strong class="ptt-info-callsign">{{ txLabel }}</strong>
-          <div class="ptt-info-meta">
-            <span class="ptt-info-chip ptt-info-room" :title="runtime.snapshot.roomName || '—'">
-              {{ runtime.snapshot.roomName || "—" }}
+        <div class="ptt-dial-slot">
+          <button
+            class="ptt-dial ptt-dial-nrl"
+            :class="{ active: nrlPttActive, pressed: nrlPttActive, disabled: nrlPttDisabled }"
+            @pointerdown.prevent="pressNrlPtt($event)"
+            @pointerup.prevent="releaseNrlPtt()"
+            @pointercancel.prevent="releaseNrlPtt()"
+          >
+            <span class="ptt-dial-halo"></span>
+            <span class="ptt-dial-ring"></span>
+            <span class="ptt-dial-core">
+              <span class="ptt-dial-label">NRL</span>
+              <span class="ptt-dial-sub">PTT</span>
             </span>
-          </div>
+          </button>
+          <strong class="ptt-dial-talker">{{ nrlTalkerLabel }}</strong>
+          <span class="ptt-dial-status" :class="{ online: nrlLinkState === 'online' }">
+            {{ nrlStatusText }}
+          </span>
+        </div>
+
+        <div class="ptt-dial-slot">
+          <button
+            class="ptt-dial ptt-dial-fmo"
+            :class="{ active: fmoPttActive, pressed: fmoPttActive, disabled: fmoPttDisabled }"
+            @pointerdown.prevent="pressFmoPtt($event)"
+            @pointerup.prevent="releaseFmoPtt()"
+            @pointercancel.prevent="releaseFmoPtt()"
+          >
+            <span class="ptt-dial-halo"></span>
+            <span class="ptt-dial-ring"></span>
+            <span class="ptt-dial-core">
+              <span class="ptt-dial-label">FMO</span>
+              <span class="ptt-dial-sub">PTT</span>
+            </span>
+          </button>
+          <strong class="ptt-dial-talker">{{ fmoTalkerLabel }}</strong>
+          <span class="ptt-dial-status" :class="{ online: fmo.state.mqttState === 'connected' }">
+            {{ fmoStatusText }}
+          </span>
         </div>
       </div>
     </section>
@@ -1642,72 +2084,61 @@ watch(
     <header class="topbar">
       <div class="topbar-summary">
         <div class="summary-item summary-callsign">
-          <span>{{ t.localCallsign }}</span>
-          <strong>{{ platform.loggedIn ? `${runtime.config.callsign}-${runtime.config.ssid}` : "-" }}</strong>
+          <span>NRL {{ t.localCallsign }}</span>
+          <strong>{{ uiActive ? `${runtime.config.callsign}-${runtime.config.ssid}` : "-" }}</strong>
         </div>
         <div class="summary-item">
           <span>{{ t.latency }}</span>
-          <strong>{{ platform.loggedIn ? runtime.snapshot.latencyMs : 0 }} ms</strong>
+          <strong>{{ uiActive ? runtime.snapshot.latencyMs : 0 }} ms</strong>
         </div>
         <div class="summary-item">
           <span>{{ t.jitter }}</span>
-          <strong>{{ platform.loggedIn ? runtime.snapshot.jitterMs : 0 }} ms</strong>
+          <strong>{{ uiActive ? runtime.snapshot.jitterMs : 0 }} ms</strong>
         </div>
         <div class="summary-item">
           <span>{{ t.loss }}</span>
-          <strong>{{ platform.loggedIn ? runtime.snapshot.packetLoss.toFixed(1) : "0.0" }}%</strong>
+          <strong>{{ uiActive ? runtime.snapshot.packetLoss.toFixed(1) : "0.0" }}%</strong>
         </div>
         <div class="summary-item">
           <span>{{ t.queue }}</span>
-          <strong>{{ platform.loggedIn ? runtime.snapshot.queuedFrames : 0 }}</strong>
+          <strong>{{ uiActive ? runtime.snapshot.queuedFrames : 0 }}</strong>
         </div>
-      </div>
-      <div class="summary-item summary-signal">
-        <div class="signal-stack">
-          <div class="signal-row">
-            <span>{{ t.receive }}</span>
-            <div class="mini-meter vu-meter">
-              <canvas ref="rxMeterCanvas" class="mini-meter-canvas" width="120" height="10"></canvas>
+        <div class="summary-item summary-signal nrl-vu">
+          <div class="signal-stack">
+            <div class="signal-row">
+              <span>{{ t.receive }}</span>
+              <div class="mini-meter vu-meter">
+                <canvas ref="rxMeterCanvas" class="mini-meter-canvas" width="120" height="10"></canvas>
+              </div>
+              <strong>{{ uiActive ? rxLevelDb : "-∞ dB" }}</strong>
             </div>
-            <strong>{{ platform.loggedIn ? rxLevelDb : "-∞ dB" }}</strong>
-          </div>
-          <div class="signal-row">
-            <span>{{ t.transmit }}</span>
-            <div class="mini-meter vu-meter">
-              <canvas ref="txMeterCanvas" class="mini-meter-canvas" width="120" height="10"></canvas>
+            <div class="signal-row">
+              <span>{{ t.transmit }}</span>
+              <div class="mini-meter vu-meter">
+                <canvas ref="txMeterCanvas" class="mini-meter-canvas" width="120" height="10"></canvas>
+              </div>
+              <strong>{{ uiActive ? txLevelDb : "-∞ dB" }}</strong>
             </div>
-            <strong>{{ platform.loggedIn ? txLevelDb : "-∞ dB" }}</strong>
           </div>
         </div>
-      </div>
-      <div class="summary-item summary-serial" :title="t.serialData">
-        <div class="serial-rate-stack">
-          <div class="serial-rate-row">
-            <span class="serial-led" :data-active="serialRxActive"></span>
-            <span>{{ t.serialRx }}</span>
-            <strong>{{ formatBitRate(serialRxBps) }}</strong>
-          </div>
-          <div class="serial-rate-row">
-            <span class="serial-led" :data-active="serialTxActive"></span>
-            <span>{{ t.serialTx }}</span>
-            <strong>{{ formatBitRate(serialTxBps) }}</strong>
+        <div class="summary-item summary-serial" :title="t.serialData">
+          <div class="serial-rate-stack">
+            <div class="serial-rate-row">
+              <span class="serial-led" :data-active="serialRxActive"></span>
+              <span>{{ t.serialRx }}</span>
+              <strong>{{ formatBitRate(serialRxBps) }}</strong>
+            </div>
+            <div class="serial-rate-row">
+              <span class="serial-led" :data-active="serialTxActive"></span>
+              <span>{{ t.serialTx }}</span>
+              <strong>{{ formatBitRate(serialTxBps) }}</strong>
+            </div>
           </div>
         </div>
       </div>
       <nav class="topbar-actions">
         <button class="ghost-btn lang-btn" @click="toggleLanguage">
           {{ language === "zh" ? "EN" : t.language }}
-        </button>
-        <button
-          class="ghost-btn"
-          :class="{ 'status-connected': platform.loggedIn }"
-          :disabled="platform.busy"
-          @click="showLogin = !showLogin"
-        >
-          {{ platform.loggedIn ? t.platformLoggedIn : t.platformLogin }}
-        </button>
-        <button class="ghost-btn" :disabled="runtime.busy" @click="showLogs = !showLogs">
-          {{ showLogs ? t.closeLogs : t.systemLogs }}
         </button>
         <button class="ghost-btn" :disabled="runtime.busy" @click="showSettings = !showSettings">
           {{ showSettings ? t.closeSettings : t.openSettings }}
@@ -1716,6 +2147,66 @@ watch(
           {{ t.checkUpdate }}
         </button>
       </nav>
+    </header>
+
+    <!-- FMO 独立统计栏（与 NRL 顶栏同时显示，单独统计） -->
+    <header class="topbar fmo-topbar">
+      <div class="topbar-summary">
+        <div class="summary-item summary-callsign">
+          <span>FMO {{ t.localCallsign }}</span>
+          <strong>{{ fmo.stats.callsign || "-" }}</strong>
+        </div>
+        <div class="summary-item">
+          <span>{{ t.latency }}</span>
+          <strong>{{ fmo.stats.latencyMs }} ms</strong>
+        </div>
+        <div class="summary-item">
+          <span>{{ t.jitter }}</span>
+          <strong>{{ fmo.stats.jitterMs }} ms</strong>
+        </div>
+        <div class="summary-item">
+          <span>{{ t.loss }}</span>
+          <strong>{{ fmo.stats.packetLoss.toFixed(1) }}%</strong>
+        </div>
+        <div class="summary-item">
+          <span>{{ t.queue }}</span>
+          <strong>{{ fmo.stats.queuedFrames }}</strong>
+        </div>
+        <div class="summary-item summary-signal fmo-vu">
+          <div class="signal-stack">
+            <div class="signal-row">
+              <span>{{ t.receive }}</span>
+              <div class="mini-meter vu-meter">
+                <canvas ref="fmoRxMeterCanvas" class="mini-meter-canvas" width="120" height="10"></canvas>
+              </div>
+              <strong>{{ fmoRxLevelDb }}</strong>
+            </div>
+            <div class="signal-row">
+              <span>{{ t.transmit }}</span>
+              <div class="mini-meter vu-meter">
+                <canvas ref="fmoTxMeterCanvas" class="mini-meter-canvas" width="120" height="10"></canvas>
+              </div>
+              <strong>{{ fmoTxLevelDb }}</strong>
+            </div>
+          </div>
+        </div>
+        <div class="summary-item">
+          <span>{{ language === "zh" ? "收帧" : "RX Frames" }}</span>
+          <strong>{{ fmo.stats.rxFrames }}</strong>
+        </div>
+        <div class="summary-item">
+          <span>{{ language === "zh" ? "发帧" : "TX Frames" }}</span>
+          <strong>{{ fmo.stats.txFrames }}</strong>
+        </div>
+        <div class="summary-item">
+          <span>{{ language === "zh" ? "遥测" : "Tele" }}</span>
+          <strong>{{ fmo.stats.serverInfo }}</strong>
+        </div>
+        <div class="summary-item">
+          <span>{{ language === "zh" ? "文本" : "Text" }}</span>
+          <strong>{{ fmo.stats.rxText }}</strong>
+        </div>
+      </div>
     </header>
 
     <!-- 更新提示横幅 -->
@@ -1749,65 +2240,230 @@ watch(
     <section class="dashboard-grid">
       <article class="card focus-card">
         <div class="callsign-stage">
-          <div class="system-clock" aria-label="System time">
-            <strong class="system-clock-time">{{ systemDateText }} · {{ systemClockText }}</strong>
-          </div>
-          <div class="callsign-tools">
+          <div class="callsign-stage-head">
+            <div class="system-clock" aria-label="System time">
+              <strong class="system-clock-time">{{ systemDateText }} · {{ systemClockText }}</strong>
+            </div>
             <button
-              class="ghost-btn tool-pill"
-              :class="{ 'status-connected': runtime.snapshot.connection === 'connected' }"
-              :disabled="runtime.busy"
-              @click="
-                runtime.snapshot.connection === 'connected'
-                  ? runtime.disconnect()
-                  : platform.loggedIn
-                    ? runtime.connect()
-                    : (showLogin = true)
-              "
-            >
-              {{ runtime.snapshot.connection === "connected" ? t.disconnect : t.connect }}
-            </button>
-            <button
-              class="icon-toggle"
-              :class="{ active: !runtime.snapshot.isMonitoring }"
-              :disabled="runtime.busy"
-              :title="runtime.snapshot.isMonitoring ? t.enableMute : t.disableMute"
-              @click="runtime.toggleRx()"
+              class="icon-toggle block-icon-btn"
+              :title="language === 'zh' ? '打开 PTT 悬浮窗' : 'Open floating PTT window'"
+              @click="openPttWindow()"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  v-if="runtime.snapshot.isMonitoring"
-                  d="M4 14h3.5l4.5 4V6l-4.5 4H4zm10.8-4.7a4.5 4.5 0 0 1 0 5.4m2.8-8.1a8.2 8.2 0 0 1 0 10.8"
-                />
-                <path
-                  v-else
-                  d="M4 14h3.5l4.5 4V6l-4.5 4H4m4.8 2.8 8.8-8.8m0 8.8-8.8-8.8"
-                />
+                <path d="M14 4h6v6M20 4l-8 8M9 5H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2" />
               </svg>
             </button>
-            <button class="ghost-btn tool-pill" :title="t.pttWindow" @click="toggleFloatingPtt">
-              {{ t.pttWindow }}
-            </button>
           </div>
-          <div class="callsign-spectrum" aria-hidden="true">
-            <canvas
-              ref="spectrumCanvas"
-              class="callsign-spectrum-canvas"
-              width="960"
-              height="240"
-              @mousemove="handleSpectrumHover"
-              @mouseleave="clearSpectrumHover"
-            ></canvas>
-          </div>
-          <div class="callsign-display">{{ currentTalker }}</div>
-          <div class="callsign-meta">
-            <span class="callsign-room callsign-region">{{ currentTalkerRegion }}</span>
-            <span class="callsign-room">{{ runtime.config.serverName || "-" }}</span>
-            <span class="callsign-room">{{ currentGroupText }}</span>
+          <div class="callsign-duo">
+            <div class="callsign-block callsign-nrl">
+              <div class="callsign-block-tags">
+                <button
+                  class="callsign-block-tag clickable"
+                  :class="{ online: nrlLinkState === 'online', stale: nrlLinkState === 'stale' }"
+                  :disabled="runtime.busy"
+                  :title="nrlLinkState !== 'off'
+                    ? (language === 'zh' ? '点击断开' : 'Click to disconnect')
+                    : (language === 'zh' ? '点击连接' : 'Click to connect')"
+                  @click="
+                    nrlLinkState !== 'off'
+                      ? runtime.disconnect()
+                      : platform.loggedIn
+                        ? runtime.connect()
+                        : (showLogin = true)
+                  "
+                >NRL</button>
+              </div>
+              <div class="callsign-block-tools">
+                <button
+                  class="ghost-btn tool-pill nrl-ptt"
+                  :class="{ 'ptt-active': nrlPttActive }"
+                  :disabled="nrlPttDisabled"
+                  @pointerdown.prevent="pressNrlPtt($event)"
+                  @pointerup.prevent="releaseNrlPtt($event)"
+                  @pointercancel.prevent="releaseNrlPtt($event)"
+                >
+                  PTT
+                </button>
+                <button
+                  class="icon-toggle block-mute"
+                  :class="{ active: !runtime.snapshot.isMonitoring }"
+                  :disabled="runtime.busy"
+                  :title="runtime.snapshot.isMonitoring ? t.enableMute : t.disableMute"
+                  @click="runtime.toggleRx()"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 14h3.5l4.5 4V6l-4.5 4H4z" />
+                    <path
+                      v-if="runtime.snapshot.isMonitoring"
+                      d="M14.8 9.3a4.5 4.5 0 0 1 0 5.4m2.8-8.1a8.2 8.2 0 0 1 0 10.8"
+                    />
+                    <path v-else class="mute-slash" d="M3.2 3.2 20.8 20.8" />
+                  </svg>
+                </button>
+              </div>
+              <div class="callsign-display">
+                <span class="callsign-text">
+                  {{ currentTalker }}
+                  <span v-if="nrlVoiceActive && runtime.snapshot.rxCodec" class="rx-codec-chip">
+                    {{ runtime.snapshot.rxCodec }}
+                  </span>
+                </span>
+              </div>
+              <div class="callsign-meta">
+                <span class="callsign-room callsign-region">{{ currentTalkerRegion }}</span>
+                <span class="callsign-room">{{ runtime.config.serverName || "-" }}</span>
+                <span class="callsign-room">{{ currentGroupText }}</span>
+              </div>
+              <div class="callsign-mini-spectrum" aria-hidden="true">
+                <canvas
+                  ref="nrlSpectrumCanvas"
+                  class="callsign-mini-spectrum-canvas"
+                  width="460"
+                  height="64"
+                ></canvas>
+              </div>
+            </div>
+            <div class="callsign-divider"></div>
+            <div class="callsign-block callsign-fmo">
+              <div class="callsign-block-tags">
+                <button
+                  class="callsign-block-tag clickable"
+                  :class="{ online: fmo.state.mqttState === 'connected' }"
+                  :disabled="fmo.busy"
+                  :title="fmo.state.mqttState === 'connected'
+                    ? (language === 'zh' ? '点击断开' : 'Click to disconnect')
+                    : (language === 'zh' ? '点击连接' : 'Click to connect')"
+                  @click="
+                    fmo.state.mqttState === 'connected' ? fmo.disconnectMqtt() : connectFmoMqtt()
+                  "
+                >FMO</button>
+                <button
+                  class="callsign-block-tag clickable"
+                  :class="{ online: fmoAprsOnline }"
+                  :disabled="fmo.busy"
+                  :title="fmo.state.aprsState !== 'disconnected'
+                    ? (language === 'zh' ? '点击断开 APRS' : 'Click to disconnect APRS')
+                    : (language === 'zh' ? '点击连接 APRS' : 'Click to connect APRS')"
+                  @click="
+                    fmo.state.aprsState !== 'disconnected' ? fmo.disconnectAprs() : connectFmoAprs()
+                  "
+                >APRS</button>
+              </div>
+              <div class="callsign-block-tools">
+                <button
+                  class="ghost-btn tool-pill fmo-ptt"
+                  :class="{ 'ptt-active': fmoPttActive }"
+                  :disabled="fmo.busy || fmo.state.mqttState !== 'connected'"
+                  @pointerdown.prevent="pressFmoPtt($event)"
+                  @pointerup.prevent="releaseFmoPtt($event)"
+                  @pointercancel.prevent="releaseFmoPtt($event)"
+                >
+                  PTT
+                </button>
+                <button
+                  class="icon-toggle block-mute"
+                  :class="{ active: fmoMuted }"
+                  :disabled="fmo.busy"
+                  :title="fmoMuted ? t.disableMute : t.enableMute"
+                  @click="toggleFmoMute"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 14h3.5l4.5 4V6l-4.5 4H4z" />
+                    <path
+                      v-if="!fmoMuted"
+                      d="M14.8 9.3a4.5 4.5 0 0 1 0 5.4m2.8-8.1a8.2 8.2 0 0 1 0 10.8"
+                    />
+                    <path v-else class="mute-slash" d="M3.2 3.2 20.8 20.8" />
+                  </svg>
+                </button>
+              </div>
+              <div class="callsign-display callsign-display-fmo">
+                <span class="callsign-text">
+                  {{
+                    fmo.stats.activeSpeaker
+                      ? fmo.stats.activeSpeaker
+                      : fmo.stats.callsign || "-"
+                  }}
+                  <span v-if="fmoVoiceActive && fmo.stats.rxCodec" class="rx-codec-chip">
+                    {{ fmo.stats.rxCodec }}
+                  </span>
+                </span>
+              </div>
+              <div class="callsign-meta">
+                <span class="callsign-room">
+                  {{ fmo.stats.callsign ? `${fmo.stats.callsign} · uid ${fmo.stats.uid || "-"}` : "-" }}
+                </span>
+                <span class="callsign-room">
+                  {{ fmo.stats.mqttState === "connected" ? fmoMqttText : "MQTT " + fmoMqttText }}
+                </span>
+                <span class="callsign-room">
+                  {{ fmo.stats.serverName || "-" }}
+                  <template v-if="fmo.stats.serverHost">· {{ fmo.stats.serverHost }}:{{ fmo.stats.serverPort }}</template>
+                </span>
+              </div>
+              <div class="callsign-mini-spectrum" aria-hidden="true">
+                <canvas
+                  ref="fmoSpectrumCanvas"
+                  class="callsign-mini-spectrum-canvas"
+                  width="460"
+                  height="64"
+                ></canvas>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div class="ops-grid">
+        <div class="ops-grid ops-grid-3col">
+          <!-- FMO 收藏面板：点击切换并连接 -->
+          <section class="ops-panel fmo-ops-panel">
+            <div class="ops-head">
+              <div>
+                <p class="section-kicker">FMO {{ language === "zh" ? "收藏服务器" : "Favorite Servers" }}</p>
+              </div>
+              <div class="ops-head-right">
+                <span class="fmo-state-chip" :data-state="fmo.state.mqttState">
+                  MQTT: {{ fmoMqttText }}
+                </span>
+                <span class="fmo-state-chip" :data-state="fmo.state.aprsState">
+                  APRS: {{ fmoAprsText }}
+                </span>
+              </div>
+            </div>
+            <div class="fmo-ops-body">
+              <div v-if="fmo.state.favorites.length" class="fmo-ops-list">
+                <article
+                  v-for="fav in fmo.state.favorites"
+                  :key="fav.key"
+                  class="fmo-server-row"
+                  :class="{ selected: fmo.selectedServer()?.key === fav.key }"
+                  @click="selectFmoServerAndConnect(fav as unknown as FmoServer)"
+                >
+                  <div class="fmo-server-main">
+                    <strong>{{ fav.name || fav.callsign || fav.host }}</strong>
+                    <span>{{ fav.host }}:{{ fav.port }} · {{ fav.online ?? "?" }}/{{ fav.total ?? "?" }}</span>
+                  </div>
+                  <div class="fmo-server-actions">
+                    <span class="fmo-server-meta">★</span>
+                    <button
+                      class="icon-btn"
+                      :title="language === 'zh' ? '取消收藏' : 'Unfavorite'"
+                      @click.stop="fmo.removeFavorite(fav.key)"
+                    >
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                        <path d="M6 19V5h2v14H6zm4 0V5h2v14h-2zm4 0V5h2v14h-2z"/>
+                      </svg>
+                    </button>
+                  </div>
+                </article>
+              </div>
+              <div v-else class="ops-empty">
+                {{ language === "zh"
+                  ? "暂无收藏服务器，请在设置中连接 APRS 发现服务器后点 ☆ 收藏"
+                  : "No favorites yet. Connect APRS in Settings, then star a server." }}
+              </div>
+            </div>
+          </section>
+
           <section class="ops-panel">
             <div class="ops-head">
               <div>
@@ -1843,32 +2499,12 @@ watch(
                 @click="switchGroup(group.id)"
               >
                 <strong>{{ group.id }} · {{ group.name }}</strong>
-                <span>{{ group.onlineDevNumber ?? 0 }}/{{ group.totalDevNumber ?? 0 }}</span>
+                <span
+                  class="group-chip-count"
+                  :title="language === 'zh' ? '点击查看在线设备' : 'Click to view online devices'"
+                  @click.stop="showGroupDevices(group)"
+                >{{ group.onlineDevNumber ?? 0 }}/{{ group.totalDevNumber ?? 0 }}</span>
               </button>
-            </div>
-          </section>
-
-          <section class="ops-panel roster-panel">
-            <div class="ops-head">
-              <div>
-                <p class="section-kicker">{{ t.onlineDevices }}</p>
-              </div>
-              <div class="roster-stats">
-                {{ platform.currentGroup?.onlineDevNumber ?? 0 }}/{{ platform.currentGroup?.totalDevNumber ?? 0 }}
-              </div>
-            </div>
-            <div v-if="!platform.loggedIn" class="ops-empty">
-            </div>
-            <div v-else-if="platform.onlineDevices.length === 0" class="ops-empty">
-              {{ t.noOnlineDevices }}
-            </div>
-            <div v-else class="roster-list">
-              <article v-for="device in platform.onlineDevices" :key="device.id" class="roster-card">
-                <div>
-                  <strong>{{ device.callsign }}-{{ device.ssid }}</strong>
-                  <p>{{ device.name || device.qth || t.onlineDevice }}</p>
-                </div>
-              </article>
             </div>
           </section>
         </div>
@@ -1876,12 +2512,30 @@ watch(
 
       <article class="card chat-card">
         <div class="section-head chat-head">
-          <div>
-            <p class="section-kicker">{{ t.commandText }}</p>
+          <div class="chat-tabs">
+            <button
+              class="chat-tab"
+              :class="{ active: chatTab === 'messages' }"
+              @click="chatTab = 'messages'"
+            >
+              {{ t.commandText }}
+            </button>
+            <button
+              class="chat-tab"
+              :class="{ active: chatTab === 'logs' }"
+              @click="chatTab = 'logs'"
+            >
+              {{ t.systemLogs }}
+            </button>
           </div>
-          <span class="chat-status">{{ t.messagesCount(chatMessages.length) }}</span>
+          <span class="chat-status">{{
+            chatTab === "messages"
+              ? t.messagesCount(chatMessages.length)
+              : t.messagesCount(runtime.timeline.length)
+          }}</span>
         </div>
 
+        <template v-if="chatTab === 'messages'">
         <div class="chat-thread">
           <div
             v-for="message in chatMessages"
@@ -1935,15 +2589,36 @@ watch(
             </button>
           </div>
         </div>
+        </template>
+
+        <!-- 滚动日志：与消息区 Tab 切换，占满卡片剩余高度，新日志贴底跟随 -->
+        <div v-else ref="logListEl" class="log-list chat-log-list" @scroll.passive="handleLogScroll">
+          <div v-if="runtime.timeline.length === 0" class="log-empty">
+            {{ t.noLogs }}
+          </div>
+          <div
+            v-for="item in logEntries"
+            :key="item.entry.id"
+            class="log-line"
+            :data-tone="item.entry.tone"
+            :title="`${item.entry.time} ${item.entry.title} ${item.entry.detail}`"
+          >
+            <span class="log-line-time" :style="item.colors && { color: item.colors.time }">
+              {{ item.entry.time }}
+            </span>
+            <span class="log-line-title" :style="item.colors && { color: item.colors.title }">
+              {{ item.entry.title }}
+            </span>
+            <span class="log-line-detail" :style="item.colors && { color: item.colors.detail }">
+              {{ item.entry.detail }}
+            </span>
+          </div>
+        </div>
       </article>
     </section>
 
     <transition name="drawer-fade">
       <div v-if="showSettings" class="drawer-backdrop" @click="showSettings = false"></div>
-    </transition>
-
-    <transition name="drawer-fade">
-      <div v-if="showLogs" class="drawer-backdrop" @click="showLogs = false"></div>
     </transition>
 
     <transition name="drawer-fade">
@@ -1958,7 +2633,26 @@ watch(
         <button class="ghost-btn compact-ghost" @click="showSettings = false">{{ t.close }}</button>
       </div>
 
-      <div class="settings-list">
+      <!-- 设置标签页：NRL / FMO 分开 -->
+      <div class="settings-tabs">
+        <button
+          class="settings-tab"
+          :class="{ active: settingsTab === 'nrl' }"
+          @click="settingsTab = 'nrl'"
+        >
+          NRL
+        </button>
+        <button
+          class="settings-tab"
+          :class="{ active: settingsTab === 'fmo' }"
+          @click="settingsTab = 'fmo'"
+        >
+          FMO
+        </button>
+      </div>
+
+      <!-- NRL 设置 -->
+      <div v-if="settingsTab === 'nrl'" class="settings-list">
         <div class="flag-grid">
           <button class="ghost-btn flag-card keybind-box" :disabled="runtime.busy" @click="beginPttKeyCapture">
             <span>{{ t.pttHotkey }}</span>
@@ -1981,6 +2675,26 @@ watch(
             <strong>{{ runtime.snapshot.devices.aecEnabled ? t.enabled : t.disabled }}</strong>
           </div>
         </div>
+        <div class="setting-row">
+          <span>{{ language === "zh" ? "语音编码" : "Voice Codec" }}</span>
+          <div class="auth-server-mode">
+            <button
+              class="mode-chip"
+              :data-active="runtime.config.voiceCodec !== 'opus'"
+              @click="runtime.saveConfig({ ...runtime.config, voiceCodec: 'alaw' })"
+            >
+              G.711
+            </button>
+            <button
+              class="mode-chip"
+              :data-active="runtime.config.voiceCodec === 'opus'"
+              @click="runtime.saveConfig({ ...runtime.config, voiceCodec: 'opus' })"
+            >
+              Opus
+            </button>
+          </div>
+        </div>
+
         <div class="setting-row">
           <span>{{ t.inputDevice }}</span>
           <strong>{{ runtime.snapshot.devices.inputDevice }}</strong>
@@ -2088,6 +2802,171 @@ watch(
         </div>
       </div>
 
+      <!-- FMO 设置 -->
+      <div v-if="settingsTab === 'fmo'" class="settings-list">
+        <div class="fmo-panel">
+          <!-- ① 身份 -->
+          <div class="fmo-section">
+            <div class="fmo-section-head">
+              <span class="fmo-section-tag">①</span>
+              <span>{{ language === "zh" ? "身份" : "Identity" }}</span>
+            </div>
+            <div class="fmo-id-grid">
+              <div class="fmo-id-cell">
+                <span>{{ language === "zh" ? "呼号" : "Callsign" }}</span>
+                <strong>{{ fmo.state.identity.callsign || "-" }}</strong>
+              </div>
+              <div class="fmo-id-cell">
+                <span>UID</span>
+                <strong>{{ fmo.state.identity.uid || "-" }}</strong>
+              </div>
+              <div class="fmo-id-cell">
+                <span>APRS Passcode</span>
+                <strong>{{ fmo.state.passcode || "-" }}</strong>
+              </div>
+            </div>
+          </div>
+
+          <!-- ② 证书（4 个独立导入） -->
+          <div class="fmo-section">
+            <div class="fmo-section-head">
+              <span class="fmo-section-tag">②</span>
+              <span>{{ language === "zh" ? "证书（需完整 4 个）" : "Certs (all 4)" }}</span>
+              <span class="fmo-cert-count">{{ fmoCertReadyCount }}/4</span>
+            </div>
+            <div class="fmo-cert-grid">
+              <button
+                v-for="slot in fmoCertSlots"
+                :key="slot.name"
+                class="fmo-cert-slot"
+                :data-ready="fmo.state.certs.some((c) => c.name === slot.name)"
+                :disabled="fmo.busy"
+                :title="language === 'zh' ? `选择 ${slot.file}` : `Select ${slot.file}`"
+                @click="onFmoCertSlotChange(slot.name)"
+              >
+                <span class="fmo-cert-slot-name">{{ slot.label }}</span>
+                <span class="fmo-cert-slot-file">{{ slot.file }}</span>
+                <small v-if="fmo.state.certs.some((c) => c.name === slot.name)" class="fmo-cert-slot-ok">
+                  ✓ {{ language === "zh" ? "已导入" : "Imported" }}
+                </small>
+                <small v-else class="fmo-cert-slot-choose">
+                  {{ language === "zh" ? "点击选择文件…" : "Click to choose…" }}
+                </small>
+              </button>
+            </div>
+            <small v-if="fmoCertMsg" class="fmo-cert-msg">{{ fmoCertMsg }}</small>
+          </div>
+
+          <!-- ③ 连接 -->
+          <div class="fmo-section">
+            <div class="fmo-section-head">
+              <span class="fmo-section-tag">③</span>
+              <span>{{ language === "zh" ? "连接" : "Connection" }}</span>
+            </div>
+            <div class="fmo-conn-row">
+              <span class="fmo-conn-label">APRS</span>
+              <span class="fmo-conn-value" :data-state="fmo.state.aprsState">
+                {{ fmoAprsText }}
+              </span>
+              <button
+                class="ghost-btn compact"
+                :disabled="fmo.busy"
+                @click="fmo.state.aprsState !== 'disconnected' ? fmo.disconnectAprs() : connectFmoAprs()"
+              >
+                {{
+                  fmo.state.aprsState !== "disconnected"
+                    ? language === "zh" ? "断开" : "Disconnect"
+                    : language === "zh" ? "连接" : "Connect"
+                }}
+              </button>
+            </div>
+            <div class="fmo-conn-row">
+              <span class="fmo-conn-label">MQTT</span>
+              <span class="fmo-conn-value" :data-state="fmo.state.mqttState">
+                {{ fmoMqttText }}
+              </span>
+              <button
+                class="ghost-btn compact"
+                :disabled="fmo.busy"
+                @click="fmo.state.mqttState === 'connected' ? fmo.disconnectMqtt() : connectFmoMqtt()"
+              >
+                {{
+                  fmo.state.mqttState === "connected"
+                    ? language === "zh" ? "FMO 断开" : "FMO Disconnect"
+                    : language === "zh" ? "FMO 连接" : "FMO Connect"
+                }}
+              </button>
+            </div>
+            <div class="fmo-conn-detail" v-if="fmo.state.mqttDetail || fmo.state.aprsDetail">
+              {{ fmo.state.mqttDetail || fmo.state.aprsDetail }}
+            </div>
+          </div>
+
+          <!-- ④ 服务器列表 -->
+          <div class="fmo-section" v-if="fmo.state.servers.length || fmo.state.favorites.length">
+            <div class="fmo-section-head">
+              <span class="fmo-section-tag">④</span>
+              <span>{{ language === "zh" ? "服务器" : "Servers" }}</span>
+            </div>
+            <div class="fmo-server-list" v-if="fmo.state.servers.length">
+              <article
+                v-for="s in sortedFmoServers"
+                :key="s.key"
+                class="fmo-server-row"
+                :class="{ selected: fmo.selectedServer()?.key === s.key }"
+                @click="selectFmoServer(s)"
+              >
+                <div class="fmo-server-main">
+                  <strong>{{ s.name || s.callsign }}</strong>
+                  <span>{{ s.host }}:{{ s.port }}</span>
+                </div>
+                <div class="fmo-server-actions">
+                  <span
+                    class="fmo-server-meta online-count"
+                    :class="{ 'has-online': (s.online ?? 0) > 0 }"
+                  >
+                    {{ language === "zh" ? "在线" : "Online" }} {{ s.online ?? 0 }}/{{ s.total ?? "?" }}
+                  </span>
+                  <span v-if="s.cover_km" class="fmo-server-meta">{{ s.cover_km }}km</span>
+                  <button
+                    class="icon-btn fmo-star-btn"
+                    :class="{ active: isFmoServerFavorited(s) }"
+                    :title="language === 'zh' ? '收藏' : 'Favorite'"
+                    @click.stop="toggleFmoServerFavorite(s)"
+                  >
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                      <path d="M12 17.3l-6.2 3.7 1.6-7-5.4-4.7 7.1-.6L12 2l2.9 6.7 7.1.6-5.4 4.7 1.6 7z"/>
+                    </svg>
+                  </button>
+                </div>
+              </article>
+            </div>
+            <div class="fmo-favorites" v-if="fmo.state.favorites.length">
+              <article
+                v-for="fav in fmo.state.favorites"
+                :key="fav.key"
+                class="fmo-server-row"
+                :class="{ selected: fmo.selectedServer()?.key === fav.key }"
+                @click="selectFmoServer(fav as unknown as FmoServer)"
+              >
+                <div class="fmo-server-main">
+                  <strong>{{ fav.name || fav.callsign || fav.host }}</strong>
+                  <span>{{ fav.host }}:{{ fav.port }}</span>
+                </div>
+                <div class="fmo-server-actions">
+                  <span class="fmo-server-meta">★</span>
+                  <button class="icon-btn" @click.stop="fmo.removeFavorite(fav.key)">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                      <path d="M6 19V5h2v14H6zm4 0V5h2v14h-2zm4 0V5h2v14h-2z"/>
+                    </svg>
+                  </button>
+                </div>
+              </article>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="jitter-editor">
         <div class="jitter-label">
           <span>{{ t.jitterBuffer }}</span>
@@ -2101,33 +2980,6 @@ watch(
           :value="runtime.snapshot.devices.jitterBufferMs"
           @input="handleJitterInput"
         />
-      </div>
-    </aside>
-
-    <aside class="logs-drawer" :data-open="showLogs">
-      <div class="drawer-head">
-        <div>
-          <h2>日志</h2>
-        </div>
-        <button class="ghost-btn compact-ghost" @click="showLogs = false">{{ t.close }}</button>
-      </div>
-
-      <div class="log-list">
-        <div v-if="runtime.timeline.length === 0" class="log-empty">
-          {{ t.noLogs }}
-        </div>
-        <article
-          v-for="entry in runtime.timeline"
-          :key="entry.id"
-          class="log-card"
-          :data-tone="entry.tone"
-        >
-          <div class="log-meta">
-            <strong>{{ entry.title }}</strong>
-            <span>{{ entry.time }}</span>
-          </div>
-          <p>{{ entry.detail }}</p>
-        </article>
       </div>
     </aside>
 
@@ -2287,5 +3139,33 @@ watch(
         </template>
       </div>
     </aside>
+
+    <!-- 群组在线设备弹窗 -->
+    <transition name="drawer-fade">
+      <div v-if="groupDevicesPopup" class="drawer-backdrop" @click="groupDevicesPopup = null"></div>
+    </transition>
+    <transition name="drawer-fade">
+      <div v-if="groupDevicesPopup" class="device-popup">
+        <div class="drawer-head">
+          <div>
+            <h2>{{ groupDevicesPopup.group.id }} · {{ groupDevicesPopup.group.name }}</h2>
+          </div>
+          <button class="ghost-btn compact-ghost" @click="groupDevicesPopup = null">{{ t.close }}</button>
+        </div>
+        <div class="device-popup-list">
+          <div v-if="groupDevicesLoading" class="ops-empty">…</div>
+          <div v-else-if="groupDevicesPopup.devices.length === 0" class="ops-empty">
+            {{ t.noOnlineDevices }}
+          </div>
+          <article v-for="device in groupDevicesPopup.devices" :key="device.id" class="roster-card">
+            <div>
+              <strong>{{ device.callsign }}-{{ device.ssid }}</strong>
+              <p>{{ device.name || device.qth || t.onlineDevice }}</p>
+            </div>
+            <span v-if="device.isOnline" class="device-online-dot"></span>
+          </article>
+        </div>
+      </div>
+    </transition>
   </main>
 </template>

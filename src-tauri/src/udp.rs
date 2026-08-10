@@ -8,6 +8,7 @@ use tokio::net::{lookup_host, UdpSocket};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::at::{decode_at, encode_at};
+use crate::audio::RxChannel;
 use crate::config::RuntimeConfig;
 use crate::g711::{decode_alaw_frame, encode_alaw_frame};
 use crate::nrl::NrlPacket;
@@ -130,6 +131,20 @@ impl UdpSession {
         .await
     }
 
+    /// 发送 NRL type=8 Opus 语音包（已编码的 Opus 帧）。
+    pub async fn send_voice_frame_opus(
+        &self,
+        config: &RuntimeConfig,
+        opus_packet: &[u8],
+    ) -> Result<(), String> {
+        self.send_packet(NrlPacket::voice_frame_opus(
+            &config.callsign,
+            config.ssid,
+            opus_packet.to_vec(),
+        ))
+        .await
+    }
+
     async fn send_packet(&self, packet: NrlPacket) -> Result<(), String> {
         let socket = {
             let guard = self.socket.lock().await;
@@ -245,11 +260,14 @@ async fn handle_packet(
     _config: &RuntimeConfig,
     packet: NrlPacket,
 ) {
+    // 任何成功解码的 NRL 报文都视为链路活跃（语音/心跳/文本等）
+    runtime.note_nrl_rx();
     match packet.packet_type {
         1 => {
             let pcm = decode_alaw_frame(&packet.data);
+            runtime.note_rx_voice_frame_codec("G711");
             let analysis = crate::runtime::analyze_pcm_frame(&pcm);
-            runtime.enqueue_received_pcm(&pcm);
+            runtime.enqueue_received_pcm(&pcm, RxChannel::Nrl);
             runtime
                 .note_voice_frame(
                     packet.callsign_string(),
@@ -264,10 +282,33 @@ async fn handle_packet(
             // 限速 emit：每 80ms 最多推一次 snapshot，防止高频 UDP 包导致前端事件积压
             runtime.throttled_emit_snapshot(app).await;
         }
+        8 => {
+            // NRL type=8：Opus 语音（16kHz / 20ms）
+            if let Some(pcm) = runtime.decode_nrl_opus_frame(&packet.data).await {
+                runtime.note_rx_voice_frame_codec("OPUS");
+                let analysis = crate::runtime::analyze_pcm_frame(&pcm);
+                runtime.enqueue_received_pcm(&pcm, RxChannel::Nrl);
+                runtime
+                    .note_voice_frame(
+                        packet.callsign_string(),
+                        packet.ssid,
+                        pcm.len(),
+                        analysis.level,
+                        &analysis.spectrum,
+                        &pcm,
+                    )
+                    .await;
+                runtime.throttled_emit_audio_state(app).await;
+                runtime.throttled_emit_snapshot(app).await;
+            }
+        }
         2 => {
+            runtime.note_nrl_rx();
             runtime
                 .note_heartbeat(&packet.callsign_string(), packet.ssid)
                 .await;
+            // 心跳也要限速下发 snapshot，前端靠 nrlLastRxMs 判定链路在线/闪烁
+            runtime.throttled_emit_snapshot(app).await;
         }
         5 => {
             let text = String::from_utf8_lossy(&packet.data).to_string();

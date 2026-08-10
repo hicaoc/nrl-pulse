@@ -19,6 +19,7 @@ import {
   saveRuntimeConfig,
   sendTextMessage,
   setTransmit,
+  setTransmitProto,
   startSerialTunnel,
   syncAtState,
   stopSerialTunnel,
@@ -56,6 +57,7 @@ const initialSnapshot: SessionSnapshot = {
   isMonitoring: true,
   queuedFrames: 4,
   lastTextMessage: "系统初始化中",
+  nrlLastRxMs: 0,
   devices: {
     inputDevice: "Default Microphone",
     outputDevice: "Default Speaker",
@@ -72,6 +74,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
   const presence = ref<PresenceItem[]>([]);
   const timeline = ref<TimelineEvent[]>([]);
   const config = ref<RuntimeConfig>({
+    protocol: "nrl",
+    voiceCodec: "alaw",
+    fmoVoiceMode: "opus",
+    fmoCallsign: "",
     server: "127.0.0.1",
     port: 10024,
     serverName: "Local",
@@ -144,6 +150,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
     snapshot.value.uplinkKbps = next.uplinkKbps;
     snapshot.value.downlinkKbps = next.downlinkKbps;
     snapshot.value.isTransmitting = next.isTransmitting;
+    snapshot.value.rxCodec = next.rxCodec;
+    snapshot.value.rxSeq = next.rxSeq;
   }
 
   function scheduleSnapshotFlush(next: SessionSnapshot) {
@@ -161,7 +169,8 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   function pushTimeline(event: TimelineEvent) {
-    timeline.value = [event, ...timeline.value].slice(0, 10);
+    // 内嵌滚动日志需要更长的历史：保留最近 200 条
+    timeline.value = [event, ...timeline.value].slice(0, 200);
   }
 
   async function bootstrap() {
@@ -238,6 +247,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await runAction(() => setTransmit(enabled));
   }
 
+  async function setTxProto(protocol: "nrl" | "fmo", enabled: boolean) {
+    await runAction(() => setTransmitProto(protocol, enabled));
+  }
+
   async function toggleRx() {
     await runAction(toggleMonitor);
   }
@@ -307,6 +320,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     disconnect,
     toggleTx,
     setTx,
+    setTxProto,
     toggleRx,
     setJitter,
     sendMessage,

@@ -1,0 +1,32 @@
+{
+ "sn": 1001,
+ "type": "intermediateCA",
+ "issuer": {
+  "sn": 1,
+  "name": "BG5ESN",
+  "publicKey": "DCeeVS320f36ToVP2eOADVN-Q0LzpMYmiVkmNYzuysY"
+ },
+ "subject": {
+  "name": "BG5ESN",
+  "email": "xifengzui@yeah.net",
+  "publicKey": "gYPN5agzrKZG2iyEztsVjGD1tVNLozHNm_km7n6OQyk"
+ },
+ "extensions": {
+  "isCA": true,
+  "pathLen": 0,
+  "keyId": "1",
+  "crl": "https://bg5esn.com/share/ca/intermediate_crl.json",
+  "license": "https://bg5esn.com/share/ca/intermediate_license.md",
+  "uidRange": {
+   "start": 1,
+   "end": 200000
+  },
+  "issuingCountries": [
+   "CN"
+  ]
+ },
+ "iat": 1779886432,
+ "exp": 1937652834,
+ "signatureAlgorithm": "Ed25519",
+ "signature": "d-G7if4xAA5HTe39kT59tGhPY-WjLfXh1PgdpiR_T13zgNVuwHnWLiTORtWLhfW7kF1fN6YGpCpT9FFh0NKFDA"
+}

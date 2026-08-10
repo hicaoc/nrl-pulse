@@ -19,94 +19,68 @@ const VOICE_FRAME_SAMPLES: usize = 160;
 // 回放 ring buffer 最多缓存 500ms 的输入样本，超出丢弃以防积压延迟
 const MAX_RING_SAMPLES: usize = TARGET_SAMPLE_RATE as usize / 2;
 
-enum PlaybackRenderer {
-    Passthrough(VecDeque<i16>),
-    Resampling {
-        /// 待重采样的输入样本（8kHz f32）
-        ring: VecDeque<f32>,
-        /// 已重采样、待输出的样本（设备采样率 f32）
-        out_buf: VecDeque<f32>,
-        resampler: Fft<f32>,
-    },
+/// 接收通道标识：NRL / FMO 各自一条独立输出流，混音交给操作系统
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RxChannel {
+    Nrl,
+    Fmo,
 }
 
+/// 单通道播放状态：独立 ring + jitter 起播 + 独立静音开关
 struct PlaybackState {
-    renderer: PlaybackRenderer,
+    ring: VecDeque<i16>,
+    playing: bool,
     monitoring: Arc<AtomicBool>,
+    /// jitter buffer 目标深度（8kHz 输入域样本数）：攒够才开始播
+    jitter_target: usize,
+    /// 设备采样率 ≠ 8kHz 时的重采样器
+    resampler: Option<Fft<f32>>,
+    /// 重采样后的待输出样本（设备采样率 f32）
+    out_buf: VecDeque<f32>,
 }
 
 impl PlaybackState {
     fn new(output_rate: u32, monitoring: Arc<AtomicBool>) -> Result<Self, String> {
-        let renderer = if output_rate == TARGET_SAMPLE_RATE {
+        let resampler = if output_rate == TARGET_SAMPLE_RATE {
             eprintln!(
                 "[Audio] Output: device supports {} Hz directly, using passthrough",
                 output_rate
             );
-            PlaybackRenderer::Passthrough(VecDeque::with_capacity(TARGET_SAMPLE_RATE as usize))
+            None
         } else {
             eprintln!(
                 "[Audio] Output: device {} Hz, creating resampler {} -> {} Hz",
                 output_rate, TARGET_SAMPLE_RATE, output_rate
             );
-            let resampler = Fft::<f32>::new(
-                TARGET_SAMPLE_RATE as usize,
-                output_rate as usize,
-                VOICE_FRAME_SAMPLES,
-                1,
-                1,
-                FixedSync::Both,
+            Some(
+                Fft::<f32>::new(
+                    TARGET_SAMPLE_RATE as usize,
+                    output_rate as usize,
+                    VOICE_FRAME_SAMPLES,
+                    1,
+                    1,
+                    FixedSync::Both,
+                )
+                .map_err(|e| format!("failed to create resampler: {e}"))?,
             )
-            .map_err(|e| format!("failed to create resampler: {e}"))?;
-            PlaybackRenderer::Resampling {
-                ring: VecDeque::with_capacity(MAX_RING_SAMPLES * 2),
-                out_buf: VecDeque::with_capacity(MAX_RING_SAMPLES * 2),
-                resampler,
-            }
         };
 
         Ok(Self {
-            renderer,
+            ring: VecDeque::with_capacity(MAX_RING_SAMPLES * 2),
+            playing: false,
             monitoring,
+            // 200ms 目标深度：FMO 按 240ms 一帧突发到达，匀速播放需要缓冲吸收抖动
+            jitter_target: TARGET_SAMPLE_RATE as usize / 5,
+            resampler,
+            out_buf: VecDeque::with_capacity(MAX_RING_SAMPLES * 4),
         })
     }
 
     fn enqueue(&mut self, pcm: &[i16]) {
-        match &mut self.renderer {
-            PlaybackRenderer::Passthrough(buf) => {
-                buf.extend(pcm.iter().copied());
-                // 防止积压：超过 500ms 的数据直接丢弃头部
-                while buf.len() > MAX_RING_SAMPLES {
-                    buf.pop_front();
-                }
-            }
-            PlaybackRenderer::Resampling {
-                ring,
-                out_buf,
-                resampler,
-            } => {
-                for &sample in pcm.iter() {
-                    ring.push_back(sample as f32 / 32768.0);
-                }
-                // 防止积压：超过 500ms 的输入样本直接丢弃头部
-                while ring.len() > MAX_RING_SAMPLES {
-                    ring.pop_front();
-                }
-                // 把 ring 里够 chunk_size 的数据立即重采样，结果存入 out_buf
-                let chunk_size = resampler.input_frames_next();
-                while ring.len() >= chunk_size {
-                    let chunk: Vec<f32> = ring.drain(..chunk_size).collect();
-                    let input_data = vec![chunk];
-                    if let Ok(adapter) = SequentialSliceOfVecs::new(&input_data, 1, chunk_size) {
-                        if let Ok(interleaved) = resampler.process(&adapter, 0, None) {
-                            if let Some(iter) = interleaved.iter_channel(0) {
-                                for s in iter {
-                                    out_buf.push_back(s);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        self.ring.extend(pcm.iter().copied());
+        // 防止积压：超过 500ms 的数据直接丢弃头部
+        while self.ring.len() > MAX_RING_SAMPLES {
+            self.ring.pop_front();
         }
     }
 
@@ -115,24 +89,74 @@ impl PlaybackState {
             return vec![0.0; output_frames];
         }
 
-        match &mut self.renderer {
-            PlaybackRenderer::Passthrough(buf) => {
-                let mut output = Vec::with_capacity(output_frames);
-                for _ in 0..output_frames {
-                    output.push(match buf.pop_front() {
-                        Some(s) => s as f32 / 32768.0,
-                        None => 0.0,
-                    });
-                }
-                output
+        // jitter 起播判定：攒到目标深度才开播，欠载抽空后自动回缓冲
+        if !self.playing && self.ring.len() >= self.jitter_target {
+            self.playing = true;
+        }
+
+        // 8kHz 直通
+        if self.resampler.is_none() {
+            let mut output = Vec::with_capacity(output_frames);
+            for _ in 0..output_frames {
+                output.push(self.pop_f32());
             }
-            PlaybackRenderer::Resampling { out_buf, .. } => {
-                let mut output = Vec::with_capacity(output_frames);
-                for _ in 0..output_frames {
-                    output.push(out_buf.pop_front().unwrap_or(0.0));
-                }
-                output
+            return output;
+        }
+
+        // 重采样：8kHz 域按 chunk 取样 → 重采样到设备采样率
+        let PlaybackState {
+            ring,
+            playing,
+            resampler,
+            out_buf,
+            ..
+        } = self;
+        let Some(resampler) = resampler.as_mut() else {
+            return vec![0.0; output_frames];
+        };
+        while out_buf.len() < output_frames {
+            let chunk_size = resampler.input_frames_next();
+            let mut chunk = Vec::with_capacity(chunk_size);
+            for _ in 0..chunk_size {
+                chunk.push(pop_from(ring, playing));
             }
+            let input = vec![chunk];
+            let Ok(adapter) = SequentialSliceOfVecs::new(&input, 1, chunk_size) else {
+                break;
+            };
+            let Ok(interleaved) = resampler.process(&adapter, 0, None) else {
+                break;
+            };
+            if let Some(iter) = interleaved.iter_channel(0) {
+                for s in iter {
+                    out_buf.push_back(s);
+                }
+            }
+        }
+
+        let mut output = Vec::with_capacity(output_frames);
+        for _ in 0..output_frames {
+            output.push(out_buf.pop_front().unwrap_or(0.0));
+        }
+        output
+    }
+
+    fn pop_f32(&mut self) -> f32 {
+        pop_from(&mut self.ring, &mut self.playing)
+    }
+}
+
+/// 播放状态下取一个样本转 f32；抽空则退出播放状态（重新缓冲），返回静音
+#[inline]
+fn pop_from(ring: &mut VecDeque<i16>, playing: &mut bool) -> f32 {
+    if !*playing {
+        return 0.0;
+    }
+    match ring.pop_front() {
+        Some(s) => s as f32 / 32768.0,
+        None => {
+            *playing = false;
+            0.0
         }
     }
 }
@@ -274,14 +298,19 @@ impl CaptureProcessor {
 pub struct AudioEngine {
     inner: Arc<Mutex<AudioInner>>,
     transmitting: Arc<AtomicBool>,
-    monitoring: Arc<AtomicBool>,
+    /// NRL 播放开关（NRL 静音按钮）；FMO 静音由接收侧 rx_play 门控
+    monitoring_nrl: Arc<AtomicBool>,
+    monitoring_fmo: Arc<AtomicBool>,
     capture_rx: Arc<Mutex<Option<UnboundedReceiver<Vec<i16>>>>>,
 }
 
 struct AudioInner {
     input_stream: Option<Stream>,
-    output_stream: Option<Stream>,
-    playback: Arc<Mutex<PlaybackState>>,
+    /// NRL / FMO 各自一条输出流，混音交给操作系统
+    output_stream_nrl: Option<Stream>,
+    output_stream_fmo: Option<Stream>,
+    playback_nrl: Arc<Mutex<PlaybackState>>,
+    playback_fmo: Arc<Mutex<PlaybackState>>,
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     aec_capture: Option<AecCapture>,
 }
@@ -293,16 +322,17 @@ unsafe impl Send for AudioInner {}
 impl AudioEngine {
     pub fn new() -> Self {
         let transmitting = Arc::new(AtomicBool::new(false));
-        let monitoring = Arc::new(AtomicBool::new(true));
+        let monitoring_nrl = Arc::new(AtomicBool::new(true));
+        let monitoring_fmo = Arc::new(AtomicBool::new(true));
         let (capture_tx, capture_rx) = unbounded_channel();
 
-        let dummy_playback = Arc::new(Mutex::new(
-            PlaybackState::new(TARGET_SAMPLE_RATE, monitoring.clone()).unwrap_or_else(|_| {
-                PlaybackState {
-                    renderer: PlaybackRenderer::Passthrough(VecDeque::new()),
-                    monitoring: monitoring.clone(),
-                }
-            }),
+        let dummy_nrl = Arc::new(Mutex::new(
+            PlaybackState::new(TARGET_SAMPLE_RATE, monitoring_nrl.clone())
+                .expect("8kHz passthrough playback state"),
+        ));
+        let dummy_fmo = Arc::new(Mutex::new(
+            PlaybackState::new(TARGET_SAMPLE_RATE, monitoring_fmo.clone())
+                .expect("8kHz passthrough playback state"),
         ));
 
         let _ = capture_tx;
@@ -310,18 +340,46 @@ impl AudioEngine {
         Self {
             inner: Arc::new(Mutex::new(AudioInner {
                 input_stream: None,
-                output_stream: None,
-                playback: dummy_playback,
+                output_stream_nrl: None,
+                output_stream_fmo: None,
+                playback_nrl: dummy_nrl,
+                playback_fmo: dummy_fmo,
                 #[cfg(any(target_os = "windows", target_os = "macos"))]
                 aec_capture: None,
             })),
             transmitting,
-            monitoring,
+            monitoring_nrl,
+            monitoring_fmo,
             capture_rx: Arc::new(Mutex::new(Some(capture_rx))),
         }
     }
 
     pub fn start(&self) -> Result<(DeviceSettings, Vec<String>), String> {
+        // 幂等：已在运行则直接返回（双协议 NRL/FMO 各自 connect 时避免重建流）
+        {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|_| "audio state poisoned".to_string())?;
+            if inner.output_stream_nrl.is_some() {
+                return Ok((
+                    DeviceSettings {
+                        input_device: "Running".into(),
+                        output_device: "Running".into(),
+                        sample_rate: TARGET_SAMPLE_RATE,
+                        input_device_rate: TARGET_SAMPLE_RATE,
+                        output_device_rate: TARGET_SAMPLE_RATE,
+                        input_resampling: false,
+                        output_resampling: false,
+                        jitter_buffer_ms: 120,
+                        agc_enabled: false,
+                        noise_suppression: false,
+                        aec_enabled: false,
+                    },
+                    vec!["音频引擎已在运行".into()],
+                ));
+            }
+        }
         let host = cpal::default_host();
         let mut logs: Vec<String> = Vec::new();
 
@@ -337,16 +395,26 @@ impl AudioEngine {
         let output_rate = output_supported.sample_rate().0;
         let output_resampling = output_rate != TARGET_SAMPLE_RATE;
 
-        let playback = Arc::new(Mutex::new(PlaybackState::new(
+        // NRL / FMO 各自一条输出流（同一设备），混音交给操作系统
+        let playback_nrl = Arc::new(Mutex::new(PlaybackState::new(
             output_rate,
-            self.monitoring.clone(),
+            self.monitoring_nrl.clone(),
+        )?));
+        let playback_fmo = Arc::new(Mutex::new(PlaybackState::new(
+            output_rate,
+            self.monitoring_fmo.clone(),
         )?));
 
-        let output_stream =
-            build_output_stream(&output_device, &output_supported, playback.clone())?;
-        output_stream
+        let output_stream_nrl =
+            build_output_stream(&output_device, &output_supported, playback_nrl.clone())?;
+        output_stream_nrl
             .play()
-            .map_err(|err| format!("start output stream failed: {err}"))?;
+            .map_err(|err| format!("start nrl output stream failed: {err}"))?;
+        let output_stream_fmo =
+            build_output_stream(&output_device, &output_supported, playback_fmo.clone())?;
+        output_stream_fmo
+            .play()
+            .map_err(|err| format!("start fmo output stream failed: {err}"))?;
 
         let mut input_name = "Unavailable".to_string();
         let mut input_rate = TARGET_SAMPLE_RATE;
@@ -450,8 +518,10 @@ impl AudioEngine {
             .inner
             .lock()
             .map_err(|_| "audio state poisoned".to_string())?;
-        inner.playback = playback;
-        inner.output_stream = Some(output_stream);
+        inner.playback_nrl = playback_nrl;
+        inner.playback_fmo = playback_fmo;
+        inner.output_stream_nrl = Some(output_stream_nrl);
+        inner.output_stream_fmo = Some(output_stream_fmo);
         inner.input_stream = input_stream;
         #[cfg(any(target_os = "windows", target_os = "macos"))]
         {
@@ -480,22 +550,19 @@ impl AudioEngine {
         self.transmitting.store(false, Ordering::Relaxed);
         if let Ok(mut inner) = self.inner.lock() {
             inner.input_stream = None;
-            inner.output_stream = None;
+            inner.output_stream_nrl = None;
+            inner.output_stream_fmo = None;
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             {
                 inner.aec_capture = None;
             }
-            if let Ok(mut playback) = inner.playback.lock() {
-                match &mut playback.renderer {
-                    PlaybackRenderer::Passthrough(buf) => buf.clear(),
-                    PlaybackRenderer::Resampling {
-                        ring,
-                        out_buf,
-                        resampler,
-                    } => {
-                        ring.clear();
-                        out_buf.clear();
-                        resampler.reset();
+            for playback in [&inner.playback_nrl, &inner.playback_fmo] {
+                if let Ok(mut pb) = playback.lock() {
+                    pb.ring.clear();
+                    pb.out_buf.clear();
+                    pb.playing = false;
+                    if let Some(r) = pb.resampler.as_mut() {
+                        r.reset();
                     }
                 }
             }
@@ -506,14 +573,19 @@ impl AudioEngine {
         self.transmitting.store(enabled, Ordering::Relaxed);
     }
 
+    /// NRL 播放开关（NRL 静音按钮）：只影响 NRL 输出流，FMO 不受影响
     pub fn set_monitoring(&self, enabled: bool) {
-        self.monitoring.store(enabled, Ordering::Relaxed);
+        self.monitoring_nrl.store(enabled, Ordering::Relaxed);
     }
 
-    pub fn enqueue_received_pcm(&self, pcm: &[i16]) {
+    pub fn enqueue_received_pcm(&self, pcm: &[i16], channel: RxChannel) {
         if let Ok(inner) = self.inner.lock() {
-            if let Ok(mut playback) = inner.playback.lock() {
-                playback.enqueue(pcm);
+            let playback = match channel {
+                RxChannel::Nrl => &inner.playback_nrl,
+                RxChannel::Fmo => &inner.playback_fmo,
+            };
+            if let Ok(mut pb) = playback.lock() {
+                pb.enqueue(pcm);
             }
         }
     }

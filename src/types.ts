@@ -15,6 +15,10 @@ export interface DeviceSettings {
 }
 
 export interface RuntimeConfig {
+  protocol: "nrl" | "fmo";
+  voiceCodec: "alaw" | "opus";
+  fmoVoiceMode: "adpcm" | "opus";
+  fmoCallsign: string;
   server: string;
   port: number;
   serverName: string;
@@ -64,6 +68,8 @@ export interface RealtimeAudioState {
   uplinkKbps: number;
   downlinkKbps: number;
   isTransmitting: boolean;
+  rxCodec: string;
+  rxSeq: number;
 }
 
 export interface SessionSnapshot {
@@ -73,6 +79,7 @@ export interface SessionSnapshot {
   activeSpeaker: string;
   activeSpeakerSsid: number;
   connection: ConnectionPhase;
+  nrlConnected: boolean;
   packetLoss: number;
   latencyMs: number;
   jitterMs: number;
@@ -87,6 +94,10 @@ export interface SessionSnapshot {
   queuedFrames: number;
   lastTextMessage: string;
   devices: DeviceSettings;
+  nrlLastRxMs: number;
+  // 由 runtime://audio-state 高频事件合并进来（后端整包 snapshot 不含这两项）
+  rxCodec?: string;
+  rxSeq?: number;
 }
 
 export interface PresenceItem {
@@ -185,4 +196,132 @@ export interface PlatformRegisterPayload {
 export interface PlatformRegisterResult {
   code: number;
   message?: string;
+}
+
+// ---------------------------------------------------------------- FMO
+
+export interface FmoIdentity {
+  callsign: string;
+  uid: number;
+}
+
+export interface FmoCertEntry {
+  name: string;
+  fingerprint: string;
+  source: string;
+  info: string;
+  valid: boolean;
+  imported_at: number;
+  file: string;
+}
+
+export interface FmoServer {
+  key: string;
+  host: string;
+  port?: number;
+  callsign: string;
+  name?: string;
+  source?: string;
+  first_seen?: number;
+  last_seen?: number;
+  online?: number;
+  total?: number;
+  cover_km?: number;
+  freq?: number;
+  height?: number;
+  uid?: number;
+  subtype?: string;
+  version?: string;
+  s_code?: number;
+  country?: string;
+  status_text?: string;
+  cert?: {
+    callsign: string;
+    uid: number;
+    pubkey_hex: string;
+    [key: string]: unknown;
+  };
+  lat?: string;
+  lon?: string;
+  raw?: string;
+}
+
+export interface FmoFavorite {
+  key: string;
+  host: string;
+  port?: number;
+  callsign?: string;
+  name?: string;
+  uid?: number;
+  online?: number;
+  total?: number;
+  favorited_at?: number;
+}
+
+export interface FmoServerTraffic {
+  count: number;
+  rawFrames: number;
+  tele: number;
+  serverInfo: number;
+  profile: number;
+  lastTopic: string;
+  lastMsg: string;
+  lastTs: number;
+}
+
+export interface FmoStateSnapshot {
+  identity: FmoIdentity;
+  certCallsign: string;
+  passcode: string;
+  certs: FmoCertEntry[];
+  favorites: FmoFavorite[];
+  servers: FmoServer[];
+  mqttState: string;
+  mqttDetail: string;
+  aprsState: string;
+  aprsDetail: string;
+  selectedServer: Partial<FmoServer> | null;
+  rxPlay: boolean;
+  rxLoop: boolean;
+}
+
+export interface FmoStatsSnapshot {
+  callsign: string;
+  uid: number;
+  mqttState: string;
+  mqttDetail: string;
+  aprsState: string;
+  aprsDetail: string;
+  serverHost: string;
+  serverPort: number;
+  serverName: string;
+  activeSpeaker: string;
+  rxFrames: number;
+  txFrames: number;
+  rxText: number;
+  txPackets: number;
+  serverInfo: number;
+  rxLevel: number;
+  rxSpectrum: number[];
+  txLevel: number;
+  txSpectrum: number[];
+  jitterMs: number;
+  latencyMs: number;
+  packetLoss: number;
+  queuedFrames: number;
+  downlinkKbps: number;
+  uplinkKbps: number;
+  rxCodec: string;
+}
+
+export interface FmoEvent {
+  type:
+    | "log"
+    | "mqtt_state"
+    | "aprs_state"
+    | "server_list"
+    | "cert_state"
+    | "favorites"
+    | "server_traffic";
+  [key: string]: unknown;
 }
