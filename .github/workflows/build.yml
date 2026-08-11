@@ -64,8 +64,10 @@ jobs:
 
       - name: Build
         env:
-          CFLAGS: "-Wno-declaration-after-statement"
-          CXXFLAGS: "-Wno-declaration-after-statement"
+          # clang-cl 要求显式启用 SSE4.1 才能编译 opus 的 silk/x86/*_sse4_1.c
+          # （MSVC 不限制 intrinsics，clang-cl 限制）；成品要求 2008 年后的 x64 CPU
+          CFLAGS: "-Wno-declaration-after-statement -msse4.1"
+          CXXFLAGS: "-Wno-declaration-after-statement -msse4.1"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: pnpm build && ./node_modules/.bin/tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle
@@ -200,6 +202,8 @@ jobs:
 
       - name: Build ARM
         env:
+          # CMake 4.x 移除了对 <3.5 老项目的兼容，audiopus_sys 内置 opus 还是老声明
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -212,6 +216,8 @@ jobs:
 
       - name: Build Intel x86_64
         env:
+          # 同 ARM：audiopus_sys 内置 opus 与老 CMake 声明的兼容
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
