@@ -19,7 +19,7 @@ import {
 import type { UpdateInfo } from "@/lib/tauri";
 import { usePlatformStore } from "@/stores/platform";
 import { useRuntimeStore } from "@/stores/runtime";
-import type { ChatMessageEvent, FmoServer, PlatformDevice, PlatformGroup, PlatformRegisterPayload, SerialTunnelConfig, TimelineEvent } from "@/types";
+import type { ChatMessageEvent, FmoClient, FmoServer, PlatformDevice, PlatformGroup, PlatformRegisterPayload, SerialTunnelConfig, TimelineEvent } from "@/types";
 
 type Lang = "zh" | "en";
 
@@ -87,7 +87,7 @@ const logListEl = ref<HTMLElement | null>(null);
 // 用户上翻查看历史时暂停自动跟随，回到底部后恢复
 const logFollowBottom = ref(true);
 // 消息 / 日志 Tab 切换
-const chatTab = ref<"messages" | "logs">("messages");
+const chatTab = ref<"messages" | "logs" | "servers" | "users">("messages");
 const updateInfo = ref<UpdateInfo | null>(null);
 const updateDownloading = ref(false);
 const updateProgress = ref(0);
@@ -1662,25 +1662,38 @@ async function onFmoCertSlotChange(name: string) {
       return;
     }
     // 明确指定证书类型 name（cert_user/cert_int/cert_root/cert_devicekey）
-    const result = (await fmo.importCertFile(selected, name)) as { name?: string } | undefined;
+    const result = (await fmo.importCertFile(selected, name)) as
+      | { name?: string; identity_check?: { checked: boolean; ok?: boolean; msg?: string } }
+      | undefined;
     // 导入后立即刷新：身份/呼号/UID/passcode/证书列表
     await fmo.refresh();
     const certLabel = fmoCertSlots.find((s) => s.name === name)?.label ?? name;
     const ready = fmoCertReadyCount.value;
+    // 身份一致性检查不通过（证书不是一套/已过期）：优先展示警告
+    const check = result?.identity_check;
+    if (check?.checked && !check.ok) {
+      fmoCertMsg.value = language.value === "zh"
+        ? `⚠ ${check.msg}`
+        : `⚠ Identity check failed: ${check.msg}`;
+      return;
+    }
+    const matchHint = check?.checked && check.ok
+      ? (language.value === "zh" ? " · ✓ 私钥与证书匹配" : " · ✓ key matches cert")
+      : "";
     if (name === "cert_user") {
       const cs = fmo.state.identity.callsign;
       const uid = fmo.state.identity.uid;
       fmoCertMsg.value = cs
         ? (language.value === "zh"
-            ? `✓ ${certLabel} 导入成功：呼号 ${cs} · UID ${uid} · passcode ${fmo.state.passcode}`
-            : `✓ ${certLabel} imported: ${cs} · UID ${uid} · passcode ${fmo.state.passcode}`)
+            ? `✓ ${certLabel} 导入成功：呼号 ${cs} · UID ${uid} · passcode ${fmo.state.passcode}${matchHint}`
+            : `✓ ${certLabel} imported: ${cs} · UID ${uid} · passcode ${fmo.state.passcode}${matchHint}`)
         : (language.value === "zh"
             ? `✓ ${certLabel} 已导入，但未解析到呼号，请确认文件内容`
             : `✓ ${certLabel} imported, but no callsign parsed`);
     } else {
       fmoCertMsg.value = language.value === "zh"
-        ? `✓ ${certLabel} 导入成功（${ready}/4）`
-        : `✓ ${certLabel} imported (${ready}/4)`;
+        ? `✓ ${certLabel} 导入成功（${ready}/4）${matchHint}`
+        : `✓ ${certLabel} imported (${ready}/4)${matchHint}`;
     }
   } catch (e) {
     fmoCertMsg.value = String(e);
@@ -1793,6 +1806,116 @@ const fmoAprsOnline = computed(() =>
 const sortedFmoServers = computed(() =>
   [...fmo.state.servers].sort((a, b) => (b.online ?? 0) - (a.online ?? 0)),
 );
+
+// 服务器/用户 Tab 的筛选关键字（参照 sim 前端的 srv-filter / cli-filter）
+const fmoServerFilter = ref("");
+const fmoUserFilter = ref("");
+const filteredFmoServers = computed(() => {
+  const q = fmoServerFilter.value.trim().toLowerCase();
+  if (!q) return sortedFmoServers.value;
+  return sortedFmoServers.value.filter((s) =>
+    [s.name, s.callsign, s.host]
+      .filter(Boolean)
+      .some((v) => String(v).toLowerCase().includes(q)),
+  );
+});
+const filteredFmoClients = computed(() => {
+  const q = fmoUserFilter.value.trim().toLowerCase();
+  if (!q) return fmo.state.clients;
+  return fmo.state.clients.filter((c) =>
+    [c.callsign, c.status_text, c.comment, c.uid ? String(c.uid) : ""]
+      .filter(Boolean)
+      .some((v) => String(v).toLowerCase().includes(q)),
+  );
+});
+
+// FMO 用户信标时间显示（last_seen 为 unix 秒）
+function fmtClientTime(ts?: number): string {
+  if (!ts) return "—";
+  const d = new Date(ts * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// 用户行主信息已显示最新状态文本，最近消息里与之相同的条目不再重复展示
+function fmoClientRecentExtras(c: FmoClient): { ts: number; text: string }[] {
+  const shown = c.status_text || c.comment || "";
+  return (c.recent ?? []).filter((m) => m.text !== shown);
+}
+
+// 用户行内联概要：状态文本之外的附加信息（频率/电台/天线/高度/位置）
+function fmoClientDetailLine(c: FmoClient): string {
+  const parts: string[] = [];
+  if (c.freq) parts.push(`${c.freq.toFixed(4)} MHz`);
+  if (c.rig) parts.push(c.rig);
+  if (c.ant) parts.push(c.ant);
+  if (c.height != null) parts.push(`${c.height}m`);
+  if (c.lat && c.lon) parts.push(`${c.lat} ${c.lon}`);
+  return parts.join(" · ");
+}
+
+// 完整日期时间（弹窗里的首次/最后出现）
+function fmtClientDateTime(ts?: number): string {
+  if (!ts) return "—";
+  const d = new Date(ts * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// 用户详情弹窗
+const fmoUserPopup = ref<FmoClient | null>(null);
+const fmoUserDetailRows = computed(() => {
+  const c = fmoUserPopup.value;
+  if (!c) return [] as { label: string; value: string }[];
+  const zh = language.value === "zh";
+  const rows: { label: string; value: string }[] = [];
+  const push = (label: string, value: string | number | undefined | null) => {
+    if (value !== undefined && value !== null && String(value) !== "") {
+      rows.push({ label, value: String(value) });
+    }
+  };
+  push(zh ? "呼号" : "Callsign", c.callsign);
+  push("UID", c.uid);
+  push(zh ? "类型" : "Type", [c.kind, c.subtype, c.version].filter(Boolean).join(" / "));
+  push(zh ? "状态文本" : "Status", c.status_text);
+  push(zh ? "位置注释" : "Comment", c.comment);
+  push(zh ? "频率" : "Freq", c.freq ? `${c.freq.toFixed(4)} MHz` : undefined);
+  push(zh ? "电台" : "Rig", c.rig);
+  push(zh ? "天线" : "Antenna", c.ant);
+  push(zh ? "高度" : "Height", c.height != null ? `${c.height} m` : undefined);
+  push(zh ? "位置" : "Position", c.lat && c.lon ? `${c.lat} ${c.lon}` : undefined);
+  push(zh ? "首次出现" : "First seen", fmtClientDateTime(c.first_seen));
+  push(zh ? "最后出现" : "Last seen", fmtClientDateTime(c.last_seen));
+  return rows;
+});
+
+// 当前 FMO 说话人在 APRS 用户表中匹配到的信标信息（先精确匹配呼号，再退化为不含 SSID 的主呼号）
+const fmoSpeakerClient = computed<FmoClient | null>(() => {
+  const spk = (fmo.stats.activeSpeaker || "").toUpperCase();
+  if (!spk) return null;
+  const list = fmo.state.clients;
+  const base = spk.split("-")[0];
+  return (
+    list.find((c) => c.callsign.toUpperCase() === spk) ??
+    list.find((c) => c.callsign.toUpperCase().split("-")[0] === base) ??
+    null
+  );
+});
+// 匹配到时在呼号面板上展示的附加信息行：状态文本一行，频率/电台/天线/高度一行
+const fmoSpeakerInfoLines = computed<string[]>(() => {
+  const c = fmoSpeakerClient.value;
+  if (!c) return [];
+  const lines: string[] = [];
+  const status = c.status_text || c.comment || "";
+  if (status) lines.push(status);
+  const details: string[] = [];
+  if (c.freq) details.push(`${c.freq.toFixed(4)} MHz`);
+  if (c.rig) details.push(c.rig);
+  if (c.ant) details.push(c.ant);
+  if (c.height != null) details.push(`${c.height}m`);
+  if (details.length) lines.push(details.join(" · "));
+  return lines;
+});
 
 // 语音活动检测：接收帧序号/计数变化视为有语音进来，900ms 内在大呼号右下角显示编码角标
 const nrlLastVoiceAt = ref(0);
@@ -2398,6 +2521,10 @@ watch(
                   </span>
                 </span>
               </div>
+              <!-- 说话人命中 APRS 用户表时，展示其信标附加信息（状态/频率/电台/天线/高度） -->
+              <div v-if="fmoSpeakerInfoLines.length" class="callsign-speaker-info">
+                <span v-for="(line, i) in fmoSpeakerInfoLines" :key="i">{{ line }}</span>
+              </div>
               <div class="callsign-meta">
                 <span class="callsign-room">
                   {{ fmo.stats.callsign ? `${fmo.stats.callsign} · uid ${fmo.stats.uid || "-"}` : "-" }}
@@ -2467,8 +2594,8 @@ watch(
               </div>
               <div v-else class="ops-empty">
                 {{ language === "zh"
-                  ? "暂无收藏服务器，请在设置中连接 APRS 发现服务器后点 ☆ 收藏"
-                  : "No favorites yet. Connect APRS in Settings, then star a server." }}
+                  ? "暂无收藏服务器，请连接 APRS 后在右侧「服务器」列表点 ☆ 收藏"
+                  : "No favorites yet. Connect APRS, then star a server in the Servers tab." }}
               </div>
             </div>
           </section>
@@ -2536,11 +2663,29 @@ watch(
             >
               {{ t.systemLogs }}
             </button>
+            <button
+              class="chat-tab"
+              :class="{ active: chatTab === 'servers' }"
+              @click="chatTab = 'servers'"
+            >
+              {{ language === "zh" ? "服务器" : "Servers" }}
+            </button>
+            <button
+              class="chat-tab"
+              :class="{ active: chatTab === 'users' }"
+              @click="chatTab = 'users'"
+            >
+              {{ language === "zh" ? "用户" : "Users" }}
+            </button>
           </div>
           <span class="chat-status">{{
             chatTab === "messages"
               ? t.messagesCount(chatMessages.length)
-              : t.messagesCount(runtime.timeline.length)
+              : chatTab === "logs"
+                ? t.messagesCount(runtime.timeline.length)
+                : chatTab === "servers"
+                  ? t.messagesCount(fmo.state.servers.length)
+                  : t.messagesCount(fmo.state.clients.length)
           }}</span>
         </div>
 
@@ -2601,7 +2746,7 @@ watch(
         </template>
 
         <!-- 滚动日志：与消息区 Tab 切换，占满卡片剩余高度，新日志贴底跟随 -->
-        <div v-else ref="logListEl" class="log-list chat-log-list" @scroll.passive="handleLogScroll">
+        <div v-else-if="chatTab === 'logs'" ref="logListEl" class="log-list chat-log-list" @scroll.passive="handleLogScroll">
           <div v-if="runtime.timeline.length === 0" class="log-empty">
             {{ t.noLogs }}
           </div>
@@ -2621,6 +2766,125 @@ watch(
             <span class="log-line-detail" :style="item.colors && { color: item.colors.detail }">
               {{ item.entry.detail }}
             </span>
+          </div>
+        </div>
+
+        <!-- FMO 服务器列表：从 APRS 发现，点击选择，☆ 收藏 -->
+        <div v-else-if="chatTab === 'servers'" class="fmo-tab-panel">
+          <input
+            v-model="fmoServerFilter"
+            class="group-search fmo-tab-filter"
+            type="text"
+            :placeholder="language === 'zh' ? '搜索名称/呼号/主机…' : 'Search name/callsign/host…'"
+          />
+          <div class="log-list chat-log-list fmo-tab-list">
+          <div v-if="!fmo.state.servers.length && !fmo.state.favorites.length" class="log-empty">
+            {{ language === "zh"
+              ? "暂无服务器，请连接 APRS 发现服务器"
+              : "No servers yet. Connect APRS to discover servers." }}
+          </div>
+          <div v-else-if="!filteredFmoServers.length && !fmo.state.favorites.length" class="log-empty">
+            {{ language === "zh" ? "无匹配服务器" : "No matching servers" }}
+          </div>
+          <div class="fmo-server-list" v-if="filteredFmoServers.length">
+            <article
+              v-for="s in filteredFmoServers"
+              :key="s.key"
+              class="fmo-server-row"
+              :class="{ selected: fmo.selectedServer()?.key === s.key }"
+              @click="selectFmoServer(s)"
+            >
+              <div class="fmo-server-main">
+                <strong>{{ s.name || s.callsign }}</strong>
+                <span>{{ s.host }}:{{ s.port }}</span>
+              </div>
+              <div class="fmo-server-actions">
+                <span
+                  class="fmo-server-meta online-count"
+                  :class="{ 'has-online': (s.online ?? 0) > 0 }"
+                >
+                  {{ language === "zh" ? "在线" : "Online" }} {{ s.online ?? 0 }}/{{ s.total ?? "?" }}
+                </span>
+                <span v-if="s.cover_km" class="fmo-server-meta">{{ s.cover_km }}km</span>
+                <button
+                  class="icon-btn fmo-star-btn"
+                  :class="{ active: isFmoServerFavorited(s) }"
+                  :title="language === 'zh' ? '收藏' : 'Favorite'"
+                  @click.stop="toggleFmoServerFavorite(s)"
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                    <path d="M12 17.3l-6.2 3.7 1.6-7-5.4-4.7 7.1-.6L12 2l2.9 6.7 7.1.6-5.4 4.7 1.6 7z"/>
+                  </svg>
+                </button>
+              </div>
+            </article>
+          </div>
+          <div class="fmo-favorites" v-if="fmo.state.favorites.length">
+            <article
+              v-for="fav in fmo.state.favorites"
+              :key="fav.key"
+              class="fmo-server-row"
+              :class="{ selected: fmo.selectedServer()?.key === fav.key }"
+              @click="selectFmoServer(fav as unknown as FmoServer)"
+            >
+              <div class="fmo-server-main">
+                <strong>{{ fav.name || fav.callsign || fav.host }}</strong>
+                <span>{{ fav.host }}:{{ fav.port }}</span>
+              </div>
+              <div class="fmo-server-actions">
+                <span class="fmo-server-meta">★</span>
+                <button class="icon-btn" @click.stop="fmo.removeFavorite(fav.key)">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                    <path d="M6 19V5h2v14H6zm4 0V5h2v14h-2zm4 0V5h2v14h-2z"/>
+                  </svg>
+                </button>
+              </div>
+            </article>
+          </div>
+          </div>
+        </div>
+
+        <!-- FMO 用户列表：APRS 客户端信标（呼号/UID/状态/最后出现时间） -->
+        <div v-else class="fmo-tab-panel">
+          <input
+            v-model="fmoUserFilter"
+            class="group-search fmo-tab-filter"
+            type="text"
+            :placeholder="language === 'zh' ? '搜索呼号/状态/uid…' : 'Search callsign/status/uid…'"
+          />
+          <div class="log-list chat-log-list fmo-tab-list">
+          <div v-if="!fmo.state.clients.length" class="log-empty">
+            {{ language === "zh"
+              ? "暂无用户信标，连接 APRS 后自动收集"
+              : "No client beacons yet. They appear after APRS connects." }}
+          </div>
+          <div v-else-if="!filteredFmoClients.length" class="log-empty">
+            {{ language === "zh" ? "无匹配用户" : "No matching users" }}
+          </div>
+          <article
+            v-for="c in filteredFmoClients"
+            :key="c.callsign"
+            class="fmo-user-row"
+            :title="language === 'zh' ? '点击查看详情' : 'Click for details'"
+            @click="fmoUserPopup = c"
+          >
+            <div class="fmo-server-main">
+              <strong>{{ c.callsign }}</strong>
+              <span>{{
+                c.status_text || c.comment || (c.freq ? c.freq.toFixed(4) + " MHz" : "") || c.kind || ""
+              }}</span>
+            </div>
+            <div class="fmo-server-actions">
+              <span v-if="c.uid" class="fmo-server-meta">uid {{ c.uid }}</span>
+              <span class="fmo-server-meta">{{ fmtClientTime(c.last_seen) }}</span>
+            </div>
+            <div v-if="fmoClientDetailLine(c)" class="fmo-user-recent">
+              <span>{{ fmoClientDetailLine(c) }}</span>
+            </div>
+            <div v-if="fmoClientRecentExtras(c).length" class="fmo-user-recent">
+              <span v-for="(m, i) in fmoClientRecentExtras(c)" :key="i">{{ fmtClientTime(m.ts) }} {{ m.text }}</span>
+            </div>
+          </article>
           </div>
         </div>
       </article>
@@ -2910,69 +3174,6 @@ watch(
               {{ fmo.state.mqttDetail || fmo.state.aprsDetail }}
             </div>
           </div>
-
-          <!-- ④ 服务器列表 -->
-          <div class="fmo-section" v-if="fmo.state.servers.length || fmo.state.favorites.length">
-            <div class="fmo-section-head">
-              <span class="fmo-section-tag">④</span>
-              <span>{{ language === "zh" ? "服务器" : "Servers" }}</span>
-            </div>
-            <div class="fmo-server-list" v-if="fmo.state.servers.length">
-              <article
-                v-for="s in sortedFmoServers"
-                :key="s.key"
-                class="fmo-server-row"
-                :class="{ selected: fmo.selectedServer()?.key === s.key }"
-                @click="selectFmoServer(s)"
-              >
-                <div class="fmo-server-main">
-                  <strong>{{ s.name || s.callsign }}</strong>
-                  <span>{{ s.host }}:{{ s.port }}</span>
-                </div>
-                <div class="fmo-server-actions">
-                  <span
-                    class="fmo-server-meta online-count"
-                    :class="{ 'has-online': (s.online ?? 0) > 0 }"
-                  >
-                    {{ language === "zh" ? "在线" : "Online" }} {{ s.online ?? 0 }}/{{ s.total ?? "?" }}
-                  </span>
-                  <span v-if="s.cover_km" class="fmo-server-meta">{{ s.cover_km }}km</span>
-                  <button
-                    class="icon-btn fmo-star-btn"
-                    :class="{ active: isFmoServerFavorited(s) }"
-                    :title="language === 'zh' ? '收藏' : 'Favorite'"
-                    @click.stop="toggleFmoServerFavorite(s)"
-                  >
-                    <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-                      <path d="M12 17.3l-6.2 3.7 1.6-7-5.4-4.7 7.1-.6L12 2l2.9 6.7 7.1.6-5.4 4.7 1.6 7z"/>
-                    </svg>
-                  </button>
-                </div>
-              </article>
-            </div>
-            <div class="fmo-favorites" v-if="fmo.state.favorites.length">
-              <article
-                v-for="fav in fmo.state.favorites"
-                :key="fav.key"
-                class="fmo-server-row"
-                :class="{ selected: fmo.selectedServer()?.key === fav.key }"
-                @click="selectFmoServer(fav as unknown as FmoServer)"
-              >
-                <div class="fmo-server-main">
-                  <strong>{{ fav.name || fav.callsign || fav.host }}</strong>
-                  <span>{{ fav.host }}:{{ fav.port }}</span>
-                </div>
-                <div class="fmo-server-actions">
-                  <span class="fmo-server-meta">★</span>
-                  <button class="icon-btn" @click.stop="fmo.removeFavorite(fav.key)">
-                    <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-                      <path d="M6 19V5h2v14H6zm4 0V5h2v14h-2zm4 0V5h2v14h-2z"/>
-                    </svg>
-                  </button>
-                </div>
-              </article>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -3173,6 +3374,35 @@ watch(
             </div>
             <span v-if="device.isOnline" class="device-online-dot"></span>
           </article>
+        </div>
+      </div>
+    </transition>
+
+    <!-- FMO 用户详情弹窗 -->
+    <transition name="drawer-fade">
+      <div v-if="fmoUserPopup" class="drawer-backdrop" @click="fmoUserPopup = null"></div>
+    </transition>
+    <transition name="drawer-fade">
+      <div v-if="fmoUserPopup" class="device-popup">
+        <div class="drawer-head">
+          <div>
+            <h2>{{ fmoUserPopup.callsign }}</h2>
+          </div>
+          <button class="ghost-btn compact-ghost" @click="fmoUserPopup = null">{{ t.close }}</button>
+        </div>
+        <div class="device-popup-list fmo-user-detail">
+          <div v-for="row in fmoUserDetailRows" :key="row.label" class="fmo-user-detail-row">
+            <span>{{ row.label }}</span>
+            <strong>{{ row.value }}</strong>
+          </div>
+          <div v-if="fmoUserPopup.recent?.length" class="fmo-user-detail-row fmo-user-detail-recent">
+            <span>{{ language === "zh" ? "最近消息" : "Recent" }}</span>
+            <div>
+              <strong v-for="(m, i) in fmoUserPopup.recent" :key="i">
+                {{ fmtClientDateTime(m.ts) }} {{ m.text }}
+              </strong>
+            </div>
+          </div>
         </div>
       </div>
     </transition>

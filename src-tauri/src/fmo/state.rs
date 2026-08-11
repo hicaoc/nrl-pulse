@@ -43,6 +43,7 @@ pub struct FmoState {
     /// 手动配置的 FMO 呼号（优先于证书），空则用证书呼号
     pub configured_callsign: Arc<std::sync::Mutex<String>>,
     aprs_task_running: Arc<AtomicBool>,
+    identity_watch_running: Arc<AtomicBool>,
 }
 
 /// FMO 独立统计计数（与 NRL 分离）。
@@ -139,6 +140,7 @@ impl FmoState {
             stats: FmoStats::default(),
             configured_callsign: Arc::new(std::sync::Mutex::new(String::new())),
             aprs_task_running: Arc::new(AtomicBool::new(false)),
+            identity_watch_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -174,8 +176,8 @@ impl FmoState {
         0
     }
 
-    /// 返回 {username, password} 的 MQTT 凭据（基于选定服务器 + 证书库）。
-    pub async fn mqtt_credentials(&self) -> Result<serde_json::Value, String> {
+    /// 选定服务器的认证信息（host/uid/证书指纹），供构建 SAS 凭据。
+    async fn server_auth_json(&self) -> Result<serde_json::Value, String> {
         let mut srv = {
             let sel = self.selected_server.lock().await;
             match sel.as_object() {
@@ -207,8 +209,17 @@ impl FmoState {
         if !(ok_host && ok_uid && ok_fp) {
             return Err("选定服务器缺少 uid/证书指纹（请从 STATION 广播列表选择）".into());
         }
+        Ok(srv)
+    }
+
+    /// 返回 {username, password, role} 的 MQTT 凭据（基于选定服务器 + 证书库）。
+    /// 初始角色：服务器呼号与证书呼号一致（自己的服务器）用 super，否则 user。
+    pub async fn mqtt_credentials(&self) -> Result<serde_json::Value, String> {
+        let srv = self.server_auth_json().await?;
         let certs_dir = self.data_dir.join("certs");
-        fmo_auth::mqtt_credentials(&certs_dir, &srv, "user")
+        fmo_auth::validate_identity(&certs_dir)?;
+        let role = fmo_auth::initial_role(&certs_dir, &srv);
+        fmo_auth::mqtt_credentials(&certs_dir, &srv, &role)
     }
 
     /// 连接 MQTT（使用选定服务器 + 证书自动构建凭据）。
@@ -235,17 +246,44 @@ impl FmoState {
             (self.emit)(json!({"type": "log", "level": "error", "msg": msg.clone()}));
             return Err(msg);
         }
+        // 安装凭据工厂：认证被拒时 MQTT 客户端从初始角色起按 ROLE_SEQ 往后换角色重试
+        if let Ok(srv) = self.server_auth_json().await {
+            // 诊断日志：SAS 凭据的实际目标与用户身份，便于排查「别的服务器能登、自己服务器被拒」
+            let fp_hex = srv["fingerprint"].as_array()
+                .map(|a| a.iter().take(8)
+                    .filter_map(|b| b.as_u64())
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>())
+                .unwrap_or_default();
+            (self.emit)(json!({"type": "log", "level": "info",
+                "msg": format!("SAS 凭据：用户 {} uid={} 角色={} → 服务器 {} uid={} {}:{} 证书fp={}…",
+                               creds["username"].as_str().unwrap_or("-"),
+                               self.current_uid(),
+                               creds["role"].as_str().unwrap_or("user"),
+                               srv["callsign"].as_str().unwrap_or("-"),
+                               srv["uid"].as_u64().unwrap_or(0),
+                               host, port, fp_hex)}));
+            let certs_dir = self.data_dir.join("certs");
+            *self.mqtt_client.cred_factory.lock().unwrap() =
+                Some(std::sync::Arc::new(move |role: &str| {
+                    let c = fmo_auth::mqtt_credentials(&certs_dir, &srv, role)?;
+                    let u = c["username"].as_str().unwrap_or("").to_string();
+                    let p = c["password"].as_str().unwrap_or("").to_string();
+                    Ok((u, p))
+                }));
+        }
         let username = creds.get("username").and_then(|u| u.as_str()).map(|s| s.to_string());
         let password = creds.get("password").and_then(|p| p.as_str()).map(|s| s.to_string());
+        let role = creds.get("role").and_then(|r| r.as_str()).unwrap_or("user").to_string();
         let callsign = username.clone();
         let uid = self.current_uid();
         eprintln!(
-            "[FMO] connect_mqtt host={host} port={port} uid={uid} user={} pw_len={}",
+            "[FMO] connect_mqtt host={host} port={port} uid={uid} user={} role={role} pw_len={}",
             username.as_deref().unwrap_or("-"),
             password.as_deref().map(|p| p.len()).unwrap_or(0)
         );
         self.mqtt_client
-            .connect(&host, port, uid, username, password, tls, callsign)
+            .connect(&host, port, uid, username, password, tls, callsign, role)
             .await;
         Ok(())
     }
@@ -262,6 +300,32 @@ impl FmoState {
         let client = self.aprs_client.clone();
         tauri::async_runtime::spawn(async move {
             client.run().await;
+        });
+    }
+
+    /// 证书身份巡检：启动即查一次，之后每 10 分钟复查。
+    /// 证书后来过期、私钥与证书不配套、临近 7 天到期都会以 warn 日志提醒
+    /// （状态不变不重复提醒，修复后再次出现问题会重新提醒）。
+    pub fn start_identity_watchdog(self: &Arc<Self>) {
+        if self.identity_watch_running.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let this = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut last_msg = String::new();
+            loop {
+                let certs_dir = this.data_dir.join("certs");
+                let msg = match fmo_auth::identity_status(&certs_dir) {
+                    Some(Err(e)) => e,
+                    _ => String::new(),
+                };
+                if !msg.is_empty() && msg != last_msg {
+                    (this.emit)(json!({"type": "log", "level": "warn",
+                        "msg": format!("FMO 证书提醒：{msg}")}));
+                }
+                last_msg = msg;
+                tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+            }
         });
     }
 

@@ -367,6 +367,7 @@ impl RuntimeState {
 
         fmo.install_raw_handler();
         fmo.ensure_aprs_task();
+        fmo.start_identity_watchdog();
         fmo.auto_connect_aprs().await;
         fmo.select_default_server().await;
 

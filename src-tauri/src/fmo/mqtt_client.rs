@@ -203,6 +203,10 @@ pub struct ServerTraffic {
 pub struct FmoMqttClient {
     pub emit: EmitFn,
     pub on_raw_payload: std::sync::Mutex<Option<Arc<dyn Fn(Vec<u8>) + Send + Sync>>>,
+    /// 凭据工厂：role → (username, password)。
+    /// SAS ACL 要求 claimed role 与证书登记角色一致（如登记 super 却声称 user 会被拒），
+    /// 认证被拒时按 ROLE_SEQ 换角色重建凭据重试（参照 sim 的 _role_seq 机制）。
+    pub cred_factory: std::sync::Mutex<Option<Arc<dyn Fn(&str) -> Result<(String, String), String> + Send + Sync>>>,
     pub state: Arc<Mutex<String>>,
     pub detail: Arc<Mutex<String>>,
     pub client: Arc<Mutex<Option<AsyncClient>>>,
@@ -211,11 +215,15 @@ pub struct FmoMqttClient {
     pub traffic: Arc<Mutex<std::collections::BTreeMap<String, ServerTraffic>>>,
 }
 
+/// 认证被拒时按序重试的角色（与 sim-rust / sim 一致）
+const ROLE_SEQ: [&str; 3] = ["user", "super", "admin"];
+
 impl FmoMqttClient {
     pub fn new(emit: EmitFn) -> Self {
         Self {
             emit,
             on_raw_payload: std::sync::Mutex::new(None),
+            cred_factory: std::sync::Mutex::new(None),
             state: Arc::new(Mutex::new("disconnected".into())),
             detail: Arc::new(Mutex::new(String::new())),
             client: Arc::new(Mutex::new(None)),
@@ -233,7 +241,7 @@ impl FmoMqttClient {
 
     pub async fn connect(&self, host: &str, port: u16, uid: u32,
                          username: Option<String>, password: Option<String>,
-                         tls: bool, callsign: Option<String>) {
+                         tls: bool, callsign: Option<String>, initial_role: String) {
         let mut tls = tls;
         let port = port;
         let host = host.to_string();
@@ -316,6 +324,8 @@ impl FmoMqttClient {
         let state = self.state.clone();
         let detail = self.detail.clone();
         let on_raw = self.on_raw_payload.lock().unwrap().clone();
+        let cred_factory = self.cred_factory.lock().unwrap().clone();
+        let client_holder = self.client.clone();
         let generation = self.generation.clone();
         let traffic = self.traffic.clone();
         *self.current_host.lock().await = host.clone();
@@ -324,11 +334,15 @@ impl FmoMqttClient {
         self.set_state("connecting", &format!("{host}:{port}")).await;
 
         tauri::async_runtime::spawn(async move {
+            let mut client = client;
             let subscribe_topics: Vec<SubscribeFilter> =
                 SUBSCRIBE_TOPICS.iter()
                     .map(|t| SubscribeFilter::new((*t).to_string(), QoS::AtMostOnce))
                     .collect();
             let mut subscribed = false;
+            // 初始角色由调用方按「服务器呼号 == 证书呼号 → super，否则 user」选定；
+            // 被拒后从该角色起按 ROLE_SEQ 往后重试
+            let mut role_idx = ROLE_SEQ.iter().position(|r| *r == initial_role).unwrap_or(0);
             loop {
                 if generation.load(std::sync::atomic::Ordering::SeqCst) != gen {
                     return;
@@ -338,6 +352,34 @@ impl FmoMqttClient {
                         let code = ack.code as u8;
                         eprintln!("[FMO-MQTT] ConnAck code={code} host={host}:{port}");
                         if code != 0 {
+                            // 认证被拒：SAS 可能要求 claimed role 与证书登记角色一致，
+                            // 按 ROLE_SEQ（user→super→admin）换角色重建凭据重试
+                            if matches!(code, 0x84 | 0x87) && role_idx + 1 < ROLE_SEQ.len() {
+                                let cur = ROLE_SEQ[role_idx];
+                                let next = ROLE_SEQ[role_idx + 1];
+                                let retry = match &cred_factory {
+                                    Some(factory) => factory(next).ok(),
+                                    None => None,
+                                };
+                                if let Some((u, p)) = retry {
+                                    (emit)(json!({"type": "log", "level": "warn",
+                                        "msg": format!("MQTT 角色 {cur} 被拒（code={code}），换 {next} 重试…")}));
+                                    role_idx += 1;
+                                    let mut opts2 = MqttOptions::new(
+                                        client_id_for(&cs, uid, "0C4D"), host.clone(), port);
+                                    opts2.set_keep_alive(std::time::Duration::from_secs(60));
+                                    opts2.set_credentials(u, p);
+                                    if tls {
+                                        opts2.set_transport(rumqttc::Transport::tls_with_default_config());
+                                    }
+                                    let (new_client, new_eventloop) = AsyncClient::new(opts2, 100);
+                                    *client_holder.lock().await = Some(new_client.clone());
+                                    client = new_client;
+                                    eventloop = new_eventloop;
+                                    subscribed = false;
+                                    continue;
+                                }
+                            }
                             let reason = match code {
                                 0x84 => "用户/密码错误或认证被拒",
                                 0x87 => "未授权",
@@ -362,8 +404,13 @@ impl FmoMqttClient {
                         (emit)(json!({"type": "mqtt_state", "state": "connected",
                                       "detail": format!("{host}:{port}")}));
                         (emit)(json!({"type": "log", "level": "info",
-                            "msg": format!("MQTT 已连接 {host}:{port}，订阅 {} 个 topic",
-                                           SUBSCRIBE_TOPICS.len())}));
+                            "msg": format!("MQTT 已连接 {host}:{port}，订阅 {} 个 topic{}",
+                                           SUBSCRIBE_TOPICS.len(),
+                                           if role_idx > 0 {
+                                               format!("（角色 {}）", ROLE_SEQ[role_idx])
+                                           } else {
+                                               String::new()
+                                           })}));
                         if !subscribed {
                             let _ = client.subscribe_many(subscribe_topics.clone()).await;
                             subscribed = true;

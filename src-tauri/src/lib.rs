@@ -371,6 +371,7 @@ async fn fmo_state_snapshot(
         "certs": fmo.cert_store.list().await,
         "favorites": fmo.favorites_list().await,
         "servers": fmo.server_table.to_list().await,
+        "clients": fmo.server_table.client_list().await,
         "mqttState": fmo.mqtt_client.state_str().await,
         "mqttDetail": fmo.mqtt_client.detail.lock().await.clone(),
         "aprsState": fmo.aprs_client.state.lock().await.clone(),
@@ -384,6 +385,22 @@ async fn fmo_state_snapshot(
     Ok(out)
 }
 
+/// 导入证书后的身份一致性检查：cert_user + cert_devicekey 都就位才校验，
+/// 结果挂在返回条目的 identity_check 字段供前端即时提示。
+fn attach_identity_check(fmo: &crate::fmo::state::FmoState, entry: &mut serde_json::Value) {
+    let certs_dir = fmo.data_dir.join("certs");
+    let ready = certs_dir.join("cert_user.json").is_file()
+        && certs_dir.join("cert_devicekey.json").is_file();
+    entry["identity_check"] = if !ready {
+        serde_json::json!({"checked": false})
+    } else {
+        match fmo::fmo_auth::validate_identity(&certs_dir) {
+            Ok(()) => serde_json::json!({"checked": true, "ok": true}),
+            Err(e) => serde_json::json!({"checked": true, "ok": false, "msg": e}),
+        }
+    };
+}
+
 #[tauri::command]
 async fn fmo_cert_import_json(
     state: tauri::State<'_, RuntimeState>,
@@ -393,7 +410,9 @@ async fn fmo_cert_import_json(
     let Some(fmo) = state.fmo_state().await else {
         return Err("FMO 未初始化".into());
     };
-    Ok(fmo.cert_store.import_json(&name, cert, "json").await)
+    let mut entry = fmo.cert_store.import_json(&name, cert, "json").await;
+    attach_identity_check(&fmo, &mut entry);
+    Ok(entry)
 }
 
 #[tauri::command]
@@ -423,7 +442,9 @@ async fn fmo_cert_import_file(
             "imported".into()
         }
     });
-    Ok(fmo.cert_store.import_json(&name, obj, "upload").await)
+    let mut entry = fmo.cert_store.import_json(&name, obj, "upload").await;
+    attach_identity_check(&fmo, &mut entry);
+    Ok(entry)
 }
 
 #[tauri::command]

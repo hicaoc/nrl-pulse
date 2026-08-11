@@ -29,6 +29,7 @@ const initial: FmoStateSnapshot = {
   certs: [],
   favorites: [],
   servers: [],
+  clients: [],
   mqttState: "disconnected",
   mqttDetail: "",
   aprsState: "disconnected",
@@ -101,6 +102,9 @@ export const useFmoStore = defineStore("fmo", () => {
     switch (ev.type) {
       case "server_list":
         state.value.servers = (ev.servers as FmoServer[]) ?? [];
+        break;
+      case "client_list":
+        state.value.clients = (ev.clients as FmoStateSnapshot["clients"]) ?? [];
         break;
       case "cert_state":
         state.value.certs = (ev.certs as FmoStateSnapshot["certs"]) ?? [];

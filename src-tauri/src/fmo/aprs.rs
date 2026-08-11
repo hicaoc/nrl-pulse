@@ -379,6 +379,8 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 pub struct ServerTable {
     pub servers: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    /// FMO 用户（客户端设备）表：key = 呼号大写，仅内存，随信标实时更新
+    pub clients: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     pub persist_path: Option<PathBuf>,
 }
 
@@ -406,6 +408,7 @@ impl ServerTable {
         }
         Self {
             servers: Arc::new(Mutex::new(servers)),
+            clients: Arc::new(Mutex::new(HashMap::new())),
             persist_path,
         }
     }
@@ -455,7 +458,7 @@ impl ServerTable {
         };
         for f in ["port", "online", "total", "cover_km", "freq", "height", "uid",
                   "subtype", "version", "name", "s_code", "country", "status_text",
-                  "cert", "lat", "lon"] {
+                  "cert", "lat", "lon", "rig", "ant"] {
             if let Some(v) = parsed.get(f) {
                 if !v.is_null() {
                     entry[f] = v.clone();
@@ -483,6 +486,97 @@ impl ServerTable {
                     .and_then(|h| h.as_str())
                     .map(|h| !h.is_empty())
                     .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        list.sort_by_key(|s| {
+            let last = s.get("last_seen").and_then(|v| v.as_i64()).unwrap_or(0);
+            std::cmp::Reverse(last)
+        });
+        list
+    }
+
+    /// 记录 FMO 用户（客户端设备）信标：client_beacon / position / status 类，
+    /// 以呼号（大写）为唯一键。返回更新后的条目；无呼号则忽略。
+    pub async fn upsert_client(&self, parsed: &serde_json::Value) -> Option<serde_json::Value> {
+        let callsign = parsed.get("callsign").and_then(|c| c.as_str()).unwrap_or("").to_string();
+        if callsign.is_empty() {
+            return None;
+        }
+        let key = callsign.to_uppercase();
+        let now = chrono::Utc::now().timestamp();
+        let mut clients = self.clients.lock().await;
+        let mut entry = if let Some(e) = clients.get(&key).cloned() {
+            e
+        } else {
+            json!({ "callsign": key, "first_seen": now })
+        };
+        entry["last_seen"] = json!(now);
+        entry["kind"] = parsed.get("kind").cloned().unwrap_or(json!(""));
+        // STATUS 消息：按时间倒序保留最近 2 条（供用户列表「最近消息」展示）
+        if parsed.get("kind").and_then(|k| k.as_str()) == Some("status") {
+            if let Some(text) = parsed.get("status_text").and_then(|s| s.as_str()) {
+                if !text.is_empty() {
+                    let mut recent = entry
+                        .get("recent")
+                        .and_then(|r| r.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    recent.insert(0, json!({ "ts": now, "text": text }));
+                    recent.truncate(2);
+                    entry["recent"] = json!(recent);
+                }
+            }
+        }
+        for f in ["uid", "subtype", "status_text", "comment", "freq", "rig",
+                  "version", "lat", "lon", "height", "ant"] {
+            if let Some(v) = parsed.get(f) {
+                if !v.is_null() {
+                    entry[f] = v.clone();
+                }
+            }
+        }
+        clients.insert(key, entry.clone());
+        // 上限保护：超过 1000 个用户时淘汰最久未见的
+        if clients.len() > 1000 {
+            let oldest = clients
+                .iter()
+                .min_by_key(|(_, v)| v.get("last_seen").and_then(|t| t.as_i64()).unwrap_or(0))
+                .map(|(k, _)| k.clone());
+            if let Some(k) = oldest {
+                clients.remove(&k);
+            }
+        }
+        Some(entry)
+    }
+
+    pub async fn client_list(&self) -> Vec<serde_json::Value> {
+        // 服务器（STATION 广播带 host）也会发 STATUS/位置报文，按其呼号把服务器从用户表中剔除
+        let servers = self.servers.lock().await;
+        let mut server_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for s in servers.values() {
+            if let Some(c) = s.get("callsign").and_then(|c| c.as_str()) {
+                let up = c.to_uppercase();
+                if !up.is_empty() {
+                    server_calls.insert(up.clone());
+                    if let Some(base) = up.split('-').next() {
+                        server_calls.insert(base.to_string());
+                    }
+                }
+            }
+        }
+        drop(servers);
+        let clients = self.clients.lock().await;
+        let mut list: Vec<serde_json::Value> = clients
+            .values()
+            .filter(|c| {
+                let cs = c
+                    .get("callsign")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_uppercase();
+                let base = cs.split('-').next().unwrap_or("");
+                !cs.is_empty() && !server_calls.contains(&cs) && !server_calls.contains(base)
             })
             .cloned()
             .collect();
@@ -665,6 +759,13 @@ impl AprsClient {
                 if entry.is_some() {
                     (self.emit)(json!({"type": "server_list",
                         "servers": self.table.to_list().await}));
+                }
+                // 用户（客户端设备）信标：client_beacon / position / status 更新用户表
+                if matches!(kind, "client_beacon" | "position" | "status")
+                    && self.table.upsert_client(&parsed).await.is_some()
+                {
+                    (self.emit)(json!({"type": "client_list",
+                        "clients": self.table.client_list().await}));
                 }
             } else if is_fmoish {
                 n_fmo += 1;

@@ -235,6 +235,8 @@ export interface FmoServer {
   s_code?: number;
   country?: string;
   status_text?: string;
+  rig?: string;
+  ant?: string;
   cert?: {
     callsign: string;
     uid: number;
@@ -269,6 +271,25 @@ export interface FmoServerTraffic {
   lastTs: number;
 }
 
+export interface FmoClient {
+  callsign: string;
+  uid?: number;
+  kind?: string;
+  subtype?: string;
+  status_text?: string;
+  comment?: string;
+  freq?: number;
+  rig?: string;
+  height?: number;
+  ant?: string;
+  recent?: { ts: number; text: string }[];
+  version?: string;
+  lat?: string;
+  lon?: string;
+  first_seen?: number;
+  last_seen?: number;
+}
+
 export interface FmoStateSnapshot {
   identity: FmoIdentity;
   certCallsign: string;
@@ -276,6 +297,7 @@ export interface FmoStateSnapshot {
   certs: FmoCertEntry[];
   favorites: FmoFavorite[];
   servers: FmoServer[];
+  clients: FmoClient[];
   mqttState: string;
   mqttDetail: string;
   aprsState: string;

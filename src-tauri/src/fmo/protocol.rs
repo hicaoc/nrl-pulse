@@ -68,6 +68,13 @@ pub fn sign(seed_b64: &str, message: &[u8]) -> Result<Vec<u8>, String> {
     Ok(kp.sign(message).to_bytes().to_vec())
 }
 
+/// 从 seed 推导 Ed25519 公钥（校验 devicekey 私钥与 user 证书是否一套用）。
+pub fn pubkey_from_seed(seed_b64: &str) -> Option<Vec<u8>> {
+    let seed = decode_seed(seed_b64)?;
+    let kp = ed25519_dalek::SigningKey::from_bytes(seed.as_slice().try_into().ok()?);
+    Some(kp.verifying_key().to_bytes().to_vec())
+}
+
 pub fn verify(pubkey_b64: &str, message: &[u8], signature: &[u8]) -> bool {
     let Some(pk) = decode_seed(pubkey_b64) else {
         return false;

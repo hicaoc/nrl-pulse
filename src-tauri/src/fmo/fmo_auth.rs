@@ -116,7 +116,7 @@ pub fn load_identity(certs_dir: &Path) -> Result<serde_json::Value, String> {
     }))
 }
 
-/// 一站式：返回 {username, password}。
+/// 一站式：返回 {username, password, role}。
 pub fn mqtt_credentials(certs_dir: &Path, server: &serde_json::Value,
                         role: &str) -> Result<serde_json::Value, String> {
     let ident = load_identity(certs_dir)?;
@@ -127,7 +127,75 @@ pub fn mqtt_credentials(certs_dir: &Path, server: &serde_json::Value,
     Ok(serde_json::json!({
         "username": ident["user_cert"]["subject"]["callsign"],
         "password": pw,
+        "role": role,
     }))
+}
+
+/// 初始角色选择：登录服务器呼号与证书呼号一致（自己的服务器）默认 super，
+/// 否则默认 user；被拒后 MQTT 客户端按 ROLE_SEQ 从该角色起继续往后重试。
+pub fn initial_role(certs_dir: &Path, server: &serde_json::Value) -> String {
+    let cert_cs = load_identity(certs_dir).ok()
+        .and_then(|i| i["user_cert"]["subject"]["callsign"].as_str().map(|s| s.to_uppercase()))
+        .unwrap_or_default();
+    let srv_cs = server["callsign"].as_str().unwrap_or("").to_uppercase();
+    if !cert_cs.is_empty() && !srv_cs.is_empty() && cert_cs == srv_cs {
+        "super".to_string()
+    } else {
+        "user".to_string()
+    }
+}
+
+/// 连接前身份自检：证书过期、devicekey 私钥与 user 证书公钥不配套时，
+/// 签名在所有服务器都验不过（NotAuthorized），提前给出可定位的中文原因。
+pub fn validate_identity(certs_dir: &Path) -> Result<(), String> {
+    let ident = load_identity(certs_dir)?;
+    let user_cert = &ident["user_cert"];
+    // 1. 证书有效期
+    let now = protocol::now_ts();
+    if let Some(exp) = user_cert["exp"].as_u64() {
+        if (exp as i64) <= now {
+            return Err(format!("用户证书已过期（exp={exp}），请重新申请并导入证书"));
+        }
+    }
+    // 2. devicekey 私钥推导的公钥必须与 user 证书里的公钥一致（不是一套则所有服务器都拒）
+    let seed = ident["seed"].as_str().unwrap_or("");
+    let cert_pk = user_cert["subject"]["publicKey"].as_str().unwrap_or("");
+    if !seed.is_empty() && !cert_pk.is_empty() {
+        if let (Some(derived), Some(in_cert)) =
+            (protocol::pubkey_from_seed(seed), protocol::decode_seed(cert_pk))
+        {
+            if derived != in_cert {
+                let cs = user_cert["subject"]["callsign"].as_str().unwrap_or("?");
+                return Err(format!(
+                    "cert_devicekey 私钥与 cert_user（{cs}）证书公钥不匹配：\
+                     导入的证书不是同一个人的一套，请 4 个证书文件整套一起换"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 身份状态巡检（启动/定时任务用）：
+/// None = 未导入用户证书；Some(Err) = 有问题需提醒；Some(Ok) = 正常（附剩余天数）。
+pub fn identity_status(certs_dir: &Path) -> Option<Result<String, String>> {
+    if !certs_dir.join("cert_user.json").is_file() {
+        return None;
+    }
+    if !certs_dir.join("cert_devicekey.json").is_file() {
+        return Some(Err("缺少 cert_devicekey.json（私钥），MQTT 认证无法签名".into()));
+    }
+    if let Err(e) = validate_identity(certs_dir) {
+        return Some(Err(e));
+    }
+    let user_cert = _load_cert(certs_dir, "cert_user.json").ok()?;
+    let exp = user_cert["exp"].as_u64()? as i64;
+    let days = (exp - protocol::now_ts()) / 86400;
+    if days < 7 {
+        Some(Err(format!("用户证书将在 {days} 天后过期，请尽快更新证书")))
+    } else {
+        Some(Ok(format!("证书有效，剩余 {days} 天")))
+    }
 }
 
 /// APRS passcode（标准算法，与 aprslib 一致）。

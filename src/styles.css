@@ -993,6 +993,25 @@ textarea {
   flex-wrap: wrap;
 }
 
+/* 说话人信标信息（命中 APRS 用户表时显示在呼号下方） */
+.callsign-speaker-info {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.callsign-speaker-info span {
+  color: rgba(140, 220, 255, 0.92);
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .callsign-ssid,
 .callsign-room {
   color: var(--text-dim);
@@ -2330,6 +2349,116 @@ input[type="range"] {
 .fmo-star-btn.active {
   color: #ffd34f;
   filter: drop-shadow(0 0 6px rgba(255, 211, 79, 0.55));
+}
+
+/* 右侧 Tab 区内的 FMO 服务器/用户面板：顶部筛选框固定，列表撑满剩余高度滚动 */
+.fmo-tab-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+
+.fmo-tab-filter {
+  width: 100%;
+  flex: none;
+}
+
+.fmo-tab-list {
+  padding: 0;
+  gap: 6px;
+}
+
+.fmo-tab-list .fmo-server-list,
+.fmo-tab-list .fmo-favorites {
+  margin-bottom: 6px;
+}
+
+/* FMO 用户行：复用服务器行样式，点击打开详情弹窗 */
+.fmo-user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.fmo-user-row:hover {
+  background: rgba(91, 192, 255, 0.07);
+}
+
+.fmo-user-row .fmo-server-main strong {
+  font-family: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  letter-spacing: 0.04em;
+}
+
+/* 用户详情弹窗字段行 */
+.fmo-user-detail {
+  gap: 8px;
+}
+
+.fmo-user-detail-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.fmo-user-detail-row > span {
+  flex: none;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+}
+
+.fmo-user-detail-row > strong {
+  min-width: 0;
+  text-align: right;
+  font-size: 0.84rem;
+  color: #f7f2e8;
+  word-break: break-all;
+}
+
+.fmo-user-detail-recent > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  text-align: right;
+}
+
+.fmo-user-detail-recent strong {
+  font-size: 0.8rem;
+  color: #f7f2e8;
+}
+
+/* 用户最近 STATUS 消息：整行排列在主信息下方 */
+.fmo-user-recent {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-left: 2px;
+}
+
+.fmo-user-recent span {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 群组 chip 的在线数量区域：可点击弹窗 */
