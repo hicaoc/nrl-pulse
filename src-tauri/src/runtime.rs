@@ -370,6 +370,15 @@ impl RuntimeState {
         fmo.start_identity_watchdog();
         fmo.auto_connect_aprs().await;
         fmo.select_default_server().await;
+        // 启动即用上次成功的认证自动连接 FMO MQTT（音频引擎先启动，与手动连接路径一致）
+        if fmo.mqtt_autoconnect_ready().await {
+            self.ensure_audio_running().await;
+            (fmo.emit)(serde_json::json!({"type": "log", "level": "info",
+                "msg": "检测到证书与上次选定的服务器，自动连接 FMO MQTT"}));
+            if let Err(err) = fmo.connect_mqtt(false).await {
+                eprintln!("[FMO] 启动自动连接 MQTT 失败: {err}");
+            }
+        }
 
         let mut guard = self.fmo.write().await;
         *guard = Some(fmo);

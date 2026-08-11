@@ -488,8 +488,7 @@ async fn fmo_server_select(
     let Some(fmo) = state.fmo_state().await else {
         return Err("FMO 未初始化".into());
     };
-    let mut sel = fmo.selected_server.lock().await;
-    *sel = server;
+    fmo.select_server(server).await;
     Ok(())
 }
 

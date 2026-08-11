@@ -1727,10 +1727,21 @@ async function selectFmoServerAndConnect(s: FmoServer) {
 }
 
 async function connectFmoMqtt() {
-  if (!fmo.selectedServer()) {
+  // 无选定服务器时自动兜底：第一台收藏 → 在线数最高的服务器
+  let sel = fmo.selectedServer();
+  if (!sel) {
+    const cand =
+      (fmo.state.favorites[0] as unknown as FmoServer | undefined) ??
+      sortedFmoServers.value[0];
+    if (cand) {
+      await fmo.selectServer(cand);
+      sel = cand;
+    }
+  }
+  if (!sel) {
     alert(language.value === "zh"
-      ? "请先在服务器列表中选择一台服务器，再点击 FMO 连接"
-      : "Select a server from the list first, then connect FMO");
+      ? "暂无可用服务器，请先连接 APRS 发现服务器"
+      : "No server available yet. Connect APRS to discover servers.");
     return;
   }
   try {
@@ -1889,6 +1900,54 @@ const fmoUserDetailRows = computed(() => {
   return rows;
 });
 
+// 服务器行内联概要：呼号 + 状态文本 + 频率/高度/电台/天线/位置
+function fmoServerDetailLine(s: FmoServer): string {
+  const parts: string[] = [];
+  if (s.callsign && s.callsign !== s.name) parts.push(s.callsign);
+  if (s.status_text) parts.push(s.status_text);
+  if (s.freq) parts.push(`${s.freq.toFixed(4)} MHz`);
+  if (s.height != null) parts.push(`${s.height}m`);
+  if (s.rig) parts.push(s.rig);
+  if (s.ant) parts.push(s.ant);
+  if (s.lat && s.lon) parts.push(`${s.lat} ${s.lon}`);
+  return parts.join(" · ");
+}
+
+// 服务器详情弹窗（收藏条目先回查完整服务器信息，查不到再用收藏自身字段）
+const fmoServerPopup = ref<FmoServer | null>(null);
+function openFmoServerPopup(s: FmoServer) {
+  const full = fmo.state.servers.find((x) => x.key === s.key);
+  fmoServerPopup.value = full ?? s;
+}
+const fmoServerDetailRows = computed(() => {
+  const s = fmoServerPopup.value;
+  if (!s) return [] as { label: string; value: string }[];
+  const zh = language.value === "zh";
+  const rows: { label: string; value: string }[] = [];
+  const push = (label: string, value: string | number | undefined | null) => {
+    if (value !== undefined && value !== null && String(value) !== "") {
+      rows.push({ label, value: String(value) });
+    }
+  };
+  push(zh ? "名称" : "Name", s.name);
+  push(zh ? "呼号" : "Callsign", s.callsign);
+  push("UID", s.uid);
+  push(zh ? "地址" : "Address", s.host ? `${s.host}:${s.port ?? "?"}` : undefined);
+  push(zh ? "状态文本" : "Status", s.status_text);
+  push(zh ? "频率" : "Freq", s.freq ? `${s.freq.toFixed(4)} MHz` : undefined);
+  push(zh ? "高度" : "Height", s.height != null ? `${s.height} m` : undefined);
+  push(zh ? "电台" : "Rig", s.rig);
+  push(zh ? "天线" : "Antenna", s.ant);
+  push(zh ? "覆盖" : "Coverage", s.cover_km ? `${s.cover_km} km` : undefined);
+  push(zh ? "在线" : "Online", s.online != null ? `${s.online} / ${s.total ?? "?"} ${zh ? "峰值" : "peak"}` : undefined);
+  push(zh ? "位置" : "Position", s.lat && s.lon ? `${s.lat} ${s.lon}` : undefined);
+  push(zh ? "国家/地区" : "Country", s.country);
+  push(zh ? "版本" : "Version", [s.subtype, s.version].filter(Boolean).join(" / ") || undefined);
+  push(zh ? "来源" : "Source", s.source);
+  push(zh ? "最后出现" : "Last seen", s.last_seen ? fmtClientDateTime(s.last_seen) : undefined);
+  return rows;
+});
+
 // 当前 FMO 说话人在 APRS 用户表中匹配到的信标信息（先精确匹配呼号，再退化为不含 SSID 的主呼号）
 const fmoSpeakerClient = computed<FmoClient | null>(() => {
   const spk = (fmo.stats.activeSpeaker || "").toUpperCase();
@@ -1965,6 +2024,10 @@ onMounted(async () => {
   defaultAudioPath.value = await getDefaultAudioDir();
   if (!isPttWindow) {
     await platform.bootstrap();
+    // 启动后用上次成功的认证自动连接 NRL（登录态由 bootstrap 从保存的 token 恢复）
+    if (platform.loggedIn && runtime.snapshot.connection === "disconnected") {
+      void runtime.connect();
+    }
   }
   syncConfigDrafts();
   showLogin.value = !isPttWindow && !platform.loggedIn && !isFmo.value;
@@ -2582,6 +2645,15 @@ watch(
                     <span class="fmo-server-meta">★</span>
                     <button
                       class="icon-btn"
+                      :title="language === 'zh' ? '查看详情' : 'Details'"
+                      @click.stop="openFmoServerPopup(fav as unknown as FmoServer)"
+                    >
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                        <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 4.5a1.4 1.4 0 1 1 0 2.8 1.4 1.4 0 0 1 0-2.8zM10.8 11h2.4v7h-2.4z"/>
+                      </svg>
+                    </button>
+                    <button
+                      class="icon-btn"
                       :title="language === 'zh' ? '取消收藏' : 'Unfavorite'"
                       @click.stop="fmo.removeFavorite(fav.key)"
                     >
@@ -2807,6 +2879,15 @@ watch(
                 </span>
                 <span v-if="s.cover_km" class="fmo-server-meta">{{ s.cover_km }}km</span>
                 <button
+                  class="icon-btn"
+                  :title="language === 'zh' ? '查看详情' : 'Details'"
+                  @click.stop="openFmoServerPopup(s)"
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                    <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 4.5a1.4 1.4 0 1 1 0 2.8 1.4 1.4 0 0 1 0-2.8zM10.8 11h2.4v7h-2.4z"/>
+                  </svg>
+                </button>
+                <button
                   class="icon-btn fmo-star-btn"
                   :class="{ active: isFmoServerFavorited(s) }"
                   :title="language === 'zh' ? '收藏' : 'Favorite'"
@@ -2816,6 +2897,9 @@ watch(
                     <path d="M12 17.3l-6.2 3.7 1.6-7-5.4-4.7 7.1-.6L12 2l2.9 6.7 7.1.6-5.4 4.7 1.6 7z"/>
                   </svg>
                 </button>
+              </div>
+              <div v-if="fmoServerDetailLine(s)" class="fmo-user-recent">
+                <span>{{ fmoServerDetailLine(s) }}</span>
               </div>
             </article>
           </div>
@@ -2833,6 +2917,15 @@ watch(
               </div>
               <div class="fmo-server-actions">
                 <span class="fmo-server-meta">★</span>
+                <button
+                  class="icon-btn"
+                  :title="language === 'zh' ? '查看详情' : 'Details'"
+                  @click.stop="openFmoServerPopup(fav as unknown as FmoServer)"
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                    <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 4.5a1.4 1.4 0 1 1 0 2.8 1.4 1.4 0 0 1 0-2.8zM10.8 11h2.4v7h-2.4z"/>
+                  </svg>
+                </button>
                 <button class="icon-btn" @click.stop="fmo.removeFavorite(fav.key)">
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
                     <path d="M6 19V5h2v14H6zm4 0V5h2v14h-2zm4 0V5h2v14h-2z"/>
@@ -3402,6 +3495,27 @@ watch(
                 {{ fmtClientDateTime(m.ts) }} {{ m.text }}
               </strong>
             </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- FMO 服务器详情弹窗 -->
+    <transition name="drawer-fade">
+      <div v-if="fmoServerPopup" class="drawer-backdrop" @click="fmoServerPopup = null"></div>
+    </transition>
+    <transition name="drawer-fade">
+      <div v-if="fmoServerPopup" class="device-popup">
+        <div class="drawer-head">
+          <div>
+            <h2>{{ fmoServerPopup.name || fmoServerPopup.callsign || fmoServerPopup.host }}</h2>
+          </div>
+          <button class="ghost-btn compact-ghost" @click="fmoServerPopup = null">{{ t.close }}</button>
+        </div>
+        <div class="device-popup-list fmo-user-detail">
+          <div v-for="row in fmoServerDetailRows" :key="row.label" class="fmo-user-detail-row">
+            <span>{{ row.label }}</span>
+            <strong>{{ row.value }}</strong>
           </div>
         </div>
       </div>

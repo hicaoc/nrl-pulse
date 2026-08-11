@@ -760,8 +760,14 @@ impl AprsClient {
                     (self.emit)(json!({"type": "server_list",
                         "servers": self.table.to_list().await}));
                 }
-                // 用户（客户端设备）信标：client_beacon / position / status 更新用户表
-                if matches!(kind, "client_beacon" | "position" | "status")
+                // 用户（客户端设备）信标：client_beacon / position / status 更新用户表；
+                // 另含无 host 的客户端广播（V4 BEACON、老版 FMO-CLIENT，携带 FREQ/HEIGHT/RIG/ANT）
+                let no_host = parsed.get("host").and_then(|h| h.as_str())
+                    .map(|h| h.is_empty()).unwrap_or(true);
+                let is_client_broadcast = kind == "broadcast" && no_host
+                    && (parsed.get("subtype").and_then(|s| s.as_str()) == Some("BEACON")
+                        || parsed.get("legacy_type").and_then(|s| s.as_str()) == Some("FMO-CLIENT"));
+                if (matches!(kind, "client_beacon" | "position" | "status") || is_client_broadcast)
                     && self.table.upsert_client(&parsed).await.is_some()
                 {
                     (self.emit)(json!({"type": "client_list",
@@ -831,6 +837,47 @@ mod tests {
         let p = parsed.unwrap();
         assert_eq!(p["kind"], "client_beacon");
         assert_eq!(p["uid"], 796);
+    }
+
+    #[test]
+    fn parse_v4_client_beacon_fields() {
+        // V4 客户端信标：BEACON 子类型，携带 FREQ/HEIGHT/RIG/ANT（用户列表详情来源）
+        let line = b"BI1SQH-15>APFMO4,TCPIP*,qAC,T2CS:=3953.80NF11633.56EiFMO-V4,BEACON,CERT:eJzjYmBgYEowyMzMTAAxGQwAAf0D-g,FREQ:433.2000,HEIGHT:72,RIG:TK-308,ANT:QTH,SIG:abc";
+        let parsed = parse_fmo_line(line);
+        assert!(parsed.is_some(), "should parse");
+        let p = parsed.unwrap();
+        assert_eq!(p["kind"], "broadcast");
+        assert_eq!(p["subtype"], "BEACON");
+        assert_eq!(p["callsign"], "BI1SQH-15");
+        assert_eq!(p["freq"], 433.2);
+        assert_eq!(p["height"], 72);
+        assert_eq!(p["rig"], "TK-308");
+        assert_eq!(p["ant"], "QTH");
+        assert!(p.get("host").is_none(), "客户端信标不应有 host");
+    }
+
+    #[tokio::test]
+    async fn client_beacon_broadcast_populates_user_table() {
+        // 端到端：GBK 编码的 V4 BEACON 广播 → 解析 → 用户表，电台/天线等字段应完整保留
+        let (rig_gbk, _, _) = encoding_rs::GBK.encode("海能达PDC580");
+        let (ant_gbk, _, _) = encoding_rs::GBK.encode("北京朝阳");
+        let mut line: Vec<u8> = b"BA4TCS-15>APFMO4,TCPIP*,qAC,T2CS:=3202.39NF12015.69EiFMO-V4,BEACON,CERT:eJzjYmBgYEowyMzMTAAxGQwAAf0D-g,FREQ:431.0000,HEIGHT:18,RIG:".to_vec();
+        line.extend_from_slice(&rig_gbk);
+        line.extend_from_slice(b",ANT:");
+        line.extend_from_slice(&ant_gbk);
+        line.extend_from_slice(b",SIG:abc");
+        let parsed = parse_fmo_line(&line).expect("should parse");
+        assert_eq!(parsed["subtype"], "BEACON");
+        let table = ServerTable::new(None);
+        let entry = table.upsert_client(&parsed).await.expect("应入用户表");
+        assert_eq!(entry["callsign"], "BA4TCS-15");
+        assert_eq!(entry["rig"], "海能达PDC580");
+        assert_eq!(entry["ant"], "北京朝阳");
+        assert_eq!(entry["freq"], 431.0);
+        assert_eq!(entry["height"], 18);
+        let list = table.client_list().await;
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["rig"], "海能达PDC580");
     }
 
     #[tokio::test]

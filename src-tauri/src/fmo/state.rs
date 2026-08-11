@@ -120,6 +120,13 @@ impl FmoState {
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
 
+        // 上次选定的服务器（含证书指纹），启动时恢复用于自动连接
+        let selected: serde_json::Value =
+            std::fs::read_to_string(data_dir.join("selected_server.json"))
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or(serde_json::Value::Null);
+
         Self {
             data_dir,
             app,
@@ -132,7 +139,7 @@ impl FmoState {
             tx_session: Arc::new(Mutex::new(None)),
             rx_play_enabled: Arc::new(std::sync::Mutex::new(true)),
             rx_loop_enabled: Arc::new(std::sync::Mutex::new(false)),
-            selected_server: Arc::new(Mutex::new(serde_json::Value::Null)),
+            selected_server: Arc::new(Mutex::new(selected)),
             favorites: Arc::new(Mutex::new(favorites)),
             favorites_path,
             current_speaker: Arc::new(std::sync::Mutex::new(String::new())),
@@ -357,6 +364,13 @@ impl FmoState {
         }
     }
 
+    /// 启动时自动连接 MQTT 的条件：证书就位 + 已选定服务器 + 当前未连接。
+    pub async fn mqtt_autoconnect_ready(&self) -> bool {
+        self.data_dir.join("certs").join("cert_user.json").is_file()
+            && !self.selected_server.lock().await.is_null()
+            && self.mqtt_client.state_str().await == "disconnected"
+    }
+
     /// 安装 FMO/RAW 解码回调：帧 → 拆 Opus/ADPCM → on_pcm。
     pub fn install_raw_handler(&self) {
         let rx_audio = self.rx_audio.clone();
@@ -398,8 +412,22 @@ impl FmoState {
         );
     }
 
-    /// 默认选定一台带证书信息的在线服务器。
+    /// 选定服务器并持久化（下次启动恢复，用于自动连接）。
+    pub async fn select_server(&self, server: serde_json::Value) {
+        {
+            let mut sel = self.selected_server.lock().await;
+            *sel = server.clone();
+        }
+        if let Ok(text) = serde_json::to_string_pretty(&server) {
+            std::fs::write(self.data_dir.join("selected_server.json"), text).ok();
+        }
+    }
+
+    /// 默认选定一台带证书信息的在线服务器（已有选定项时不覆盖）。
     pub async fn select_default_server(&self) {
+        if !self.selected_server.lock().await.is_null() {
+            return;
+        }
         let list = self.server_table.to_list().await;
         let mut cands: Vec<serde_json::Value> = list.into_iter()
             .filter(|s| {
