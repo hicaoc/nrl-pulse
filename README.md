@@ -24,10 +24,10 @@
 ### FMO 模式
 
 - **APRS-IS 服务器发现**：连接 rotate.aprs2.net 实时解析 FMO-V4 STATION 广播，自动维护服务器表
-- **证书导入**：上传 `cert_user.json` / `cert_int.json` / `cert_root.json` / `cert_devicekey.json`（解密后的 JSON），即设当前身份
+- **证书导入**：上传 `cert_user.json` / `cert_int.json` / `cert_root.json` / `cert_devicekey.json`，即设当前身份。(证书需要使用备份工具从FMO上备份)。
 - **SAS 认证**：基于 Ed25519 / CBOR 证书指纹自动构建 MQTT 凭据
 - **服务器列表 / 收藏**：按在线人数排序，☆ 收藏后一键切换
-- **RAW 嗅探**：FMO/RAW 语音帧十六进制记录与长度分布统计
+ 
 
 ### 实时状态
 
@@ -110,7 +110,7 @@
 
 ### FMO
 
-基于 **FMO-V4** 协议（移植自 sim-rust）：
+基于 **FMO-V4** 协议：
 - 发现：APRS-IS（rotate.aprs2.net:10152）FMO-V4 STATION 广播
 - 认证：SAS（Ed25519 签名 + CBOR 证书指纹 → MQTT 密码）
 - 语音：MQTT `FMO/RAW`，Opus（SILK NB 8kHz）或 IMA ADPCM（80ms 块，320B）

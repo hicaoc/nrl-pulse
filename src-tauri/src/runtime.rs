@@ -403,7 +403,7 @@ impl RuntimeState {
         let (snapshot, presence, timeline) = {
             let guard = self.inner.read().await;
             (
-                guard.snapshot.clone(),
+                self.snapshot_locked(&guard),
                 guard.presence.clone(),
                 guard.timeline.clone(),
             )
@@ -419,6 +419,15 @@ impl RuntimeState {
     pub async fn snapshot(&self) -> SessionSnapshot {
         let mut snap = self.inner.read().await.snapshot.clone();
         // 链路活跃时间存在原子里（避免每报文抢写锁），emit 时注入
+        snap.nrl_last_rx_ms = self.nrl_last_rx_ms.load(Ordering::Relaxed);
+        snap
+    }
+
+    /// 克隆 guard.snapshot 并注入链路活跃时间。
+    /// 该字段只存在原子里，直接 clone 会丢成 0，前端合并后 NRL 链路状态闪"离线"，
+    /// PTT 按钮在按下瞬间出现禁止态。所有写锁内的返回路径统一走这里。
+    fn snapshot_locked(&self, guard: &RuntimeData) -> SessionSnapshot {
+        let mut snap = guard.snapshot.clone();
         snap.nrl_last_rx_ms = self.nrl_last_rx_ms.load(Ordering::Relaxed);
         snap
     }
@@ -537,21 +546,21 @@ impl RuntimeState {
                         guard.snapshot.connection = "disconnected".into();
                         guard.snapshot.last_text_message = format!("FMO 连接失败: {err}");
                         guard.push_event("FMO 连接失败", &err, "warn");
-                        return guard.snapshot.clone();
+                        return self.snapshot_locked(&guard);
                     }
                 } else {
                     let mut guard = self.inner.write().await;
                     guard.snapshot.connection = "disconnected".into();
                     guard.snapshot.last_text_message = "FMO 状态未初始化".into();
                     guard.push_event("FMO 初始化失败", "请重新启动应用", "warn");
-                    return guard.snapshot.clone();
+                    return self.snapshot_locked(&guard);
                 }
             } else if let Err(err) = self.udp.connect(app, self.clone(), config.clone()).await {
                 let mut guard = self.inner.write().await;
                 guard.snapshot.connection = "disconnected".into();
                 guard.snapshot.last_text_message = format!("连接失败: {err}");
                 guard.push_event("连接失败", &err, "warn");
-                return guard.snapshot.clone();
+                return self.snapshot_locked(&guard);
             }
         }
         self.ensure_audio_started().await;
@@ -614,7 +623,7 @@ impl RuntimeState {
         guard.jitter_ewma_ms = None;
         guard.presence.clear();
         guard.push_event("链路断开", "用户主动断开当前房间连接", "warn");
-        guard.snapshot.clone()
+        self.snapshot_locked(&guard)
     }
 
     pub async fn toggle_transmit(&self) -> SessionSnapshot {
@@ -631,7 +640,7 @@ impl RuntimeState {
     pub async fn set_transmit_proto(&self, protocol: &str, enabled: bool) -> SessionSnapshot {
         let mut guard = self.inner.write().await;
         if guard.snapshot.is_transmitting == enabled {
-            return guard.snapshot.clone();
+            return self.snapshot_locked(&guard);
         }
         guard.snapshot.is_transmitting = enabled;
         let is_fmo = protocol == "fmo";
@@ -650,7 +659,7 @@ impl RuntimeState {
                         guard.snapshot.is_transmitting = false;
                         self.audio.set_transmitting(false);
                         guard.push_event("FMO 发射失败", &err, "warn");
-                        return guard.snapshot.clone();
+                        return self.snapshot_locked(&guard);
                     }
                 }
                 let mut guard = self.inner.write().await;
@@ -660,7 +669,7 @@ impl RuntimeState {
                     &format!("FMO 发射链路进入发送状态（{mode_label}）"),
                     "accent",
                 );
-                return guard.snapshot.clone();
+                return self.snapshot_locked(&guard);
             }
             "NRL 发射链路进入发送状态，等待真实麦克风与编码器挂接"
         } else {
@@ -687,7 +696,7 @@ impl RuntimeState {
                 }
                 let mut guard = self.inner.write().await;
                 guard.push_event("发射切换", "FMO 发射结束，返回监听模式", "accent");
-                return guard.snapshot.clone();
+                return self.snapshot_locked(&guard);
             }
             if !voice_data.is_empty() && duration_ms > 100 {
                 let data_copy = voice_data.clone();
@@ -697,12 +706,12 @@ impl RuntimeState {
                     .await;
                 let mut guard = self.inner.write().await;
                 guard.push_event("发射切换", "NRL 发射结束，返回监听模式", "accent");
-                return guard.snapshot.clone();
+                return self.snapshot_locked(&guard);
             }
             "NRL 发射结束，返回监听模式"
         };
         guard.push_event("发射切换", detail, "accent");
-        guard.snapshot.clone()
+        self.snapshot_locked(&guard)
     }
 
     /// 设置当前发射协议（NRL/FMO 各自 PTT 前调用）。
@@ -725,7 +734,7 @@ impl RuntimeState {
             "监听链路已关闭"
         };
         guard.push_event("监听切换", detail, "info");
-        guard.snapshot.clone()
+        self.snapshot_locked(&guard)
     }
 
     pub async fn update_jitter_buffer(&self, value: u32) -> SessionSnapshot {
@@ -736,7 +745,7 @@ impl RuntimeState {
             &format!("抖动缓冲更新为 {value}ms，后续会驱动真实 jitter buffer"),
             "accent",
         );
-        guard.snapshot.clone()
+        self.snapshot_locked(&guard)
     }
 
     pub async fn send_text_message(
@@ -780,7 +789,7 @@ impl RuntimeState {
             ),
             "accent",
         );
-        guard.snapshot.clone()
+        self.snapshot_locked(&guard)
     }
 
     pub async fn udp_send_at_state(
