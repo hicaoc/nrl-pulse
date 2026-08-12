@@ -8,7 +8,10 @@ export function flog(...args: unknown[]): void {
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ChatMessageEvent,
+  FmoBroadcastConfig,
   FmoEvent,
+  FmoQsoRecord,
+  FmoQsoState,
   FmoStateSnapshot,
   FmoStatsSnapshot,
   PresenceItem,
@@ -219,6 +222,42 @@ export async function fmoRxPlay(enabled: boolean): Promise<void> {
 
 export async function fmoRxLoop(enabled: boolean): Promise<void> {
   return invoke("fmo_rx_loop", { enabled });
+}
+
+export async function fmoQsoCall(target: string, uid?: number): Promise<void> {
+  return invoke("fmo_qso_call", { target, uid: uid ?? null });
+}
+
+export async function fmoQsoAnswer(accept: boolean): Promise<void> {
+  return invoke("fmo_qso_answer", { accept });
+}
+
+export async function fmoQsoCancel(): Promise<void> {
+  return invoke("fmo_qso_cancel");
+}
+
+export async function fmoQsoState(): Promise<FmoQsoState> {
+  return invoke<FmoQsoState>("fmo_qso_state");
+}
+
+export async function fmoQsoLog(): Promise<FmoQsoRecord[]> {
+  return invoke<FmoQsoRecord[]>("fmo_qso_log");
+}
+
+export async function fmoQsoSetAutoAccept(enabled: boolean): Promise<void> {
+  return invoke("fmo_qso_set_auto_accept", { enabled });
+}
+
+export async function fmoBroadcastConfig(): Promise<FmoBroadcastConfig> {
+  return invoke<FmoBroadcastConfig>("fmo_broadcast_config");
+}
+
+export async function fmoBroadcastSetConfig(cfg: FmoBroadcastConfig): Promise<void> {
+  return invoke("fmo_broadcast_set_config", { config: cfg });
+}
+
+export async function fmoBroadcastNow(): Promise<void> {
+  return invoke("fmo_broadcast_now");
 }
 
 export async function onFmoEvent(handler: (event: FmoEvent) => void): Promise<UnlistenFn> {

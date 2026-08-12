@@ -5,12 +5,14 @@
 
 use crate::fmo::aprs::{AprsClient, AprsParams, EmitFn, ServerTable};
 use crate::fmo::audio::{RxAudio, TxSession};
+use crate::fmo::broadcast::BroadcastEngine;
 use crate::fmo::certstore::CertStore;
 use crate::fmo::fmo_auth;
 use crate::fmo::fmo_frame;
 use crate::fmo::mqtt_client::FmoMqttClient;
+use crate::fmo::qso::QsoEngine;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
@@ -18,6 +20,30 @@ use tokio::sync::Mutex;
 
 pub const DEFAULT_APRS_HOST: &str = "rotate.aprs2.net";
 pub const DEFAULT_APRS_PORT: u16 = 10152;
+
+/// 读取当前身份（呼号, uid）：configured 非空优先作呼号，否则取 cert_user.json。
+pub fn read_identity(data_dir: &Path, configured: &str) -> (String, u32) {
+    let mut callsign = String::new();
+    let mut uid = 0u32;
+    let p = data_dir.join("certs").join("cert_user.json");
+    if let Ok(text) = std::fs::read_to_string(&p) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(cs) = v["subject"]["callsign"].as_str() {
+                callsign = cs.to_string();
+            }
+            if let Some(u) = v["subject"]["uid"].as_u64() {
+                uid = u as u32;
+            }
+        }
+    }
+    if !configured.trim().is_empty() {
+        callsign = configured.trim().to_string();
+    }
+    if callsign.is_empty() {
+        callsign = "N0CALL".into();
+    }
+    (callsign, uid)
+}
 
 pub struct FmoState {
     pub data_dir: PathBuf,
@@ -29,6 +55,10 @@ pub struct FmoState {
     pub mqtt_client: Arc<FmoMqttClient>,
     pub rx_audio: Arc<RxAudio>,
     pub tx_session: Arc<Mutex<Option<Arc<TxSession>>>>,
+    /// QSO 呼叫信令引擎（APRS APFMO0）
+    pub qso: Arc<QsoEngine>,
+    /// 服务器广播引擎（APRS APFMO4 STATION）
+    pub broadcast: Arc<BroadcastEngine>,
     pub rx_play_enabled: Arc<std::sync::Mutex<bool>>,
     pub rx_loop_enabled: Arc<std::sync::Mutex<bool>>,
     pub selected_server: Arc<Mutex<serde_json::Value>>,
@@ -109,7 +139,12 @@ impl FmoState {
         });
 
         let server_table = Arc::new(ServerTable::new(Some(data_dir.join("servers.json"))));
-        let mqtt_client = Arc::new(FmoMqttClient::new(emit.clone()));
+        let stats = FmoStats::default();
+        // 顶栏"遥测/文本"计数挂到 MQTT 客户端的全局计数器
+        let mut mqtt_client_inner = FmoMqttClient::new(emit.clone());
+        mqtt_client_inner.cnt_tele = stats.server_info.clone();
+        mqtt_client_inner.cnt_text = stats.rx_text.clone();
+        let mqtt_client = Arc::new(mqtt_client_inner);
         let cert_store = Arc::new(CertStore::new(data_dir.join("certs")));
         let aprs_client = Arc::new(AprsClient::new(emit.clone(), server_table.clone()));
         let rx_audio = Arc::new(RxAudio::new().unwrap_or_else(|_| panic!("opus 初始化失败")));
@@ -126,6 +161,33 @@ impl FmoState {
                 .ok()
                 .and_then(|t| serde_json::from_str(&t).ok())
                 .unwrap_or(serde_json::Value::Null);
+        let selected_server = Arc::new(Mutex::new(selected));
+        let configured_callsign = Arc::new(std::sync::Mutex::new(String::new()));
+
+        // QSO 信令引擎 + 服务器广播引擎（共用 APRS 上行连接）
+        let qso = Arc::new(QsoEngine::new(
+            emit.clone(),
+            aprs_client.tx.clone(),
+            server_table.clone(),
+            selected_server.clone(),
+            data_dir.clone(),
+            configured_callsign.clone(),
+        ));
+        let broadcast = Arc::new(BroadcastEngine::new(
+            emit.clone(),
+            aprs_client.tx.clone(),
+            data_dir.clone(),
+        ));
+        // APRS 信令消息 → QSO 引擎（主全馈连接与上行连接都会投递，引擎内去重）
+        {
+            let qso_handler = qso.clone();
+            *aprs_client.on_message.lock().unwrap() = Some(Arc::new(move |ev| {
+                let qso_handler = qso_handler.clone();
+                tauri::async_runtime::spawn(async move {
+                    qso_handler.handle_message(ev).await;
+                });
+            }));
+        }
 
         Self {
             data_dir,
@@ -137,15 +199,17 @@ impl FmoState {
             mqtt_client,
             rx_audio,
             tx_session: Arc::new(Mutex::new(None)),
+            qso,
+            broadcast,
             rx_play_enabled: Arc::new(std::sync::Mutex::new(true)),
             rx_loop_enabled: Arc::new(std::sync::Mutex::new(false)),
-            selected_server: Arc::new(Mutex::new(selected)),
+            selected_server,
             favorites: Arc::new(Mutex::new(favorites)),
             favorites_path,
             current_speaker: Arc::new(std::sync::Mutex::new(String::new())),
             bridge,
-            stats: FmoStats::default(),
-            configured_callsign: Arc::new(std::sync::Mutex::new(String::new())),
+            stats,
+            configured_callsign,
             aprs_task_running: Arc::new(AtomicBool::new(false)),
             identity_watch_running: Arc::new(AtomicBool::new(false)),
         }
@@ -157,30 +221,39 @@ impl FmoState {
 
     pub fn current_callsign(&self) -> String {
         let configured = self.configured_callsign.lock().unwrap().clone();
-        if !configured.trim().is_empty() {
-            return configured.trim().to_string();
-        }
-        let p = self.data_dir.join("certs").join("cert_user.json");
-        if let Ok(text) = std::fs::read_to_string(&p) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(cs) = v["subject"]["callsign"].as_str() {
-                    return cs.to_string();
-                }
-            }
-        }
-        "N0CALL".into()
+        read_identity(&self.data_dir, &configured).0
     }
 
     pub fn current_uid(&self) -> u32 {
-        let p = self.data_dir.join("certs").join("cert_user.json");
-        if let Ok(text) = std::fs::read_to_string(&p) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(uid) = v["subject"]["uid"].as_u64() {
-                    return uid as u32;
+        let configured = self.configured_callsign.lock().unwrap().clone();
+        read_identity(&self.data_dir, &configured).1
+    }
+
+    /// QSO 跳台钩子：收到 QTHANS 后按 S<服务器uid> 查表切服务器（主叫跳到被叫服务器）。
+    pub fn install_qso_jump_hook(self: &Arc<Self>) {
+        let this = self.clone();
+        self.qso.install_jump_hook(Arc::new(move |srv_uid: u32| {
+            let this = this.clone();
+            tauri::async_runtime::spawn(async move {
+                let Some(entry) = this.server_table.find_server_by_uid(srv_uid).await else {
+                    (this.emit)(json!({"type": "log", "level": "warn",
+                        "msg": format!("QSO 跳台：服务器表里没有 uid={srv_uid} 的条目（等它的 STATION 广播后重试）")}));
+                    return;
+                };
+                let host = entry.get("host").and_then(|h| h.as_str()).unwrap_or("").to_string();
+                let was_connected = this.mqtt_client.state_str().await == "connected";
+                this.select_server(entry).await;
+                (this.emit)(json!({"type": "log", "level": "info",
+                    "msg": format!("QSO 跳台：已选定对方服务器 {host}")}));
+                if was_connected {
+                    this.disconnect_mqtt().await;
+                    if let Err(e) = this.connect_mqtt(false).await {
+                        (this.emit)(json!({"type": "log", "level": "error",
+                            "msg": format!("QSO 跳台重连 MQTT 失败：{e}")}));
+                    }
                 }
-            }
-        }
-        0
+            });
+        }));
     }
 
     /// 选定服务器的认证信息（host/uid/证书指纹），供构建 SAS 凭据。
@@ -308,6 +381,14 @@ impl FmoState {
         tauri::async_runtime::spawn(async move {
             client.run().await;
         });
+        // APRS 上行（发送专用）连接
+        let tx = self.aprs_client.tx.clone();
+        tauri::async_runtime::spawn(async move {
+            tx.run().await;
+        });
+        // QSO 超时 tick + 服务器自动广播
+        self.qso.start_tick_task();
+        self.broadcast.start();
     }
 
     /// 证书身份巡检：启动即查一次，之后每 10 分钟复查。

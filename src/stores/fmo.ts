@@ -6,12 +6,21 @@ import type { FmoAudioState } from "@/lib/tauri";
 import {
   fmoAprsConnect,
   fmoAprsDisconnect,
+  fmoBroadcastConfig,
+  fmoBroadcastNow,
+  fmoBroadcastSetConfig,
   fmoCertImportFile,
   fmoCertImportJson,
   fmoFavoritesAdd,
   fmoFavoritesRemove,
   fmoMqttConnect,
   fmoMqttDisconnect,
+  fmoQsoAnswer,
+  fmoQsoCall,
+  fmoQsoCancel,
+  fmoQsoLog,
+  fmoQsoSetAutoAccept,
+  fmoQsoState,
   fmoRxLoop,
   fmoRxPlay,
   fmoServerSelect,
@@ -20,7 +29,7 @@ import {
   onFmoAudioState,
   onFmoEvent,
 } from "@/lib/tauri";
-import type { FmoEvent, FmoServer, FmoServerTraffic, FmoStateSnapshot, FmoStatsSnapshot } from "@/types";
+import type { FmoBroadcastConfig, FmoEvent, FmoQsoRecord, FmoQsoState, FmoServer, FmoServerTraffic, FmoStateSnapshot, FmoStatsSnapshot } from "@/types";
 
 const initial: FmoStateSnapshot = {
   identity: { callsign: "", uid: 0 },
@@ -72,6 +81,13 @@ export const useFmoStore = defineStore("fmo", () => {
   const state = ref<FmoStateSnapshot>(initial);
   const stats = ref<FmoStatsSnapshot>(initialStats);
   const traffic = ref<Record<string, FmoServerTraffic>>({});
+  // QSO 呼叫状态 / QSO 记录 / 服务器广播配置
+  const qso = ref<FmoQsoState>({ phase: "idle", peer: "", peerUid: 0, outgoing: false });
+  const qsoLog = ref<FmoQsoRecord[]>([]);
+  const broadcast = ref<FmoBroadcastConfig>({
+    mode_min: 0, name: "", host: "", port: 1883, cover_km: 100,
+    online: 0, peak: 0, country: "CN", lat: 39.9, lon: 116.4,
+  });
   const bootstrapped = ref(false);
   const busy = ref(false);
   const unlisteners: UnlistenFn[] = [];
@@ -125,6 +141,19 @@ export const useFmoStore = defineStore("fmo", () => {
           ...traffic.value,
           [ev.host as string]: ev.traffic as unknown as FmoServerTraffic,
         };
+        break;
+      case "qso_state":
+        qso.value = {
+          phase: (ev.phase as FmoQsoState["phase"]) ?? "idle",
+          peer: (ev.peer as string) ?? "",
+          peerUid: (ev.peerUid as number) ?? 0,
+          outgoing: (ev.outgoing as boolean) ?? false,
+          detail: (ev.detail as string) ?? "",
+          autoAccept: qso.value.autoAccept,
+        };
+        break;
+      case "qso_log_changed":
+        void refreshQsoLog();
         break;
       default:
         break;
@@ -196,6 +225,13 @@ export const useFmoStore = defineStore("fmo", () => {
       }
     }));
     await refresh();
+    try {
+      qso.value = await fmoQsoState();
+      qsoLog.value = await fmoQsoLog();
+      broadcast.value = await fmoBroadcastConfig();
+    } catch (e) {
+      flog("[fmo] qso/broadcast init error:", String(e));
+    }
     bootstrapped.value = true;
     startStatsPolling();
   }
@@ -275,10 +311,47 @@ export const useFmoStore = defineStore("fmo", () => {
     await runAction(() => fmoRxLoop(enabled));
   }
 
+  async function refreshQsoLog() {
+    try {
+      qsoLog.value = await fmoQsoLog();
+    } catch (e) {
+      flog("[fmo] qso log error:", String(e));
+    }
+  }
+
+  async function qsoCall(target: string, uid?: number) {
+    await runAction(() => fmoQsoCall(target, uid));
+  }
+
+  async function qsoAnswer(accept: boolean) {
+    await runAction(() => fmoQsoAnswer(accept));
+  }
+
+  async function qsoCancel() {
+    await runAction(fmoQsoCancel);
+  }
+
+  async function setQsoAutoAccept(enabled: boolean) {
+    qso.value = { ...qso.value, autoAccept: enabled };
+    await runAction(() => fmoQsoSetAutoAccept(enabled));
+  }
+
+  async function saveBroadcast(cfg: FmoBroadcastConfig) {
+    broadcast.value = { ...cfg };
+    await runAction(() => fmoBroadcastSetConfig(cfg));
+  }
+
+  async function broadcastNow() {
+    await runAction(fmoBroadcastNow);
+  }
+
   return {
     state,
     stats,
     traffic,
+    qso,
+    qsoLog,
+    broadcast,
     bootstrapped,
     busy,
     mqttConnected,
@@ -297,5 +370,12 @@ export const useFmoStore = defineStore("fmo", () => {
     removeFavorite,
     setRxPlay,
     setRxLoop,
+    refreshQsoLog,
+    qsoCall,
+    qsoAnswer,
+    qsoCancel,
+    setQsoAutoAccept,
+    saveBroadcast,
+    broadcastNow,
   };
 });

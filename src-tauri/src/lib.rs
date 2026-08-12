@@ -573,6 +573,103 @@ async fn fmo_stats_snapshot(
     Ok(fmo.stats_snapshot().await)
 }
 
+// ---------------------------------------------------------------- FMO QSO / 服务器广播
+
+#[tauri::command]
+async fn fmo_qso_call(
+    state: tauri::State<'_, RuntimeState>,
+    target: String,
+    uid: Option<u32>,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    fmo.qso.call(&target, uid).await
+}
+
+#[tauri::command]
+async fn fmo_qso_answer(
+    state: tauri::State<'_, RuntimeState>,
+    accept: bool,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    fmo.qso.answer(accept).await
+}
+
+#[tauri::command]
+async fn fmo_qso_cancel(state: tauri::State<'_, RuntimeState>) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    fmo.qso.cancel().await
+}
+
+#[tauri::command]
+async fn fmo_qso_state(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<serde_json::Value, String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    Ok(fmo.qso.snapshot().await)
+}
+
+#[tauri::command]
+async fn fmo_qso_log(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    Ok(fmo.qso.qso_log())
+}
+
+#[tauri::command]
+async fn fmo_qso_set_auto_accept(
+    state: tauri::State<'_, RuntimeState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    fmo.qso.set_auto_accept(enabled);
+    Ok(())
+}
+
+#[tauri::command]
+async fn fmo_broadcast_config(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<serde_json::Value, String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    serde_json::to_value(fmo.broadcast.config().await).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn fmo_broadcast_set_config(
+    state: tauri::State<'_, RuntimeState>,
+    config: serde_json::Value,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    let cfg: fmo::broadcast::BroadcastConfig =
+        serde_json::from_value(config).map_err(|e| format!("广播配置格式错误: {e}"))?;
+    fmo.broadcast.set_config(cfg).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn fmo_broadcast_now(state: tauri::State<'_, RuntimeState>) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    fmo.broadcast.send(true).await
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -641,7 +738,16 @@ pub fn run() {
             fmo_favorites_remove,
             fmo_rx_play,
             fmo_rx_loop,
-            fmo_stats_snapshot
+            fmo_stats_snapshot,
+            fmo_qso_call,
+            fmo_qso_answer,
+            fmo_qso_cancel,
+            fmo_qso_state,
+            fmo_qso_log,
+            fmo_qso_set_auto_accept,
+            fmo_broadcast_config,
+            fmo_broadcast_set_config,
+            fmo_broadcast_now
         ])
         .run(tauri::generate_context!())
         .expect("failed to run NRL Pulse");

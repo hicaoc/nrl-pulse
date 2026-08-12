@@ -36,6 +36,11 @@ use windows::{
 
 const TARGET_RATE: u32 = 8_000;
 const VOICE_FRAME: usize = 160;
+const WAVE_FORMAT_IEEE_FLOAT_TAG: u16 = 0x0003;
+const WAVE_FORMAT_EXTENSIBLE_TAG: u16 = 0xFFFE;
+const AUDCLNT_BUFFERFLAGS_SILENT_FLAG: u32 = 0x0000_0002;
+const KSDATAFORMAT_SUBTYPE_IEEE_FLOAT: GUID =
+    GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
 
 // ── public result type ──────────────────────────────────────────────────────
 
@@ -166,11 +171,37 @@ fn run_aec_thread(
         let capture_rate = mix_fmt.nSamplesPerSec;
         let capture_channels = mix_fmt.nChannels as usize;
         let bits_per_sample = mix_fmt.wBitsPerSample;
+        let format_tag = mix_fmt.wFormatTag;
+
+        // The loop below consumes native f32 samples. Most shared-mode
+        // endpoints expose IEEE float, but some drivers return PCM. Reject
+        // those formats so AudioEngine can safely fall back to cpal instead
+        // of interpreting a smaller PCM buffer as f32 and reading past it.
+        let is_float = if format_tag == WAVE_FORMAT_IEEE_FLOAT_TAG {
+            bits_per_sample == 32
+        } else if format_tag == WAVE_FORMAT_EXTENSIBLE_TAG
+            && mix_fmt.cbSize as usize
+                >= std::mem::size_of::<windows::Win32::Media::Audio::WAVEFORMATEXTENSIBLE>()
+                    - std::mem::size_of::<WAVEFORMATEX>()
+        {
+            let ext = &*(mix_fmt_ptr as *const windows::Win32::Media::Audio::WAVEFORMATEXTENSIBLE);
+            let sub_format = ext.SubFormat;
+            bits_per_sample == 32 && sub_format == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
+        } else {
+            false
+        };
 
         eprintln!(
-            "[AEC] WASAPI mix format: {}Hz, {} ch, {} bits",
-            capture_rate, capture_channels, bits_per_sample
+            "[AEC] WASAPI mix format: {}Hz, {} ch, {} bits, tag=0x{:04x}",
+            capture_rate, capture_channels, bits_per_sample, format_tag
         );
+
+        if !is_float || capture_channels == 0 {
+            CoTaskMemFree(Some(mix_fmt_ptr as *const _ as *const _));
+            return Err(format!(
+                "unsupported AEC capture format: tag=0x{format_tag:04x}, {bits_per_sample} bits, {capture_channels} channels"
+            ));
+        }
 
         // 100 ms buffer
         let buffer_duration: i64 = 10_000_000; // 100 ms in 100-ns units
@@ -280,14 +311,28 @@ fn run_aec_thread(
                     _ => break,
                 }
 
-                // Convert interleaved float32 to mono f32
-                let total_samples = frames_available as usize * capture_channels;
-                let float_slice = std::slice::from_raw_parts(data_ptr as *const f32, total_samples);
-
-                for frame_chunk in float_slice.chunks(capture_channels.max(1)) {
-                    let sum: f32 = frame_chunk.iter().copied().sum();
-                    let mono = sum / frame_chunk.len() as f32;
-                    in_ring.push_back(mono);
+                // AUDCLNT_BUFFERFLAGS_SILENT explicitly permits ppData to be
+                // null. Dereferencing that pointer aborts the process as soon
+                // as PTT enables capture. Represent silent packets as zeroes;
+                // also defensively treat an unexpected null pointer as silence.
+                let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT_FLAG != 0 || data_ptr.is_null();
+                if silent {
+                    append_mono_samples(
+                        None,
+                        frames_available as usize,
+                        capture_channels,
+                        &mut in_ring,
+                    );
+                } else {
+                    let total_samples = frames_available as usize * capture_channels;
+                    let float_slice =
+                        std::slice::from_raw_parts(data_ptr as *const f32, total_samples);
+                    append_mono_samples(
+                        Some(float_slice),
+                        frames_available as usize,
+                        capture_channels,
+                        &mut in_ring,
+                    );
                 }
 
                 let _ = capture_client.ReleaseBuffer(frames_available);
@@ -340,6 +385,24 @@ fn run_aec_thread(
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
+fn append_mono_samples(
+    interleaved: Option<&[f32]>,
+    frames: usize,
+    channels: usize,
+    output: &mut VecDeque<f32>,
+) {
+    if frames == 0 || channels == 0 {
+        return;
+    }
+    let Some(samples) = interleaved else {
+        output.extend(std::iter::repeat(0.0).take(frames));
+        return;
+    };
+    for frame in samples.chunks_exact(channels).take(frames) {
+        output.push_back(frame.iter().copied().sum::<f32>() / channels as f32);
+    }
+}
+
 unsafe fn get_device_friendly_name(
     device: &windows::Win32::Media::Audio::IMMDevice,
 ) -> Result<String, String> {
@@ -374,4 +437,23 @@ unsafe fn get_device_friendly_name(
         }
     }
     Err("no friendly name".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn silent_wasapi_packet_becomes_zero_samples() {
+        let mut output = VecDeque::new();
+        append_mono_samples(None, 4, 2, &mut output);
+        assert_eq!(output.into_iter().collect::<Vec<_>>(), vec![0.0; 4]);
+    }
+
+    #[test]
+    fn interleaved_packet_is_mixed_to_mono() {
+        let mut output = VecDeque::new();
+        append_mono_samples(Some(&[1.0, -1.0, 0.5, 0.25]), 2, 2, &mut output);
+        assert_eq!(output.into_iter().collect::<Vec<_>>(), vec![0.0, 0.375]);
+    }
 }

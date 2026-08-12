@@ -19,7 +19,7 @@ import {
 import type { UpdateInfo } from "@/lib/tauri";
 import { usePlatformStore } from "@/stores/platform";
 import { useRuntimeStore } from "@/stores/runtime";
-import type { ChatMessageEvent, FmoClient, FmoServer, PlatformDevice, PlatformGroup, PlatformRegisterPayload, SerialTunnelConfig, TimelineEvent } from "@/types";
+import type { ChatMessageEvent, FmoBroadcastConfig, FmoClient, FmoServer, PlatformDevice, PlatformGroup, PlatformRegisterPayload, SerialTunnelConfig, TimelineEvent } from "@/types";
 
 type Lang = "zh" | "en";
 
@@ -87,7 +87,7 @@ const logListEl = ref<HTMLElement | null>(null);
 // 用户上翻查看历史时暂停自动跟随，回到底部后恢复
 const logFollowBottom = ref(true);
 // 消息 / 日志 Tab 切换
-const chatTab = ref<"messages" | "logs" | "servers" | "users">("messages");
+const chatTab = ref<"messages" | "logs" | "servers" | "users" | "qso">("messages");
 const updateInfo = ref<UpdateInfo | null>(null);
 const updateDownloading = ref(false);
 const updateProgress = ref(0);
@@ -1948,6 +1948,105 @@ const fmoServerDetailRows = computed(() => {
   return rows;
 });
 
+// ---------------------------------------------------------------- FMO QSO / 服务器广播
+
+// QSO 呼叫弹窗
+const qsoDialogOpen = ref(false);
+const qsoTargetCallsign = ref("");
+const qsoTargetUid = ref<number | null>(null);
+
+const qsoPhaseText = computed(() => {
+  const zh = language.value === "zh";
+  const map: Record<string, string> = zh
+    ? {
+        idle: "空闲", querying: "查询对方服务器…", calling: "呼叫中…",
+        ringing: "对方振铃中…", incoming: "来电", established: "QSO 已建立",
+      }
+    : {
+        idle: "Idle", querying: "Querying server…", calling: "Calling…",
+        ringing: "Ringing…", incoming: "Incoming", established: "QSO established",
+      };
+  return map[fmo.qso.phase] ?? fmo.qso.phase;
+});
+
+function pickQsoTarget(c: FmoClient) {
+  qsoTargetCallsign.value = c.callsign;
+  qsoTargetUid.value = c.uid ?? null;
+}
+
+async function startQsoCall() {
+  try {
+    await fmo.qsoCall(qsoTargetCallsign.value.trim(), qsoTargetUid.value ?? undefined);
+  } catch (e) {
+    alert(String(e));
+  }
+}
+
+async function answerQso(accept: boolean) {
+  try {
+    await fmo.qsoAnswer(accept);
+  } catch (e) {
+    alert(String(e));
+  }
+}
+
+async function cancelQso() {
+  try {
+    await fmo.qsoCancel();
+  } catch (e) {
+    alert(String(e));
+  }
+}
+
+// QSO 记录（设置页展示最近 10 条，新的在前）
+const qsoLogRecent = computed(() => [...fmo.qsoLog].reverse().slice(0, 10));
+
+// 成功接通的 QSO 列表（右侧 QSO 栏，新的在前）
+const qsoSuccessList = computed(() =>
+  [...fmo.qsoLog]
+    .filter((r) => r.result === "接通" || r.result.startsWith("已接听"))
+    .reverse(),
+);
+
+// 从 QSO 记录直接发起再次呼叫
+function qsoCallAgain(r: { peer: string; peer_uid: number }) {
+  qsoTargetCallsign.value = r.peer;
+  qsoTargetUid.value = r.peer_uid || null;
+  qsoDialogOpen.value = true;
+}
+
+function fmtQsoTime(ts: number): string {
+  const d = new Date(ts * 1000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// 服务器广播配置草稿（设置页编辑，保存才下发后端）
+const broadcastDraft = ref<FmoBroadcastConfig>({ ...fmo.broadcast });
+watch(
+  () => fmo.broadcast,
+  (v) => {
+    broadcastDraft.value = { ...v };
+  },
+);
+
+async function saveBroadcastConfig() {
+  try {
+    await fmo.saveBroadcast({ ...broadcastDraft.value });
+    alert(language.value === "zh" ? "广播配置已保存" : "Broadcast config saved");
+  } catch (e) {
+    alert(String(e));
+  }
+}
+
+async function manualBroadcast() {
+  try {
+    await fmo.broadcastNow();
+  } catch (e) {
+    alert(String(e));
+  }
+}
+
 // 当前 FMO 说话人在 APRS 用户表中匹配到的信标信息（先精确匹配呼号，再退化为不含 SSID 的主呼号）
 const fmoSpeakerClient = computed<FmoClient | null>(() => {
   const spk = (fmo.stats.activeSpeaker || "").toUpperCase();
@@ -2268,6 +2367,33 @@ watch(
   </main>
 
   <main v-else class="shell">
+    <!-- 顶部菜单导航栏：语言/登录/配置/更新 -->
+    <header class="menu-bar">
+      <div class="menu-bar-brand">
+        <strong>NRL Pulse</strong>
+        <span class="menu-bar-sub">{{ language === "zh" ? "网络电台客户端" : "Network Radio Client" }}</span>
+      </div>
+      <nav class="topbar-actions menu-bar-actions">
+        <button class="ghost-btn lang-btn" @click="toggleLanguage">
+          {{ language === "zh" ? "EN" : "中" }}
+        </button>
+        <button
+          class="ghost-btn"
+          :class="{ 'status-connected': platform.loggedIn }"
+          :disabled="platform.busy"
+          @click="showLogin = !showLogin"
+        >
+          {{ platform.loggedIn ? t.platformLoggedIn : t.platformLogin }}
+        </button>
+        <button class="ghost-btn" :disabled="runtime.busy" @click="showSettings = !showSettings">
+          {{ showSettings ? t.closeSettings : t.openSettings }}
+        </button>
+        <button class="ghost-btn" @click="manualCheckUpdate">
+          {{ t.checkUpdate }}
+        </button>
+      </nav>
+    </header>
+
     <header class="topbar">
       <div class="topbar-summary">
         <div class="summary-item summary-callsign">
@@ -2323,25 +2449,6 @@ watch(
           </div>
         </div>
       </div>
-      <nav class="topbar-actions">
-        <button class="ghost-btn lang-btn" @click="toggleLanguage">
-          {{ language === "zh" ? "EN" : "中" }}
-        </button>
-        <button
-          class="ghost-btn"
-          :class="{ 'status-connected': platform.loggedIn }"
-          :disabled="platform.busy"
-          @click="showLogin = !showLogin"
-        >
-          {{ platform.loggedIn ? t.platformLoggedIn : t.platformLogin }}
-        </button>
-        <button class="ghost-btn" :disabled="runtime.busy" @click="showSettings = !showSettings">
-          {{ showSettings ? t.closeSettings : t.openSettings }}
-        </button>
-        <button class="ghost-btn" @click="manualCheckUpdate">
-          {{ t.checkUpdate }}
-        </button>
-      </nav>
     </header>
 
     <!-- FMO 独立统计栏（与 NRL 顶栏同时显示，单独统计） -->
@@ -2556,6 +2663,23 @@ watch(
                   PTT
                 </button>
                 <button
+                  class="ghost-btn tool-pill fmo-qso"
+                  :class="{ 'ptt-active': fmo.qso.phase !== 'idle' }"
+                  :disabled="fmo.busy"
+                  :title="language === 'zh' ? 'QSO 呼叫（APRS 信令）' : 'QSO call (APRS signaling)'"
+                  @click="qsoDialogOpen = true"
+                >
+                  QSO
+                </button>
+                <button
+                  class="ghost-btn tool-pill fmo-broadcast-btn"
+                  :disabled="fmo.busy"
+                  :title="language === 'zh' ? '立即广播我的服务器（APRS STATION）' : 'Broadcast my server now (APRS STATION)'"
+                  @click="manualBroadcast"
+                >
+                  {{ language === "zh" ? "广播" : "BCAST" }}
+                </button>
+                <button
                   class="icon-toggle block-mute"
                   :class="{ active: fmoMuted }"
                   :disabled="fmo.busy"
@@ -2749,6 +2873,13 @@ watch(
             >
               {{ language === "zh" ? "用户" : "Users" }}
             </button>
+            <button
+              class="chat-tab"
+              :class="{ active: chatTab === 'qso' }"
+              @click="chatTab = 'qso'"
+            >
+              QSO
+            </button>
           </div>
           <span class="chat-status">{{
             chatTab === "messages"
@@ -2757,7 +2888,9 @@ watch(
                 ? t.messagesCount(runtime.timeline.length)
                 : chatTab === "servers"
                   ? t.messagesCount(fmo.state.servers.length)
-                  : t.messagesCount(fmo.state.clients.length)
+                  : chatTab === "qso"
+                    ? t.messagesCount(qsoSuccessList.length)
+                    : t.messagesCount(fmo.state.clients.length)
           }}</span>
         </div>
 
@@ -2938,7 +3071,7 @@ watch(
         </div>
 
         <!-- FMO 用户列表：APRS 客户端信标（呼号/UID/状态/最后出现时间） -->
-        <div v-else class="fmo-tab-panel">
+        <div v-else-if="chatTab === 'users'" class="fmo-tab-panel">
           <input
             v-model="fmoUserFilter"
             class="group-search fmo-tab-filter"
@@ -2976,6 +3109,33 @@ watch(
             </div>
             <div v-if="fmoClientRecentExtras(c).length" class="fmo-user-recent">
               <span v-for="(m, i) in fmoClientRecentExtras(c)" :key="i">{{ fmtClientTime(m.ts) }} {{ m.text }}</span>
+            </div>
+          </article>
+          </div>
+        </div>
+
+        <!-- QSO 成功通联列表（点击可再次呼叫） -->
+        <div v-else class="fmo-tab-panel">
+          <div class="log-list chat-log-list fmo-tab-list">
+          <div v-if="!qsoSuccessList.length" class="log-empty">
+            {{ language === "zh"
+              ? "暂无成功通联（QSO 呼叫接通后记录在这里）"
+              : "No successful QSOs yet. Established calls are listed here." }}
+          </div>
+          <article
+            v-for="(r, i) in qsoSuccessList"
+            :key="i"
+            class="fmo-user-row"
+            :title="language === 'zh' ? '点击再次呼叫' : 'Click to call again'"
+            @click="qsoCallAgain(r)"
+          >
+            <div class="fmo-server-main">
+              <strong>{{ r.dir === "out" ? "→" : "←" }} {{ r.peer }}</strong>
+              <span>{{ r.result }}</span>
+            </div>
+            <div class="fmo-server-actions">
+              <span v-if="r.peer_uid" class="fmo-server-meta">uid {{ r.peer_uid }}</span>
+              <span class="fmo-server-meta">{{ fmtClientDateTime(r.ts) }}</span>
             </div>
           </article>
           </div>
@@ -3267,6 +3427,106 @@ watch(
               {{ fmo.state.mqttDetail || fmo.state.aprsDetail }}
             </div>
           </div>
+
+          <!-- ④ QSO（自动接受 + 记录） -->
+          <div class="fmo-section">
+            <div class="fmo-section-head">
+              <span class="fmo-section-tag">④</span>
+              <span>QSO</span>
+            </div>
+            <div class="fmo-conn-row">
+              <span class="fmo-conn-label">{{ language === "zh" ? "来电处理" : "Incoming call" }}</span>
+              <div class="auth-server-mode">
+                <button
+                  class="mode-chip"
+                  :data-active="!fmo.qso.autoAccept"
+                  @click="fmo.setQsoAutoAccept(false)"
+                >
+                  {{ language === "zh" ? "弹窗确认" : "Ask" }}
+                </button>
+                <button
+                  class="mode-chip"
+                  :data-active="fmo.qso.autoAccept"
+                  @click="fmo.setQsoAutoAccept(true)"
+                >
+                  {{ language === "zh" ? "自动接受" : "Auto-accept" }}
+                </button>
+              </div>
+            </div>
+            <div class="fmo-qso-log" v-if="qsoLogRecent.length">
+              <div v-for="(r, i) in qsoLogRecent" :key="i" class="fmo-qso-log-row">
+                <span>{{ fmtQsoTime(r.ts) }}</span>
+                <span>{{ r.dir === "out" ? "→" : "←" }} {{ r.peer }}</span>
+                <span>{{ r.result }}</span>
+              </div>
+            </div>
+            <small v-else class="fmo-cert-msg">
+              {{ language === "zh" ? "暂无 QSO 记录（保存在数据目录 qso_log.json）" : "No QSO records yet (saved to qso_log.json)" }}
+            </small>
+          </div>
+
+          <!-- ⑤ 服务器广播 -->
+          <div class="fmo-section">
+            <div class="fmo-section-head">
+              <span class="fmo-section-tag">⑤</span>
+              <span>{{ language === "zh" ? "服务器广播" : "Server Broadcast" }}</span>
+            </div>
+            <div class="fmo-bc-form">
+              <label>
+                <span>{{ language === "zh" ? "服务器名称" : "Name" }}</span>
+                <input v-model="broadcastDraft.name" type="text" class="text-input" :placeholder="language === 'zh' ? '我的 FMO 服务器' : 'My FMO server'" />
+              </label>
+              <label>
+                <span>{{ language === "zh" ? "地址" : "Host" }}</span>
+                <input v-model="broadcastDraft.host" type="text" class="text-input" placeholder="fmo.example.com" />
+              </label>
+              <div class="fmo-bc-grid">
+                <label>
+                  <span>{{ language === "zh" ? "端口" : "Port" }}</span>
+                  <input v-model.number="broadcastDraft.port" type="number" class="text-input" placeholder="1883" />
+                </label>
+                <label>
+                  <span>{{ language === "zh" ? "覆盖 (km)" : "Coverage (km)" }}</span>
+                  <input v-model.number="broadcastDraft.cover_km" type="number" class="text-input" placeholder="100" />
+                </label>
+                <label>
+                  <span>{{ language === "zh" ? "在线" : "Online" }}</span>
+                  <input v-model.number="broadcastDraft.online" type="number" class="text-input" placeholder="0" />
+                </label>
+                <label>
+                  <span>{{ language === "zh" ? "峰值" : "Peak" }}</span>
+                  <input v-model.number="broadcastDraft.peak" type="number" class="text-input" placeholder="0" />
+                </label>
+                <label>
+                  <span>{{ language === "zh" ? "纬度" : "Lat" }}</span>
+                  <input v-model.number="broadcastDraft.lat" type="number" step="0.0001" class="text-input" placeholder="39.9" />
+                </label>
+                <label>
+                  <span>{{ language === "zh" ? "经度" : "Lon" }}</span>
+                  <input v-model.number="broadcastDraft.lon" type="number" step="0.0001" class="text-input" placeholder="116.4" />
+                </label>
+              </div>
+            </div>
+            <div class="fmo-conn-row">
+              <span class="fmo-conn-label">{{ language === "zh" ? "自动广播" : "Auto" }}</span>
+              <div class="auth-server-mode fmo-bc-modes">
+                <button class="mode-chip" :data-active="broadcastDraft.mode_min === 0" @click="broadcastDraft.mode_min = 0">
+                  {{ language === "zh" ? "关闭" : "Off" }}
+                </button>
+                <button class="mode-chip" :data-active="broadcastDraft.mode_min === 5" @click="broadcastDraft.mode_min = 5">5min</button>
+                <button class="mode-chip" :data-active="broadcastDraft.mode_min === 10" @click="broadcastDraft.mode_min = 10">10min</button>
+                <button class="mode-chip" :data-active="broadcastDraft.mode_min === 60" @click="broadcastDraft.mode_min = 60">60min</button>
+              </div>
+            </div>
+            <div class="auth-actions">
+              <button class="ghost-btn" :disabled="fmo.busy" @click="manualBroadcast">
+                {{ language === "zh" ? "立即广播" : "Broadcast now" }}
+              </button>
+              <button class="primary-btn" :disabled="fmo.busy" @click="saveBroadcastConfig">
+                {{ language === "zh" ? "保存" : "Save" }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -3473,6 +3733,96 @@ watch(
 
     <!-- FMO 用户详情弹窗 -->
     <transition name="drawer-fade">
+      <!-- QSO 呼叫弹窗 -->
+      <div v-if="qsoDialogOpen" class="drawer-backdrop" @click="qsoDialogOpen = false"></div>
+      <div v-if="qsoDialogOpen" class="device-popup">
+        <div class="drawer-head">
+          <div><h2>FMO QSO</h2></div>
+          <button class="ghost-btn compact-ghost" @click="qsoDialogOpen = false">{{ t.close }}</button>
+        </div>
+        <div class="device-popup-list">
+          <div v-if="fmo.qso.phase !== 'idle'" class="qso-status" :data-phase="fmo.qso.phase">
+            <div class="qso-status-main">
+              <strong>{{ qsoPhaseText }}</strong>
+              <span>
+                {{ fmo.qso.peer }}
+                <template v-if="fmo.qso.peerUid">· uid {{ fmo.qso.peerUid }}</template>
+              </span>
+              <small v-if="fmo.qso.detail">{{ fmo.qso.detail }}</small>
+            </div>
+            <button class="ghost-btn compact" @click="cancelQso">
+              {{
+                fmo.qso.phase === "established"
+                  ? language === "zh" ? "结束" : "End"
+                  : language === "zh" ? "取消" : "Cancel"
+              }}
+            </button>
+          </div>
+          <div class="qso-form">
+            <input
+              v-model="qsoTargetCallsign"
+              class="text-input"
+              :placeholder="language === 'zh' ? '对方呼号' : 'Peer callsign'"
+              @keydown.enter.prevent="startQsoCall"
+            />
+            <input v-model.number="qsoTargetUid" class="text-input qso-uid-input" placeholder="UID" />
+            <button
+              class="primary-btn"
+              :disabled="fmo.busy || fmo.qso.phase !== 'idle' || !qsoTargetCallsign.trim()"
+              @click="startQsoCall"
+            >
+              {{ language === "zh" ? "呼叫" : "Call" }}
+            </button>
+          </div>
+          <div class="qso-pick-head">
+            {{ language === "zh" ? "从在线用户选择（带 UID）" : "Pick from online users (with UID)" }}
+          </div>
+          <div class="qso-pick-list">
+            <button
+              v-for="c in fmo.state.clients.filter((x) => x.uid).slice(0, 30)"
+              :key="c.callsign"
+              class="qso-pick-row"
+              @click="pickQsoTarget(c)"
+            >
+              <strong>{{ c.callsign }}</strong>
+              <span>uid {{ c.uid }}</span>
+              <small>{{ c.status_text || c.comment || "" }}</small>
+            </button>
+            <small v-if="!fmo.state.clients.some((x) => x.uid)" class="fmo-cert-msg">
+              {{
+                language === "zh"
+                  ? "暂无带 UID 的在线用户，可手动输入呼号 + UID"
+                  : "No online users with UID; enter callsign + UID manually"
+              }}
+            </small>
+          </div>
+        </div>
+      </div>
+
+      <!-- QSO 来电弹窗（未开自动接受时；必须做出选择，点空白不关闭） -->
+      <div v-if="fmo.qso.phase === 'incoming'" class="drawer-backdrop"></div>
+      <div v-if="fmo.qso.phase === 'incoming'" class="device-popup qso-incoming">
+        <div class="drawer-head">
+          <div>
+            <h2>{{ language === "zh" ? "QSO 来电" : "Incoming QSO" }}</h2>
+          </div>
+        </div>
+        <div class="device-popup-list">
+          <div class="qso-incoming-peer">
+            <strong>{{ fmo.qso.peer }}</strong>
+            <span v-if="fmo.qso.peerUid">uid {{ fmo.qso.peerUid }}</span>
+          </div>
+          <div class="auth-actions">
+            <button class="ghost-btn" @click="answerQso(false)">
+              {{ language === "zh" ? "拒绝" : "Reject" }}
+            </button>
+            <button class="primary-btn" @click="answerQso(true)">
+              {{ language === "zh" ? "接受" : "Accept" }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div v-if="fmoUserPopup" class="drawer-backdrop" @click="fmoUserPopup = null"></div>
     </transition>
     <transition name="drawer-fade">

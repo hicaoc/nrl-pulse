@@ -7,12 +7,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 
 pub const DEFAULT_HOST: &str = "rotate.aprs2.net";
 pub const DEFAULT_PORT: u16 = 10152;
+/// 上行（发送）专用连接：10152 全馈端口只读，发送需 verified 登录 14580
+pub const TX_HOST: &str = "rotate.aprs2.net";
+pub const TX_PORT: u16 = 14580;
 
 pub type EmitFn = Arc<dyn Fn(serde_json::Value) + Send + Sync>;
+/// 信令消息回调（kind = message/ack 的解析结果），由 QSO 引擎安装
+pub type MsgCallback = Arc<std::sync::Mutex<Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>>>;
 
 const V4_SUBTYPES: &[&[u8]] = &[b"STATION", b"ONLINE", b"BEACON", b"VOCAL", b"EVENT", b"JOINT"];
 const LEGACY_SUBTYPES: &[&[u8]] = &[b"OMCQ", b"VOCAL", b"ONLINE", b"BEACON"];
@@ -550,6 +555,41 @@ impl ServerTable {
         Some(entry)
     }
 
+    /// 按呼号（忽略 SSID/大小写）在用户表/服务器表查 uid（QSO 呼叫解析目标 uid 用）
+    pub async fn lookup_uid_by_callsign(&self, callsign: &str) -> Option<u32> {
+        let key = callsign.split('-').next().unwrap_or(callsign).to_uppercase();
+        {
+            let clients = self.clients.lock().await;
+            for (k, v) in clients.iter() {
+                let base = k.split('-').next().unwrap_or(k);
+                if base == key {
+                    if let Some(u) = v.get("uid").and_then(|u| u.as_u64()) {
+                        return Some(u as u32);
+                    }
+                }
+            }
+        }
+        let servers = self.servers.lock().await;
+        for v in servers.values() {
+            let cs = v.get("callsign").and_then(|c| c.as_str()).unwrap_or("");
+            if cs.split('-').next().unwrap_or(cs).to_uppercase() == key {
+                if let Some(u) = v.get("uid").and_then(|u| u.as_u64()) {
+                    return Some(u as u32);
+                }
+            }
+        }
+        None
+    }
+
+    /// 按 uid 查服务器条目（QSO 跳台：QTHANS 的 S<服务器uid> → host/port/证书）
+    pub async fn find_server_by_uid(&self, uid: u32) -> Option<serde_json::Value> {
+        let servers = self.servers.lock().await;
+        servers
+            .values()
+            .find(|v| v.get("uid").and_then(|u| u.as_u64()) == Some(uid as u64))
+            .cloned()
+    }
+
     pub async fn client_list(&self) -> Vec<serde_json::Value> {
         // 服务器（STATION 广播带 host）也会发 STATUS/位置报文，按其呼号把服务器从用户表中剔除
         let servers = self.servers.lock().await;
@@ -597,6 +637,10 @@ pub struct AprsClient {
     pub detail: Arc<Mutex<String>>,
     pub connect_req: Arc<Mutex<Option<serde_json::Value>>>,
     pub disconnect_signal: Arc<Mutex<bool>>,
+    /// 信令消息回调（QSO 引擎安装），主连接与上行连接收到的都会投递
+    pub on_message: MsgCallback,
+    /// 上行（发送）专用连接
+    pub tx: Arc<AprsTx>,
 }
 
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -612,23 +656,29 @@ pub struct AprsParams {
 
 impl AprsClient {
     pub fn new(emit: EmitFn, table: Arc<ServerTable>) -> Self {
+        let on_message: MsgCallback = Arc::new(std::sync::Mutex::new(None));
         Self {
-            emit,
+            emit: emit.clone(),
             table,
             state: Arc::new(Mutex::new("disconnected".into())),
             detail: Arc::new(Mutex::new(String::new())),
             connect_req: Arc::new(Mutex::new(None)),
             disconnect_signal: Arc::new(Mutex::new(false)),
+            on_message: on_message.clone(),
+            tx: Arc::new(AprsTx::new(emit, on_message)),
         }
     }
 
     pub async fn connect_to(&self, params: AprsParams) {
+        // 有有效 passcode 时同步设置上行登录（verified 才可发送）
+        self.tx.set_login(&params.callsign, &params.passcode).await;
         *self.connect_req.lock().await = Some(serde_json::to_value(params).unwrap());
         *self.disconnect_signal.lock().await = false;
     }
 
     pub async fn disconnect(&self) {
         *self.disconnect_signal.lock().await = true;
+        self.tx.clear_login().await;
     }
 
     async fn set_state(&self, state: &str, detail: &str) {
@@ -716,6 +766,13 @@ impl AprsClient {
                 let source = parsed.get("callsign").and_then(|c| c.as_str()).unwrap_or("aprs");
                 let entry = self.table.upsert(&parsed, source).await;
                 let kind = parsed.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+                // 信令/ACK 投递给 QSO 引擎（去重由引擎负责，上行连接也会收到同一消息）
+                if matches!(kind, "message" | "ack") {
+                    let cb = self.on_message.lock().unwrap().clone();
+                    if let Some(cb) = cb {
+                        cb(parsed.clone());
+                    }
+                }
                 match kind {
                     "status" => {
                         (self.emit)(json!({"type": "log", "level": "info",
@@ -784,6 +841,146 @@ impl AprsClient {
                 t_stats = now;
                 (self.emit)(json!({"type": "log", "level": "info",
                     "msg": format!("APRS 收包统计：共 {n_lines} 行，FMO 相关 {n_fmo} 条")}));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- APRS-IS 上行连接（发送专用）
+
+/// 发送专用连接：登录 14580（不带 filter，只收发给本机呼号的消息，作为信令接收双保险）。
+/// 主连接保持 10152 全馈用于全球服务器发现，两条连接互不影响。
+pub struct AprsTx {
+    emit: EmitFn,
+    /// disconnected / connecting / verified / listen-only
+    pub state: Arc<Mutex<String>>,
+    login: Arc<Mutex<Option<(String, String)>>>,
+    sender: Arc<Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>>,
+    on_message: MsgCallback,
+}
+
+impl AprsTx {
+    fn new(emit: EmitFn, on_message: MsgCallback) -> Self {
+        Self {
+            emit,
+            state: Arc::new(Mutex::new("disconnected".into())),
+            login: Arc::new(Mutex::new(None)),
+            sender: Arc::new(Mutex::new(None)),
+            on_message,
+        }
+    }
+
+    pub async fn set_login(&self, callsign: &str, passcode: &str) {
+        let cs = callsign.trim();
+        let pc = passcode.trim();
+        if cs.is_empty() || pc.is_empty() || pc == "-1" {
+            return;
+        }
+        *self.login.lock().await = Some((cs.to_uppercase(), pc.to_string()));
+    }
+
+    pub async fn clear_login(&self) {
+        *self.login.lock().await = None;
+    }
+
+    /// 排队发送一行 APRS 报文（不含换行）。上行未连接/未验证时返回错误。
+    pub async fn send_packet(&self, line: Vec<u8>) -> Result<(), String> {
+        if *self.state.lock().await != "verified" {
+            return Err("APRS 上行未验证登录（需要正确的 passcode），暂不能发送".into());
+        }
+        let tx = self.sender.lock().await.clone();
+        match tx {
+            Some(tx) => tx.send(line).map_err(|_| "APRS 上行连接已断开".into()),
+            None => Err("APRS 上行未连接".into()),
+        }
+    }
+
+    pub async fn run(&self) {
+        let mut backoff = 1.0f64;
+        loop {
+            let login = self.login.lock().await.clone();
+            let Some((cs, pc)) = login else {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                continue;
+            };
+            match self.session(&cs, &pc).await {
+                Ok(()) => {
+                    *self.state.lock().await = "disconnected".into();
+                }
+                Err(e) => {
+                    *self.state.lock().await = "disconnected".into();
+                    (self.emit)(json!({"type": "log", "level": "warn",
+                        "msg": format!("APRS 上行断开：{e}；{backoff:.0}s 后重连")}));
+                }
+            }
+            *self.sender.lock().await = None;
+            // 登录信息被清除（用户断开 APRS）时不再重连
+            if self.login.lock().await.is_none() {
+                continue;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs_f64(backoff)).await;
+            backoff = (backoff * 2.0).min(60.0);
+        }
+    }
+
+    async fn session(&self, callsign: &str, passcode: &str) -> Result<(), String> {
+        *self.state.lock().await = "connecting".into();
+        let addr = format!("{TX_HOST}:{TX_PORT}");
+        let stream = TcpStream::connect(&addr).await.map_err(|e| e.to_string())?;
+        stream.set_nodelay(true).ok();
+        let login = format!("user {callsign} pass {passcode} vers NRL-PULSE 1.0\r\n");
+        let (read_half, mut write_half) = stream.into_split();
+        write_half.write_all(login.as_bytes()).await.map_err(|e| e.to_string())?;
+        let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        *self.sender.lock().await = Some(tx);
+        let mut reader = BufReader::new(read_half);
+        let mut line: Vec<u8> = Vec::new();
+        loop {
+            if self.login.lock().await.is_none() {
+                return Ok(());
+            }
+            tokio::select! {
+                n = reader.read_until(b'\n', &mut line) => {
+                    let n = n.map_err(|e| e.to_string())?;
+                    if n == 0 {
+                        return Err("对端关闭连接".into());
+                    }
+                    let bytes: Vec<u8> = line.iter().copied()
+                        .filter(|b| *b != b'\r' && *b != b'\n').collect();
+                    line.clear();
+                    let raw = String::from_utf8_lossy(&bytes);
+                    if raw.starts_with("# logresp") {
+                        if raw.contains("unverified") {
+                            *self.state.lock().await = "listen-only".into();
+                            (self.emit)(json!({"type": "log", "level": "warn",
+                                "msg": "APRS 上行登录未验证（passcode 不对），QSO/广播发送不可用"}));
+                        } else if raw.contains("verified") {
+                            *self.state.lock().await = "verified".into();
+                            (self.emit)(json!({"type": "log", "level": "info",
+                                "msg": "APRS 上行已验证，QSO 信令与服务器广播可发送"}));
+                        }
+                        continue;
+                    }
+                    if raw.starts_with('#') {
+                        continue;
+                    }
+                    if let Some(parsed) = parse_fmo_line(&bytes) {
+                        let kind = parsed.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+                        if matches!(kind, "message" | "ack") {
+                            let cb = self.on_message.lock().unwrap().clone();
+                            if let Some(cb) = cb {
+                                cb(parsed);
+                            }
+                        }
+                    }
+                }
+                pkt = rx.recv() => {
+                    let Some(mut pkt) = pkt else {
+                        return Ok(());
+                    };
+                    pkt.extend_from_slice(b"\r\n");
+                    write_half.write_all(&pkt).await.map_err(|e| e.to_string())?;
+                }
             }
         }
     }

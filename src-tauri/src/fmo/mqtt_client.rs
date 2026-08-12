@@ -213,6 +213,9 @@ pub struct FmoMqttClient {
     pub generation: Arc<std::sync::atomic::AtomicU64>,
     pub current_host: Arc<Mutex<String>>,
     pub traffic: Arc<Mutex<std::collections::BTreeMap<String, ServerTraffic>>>,
+    /// FMO 顶栏全局计数：遥测（TELE+SERVER_INFO 消息数）/ 文本（RAW 以外的其它消息数）
+    pub cnt_tele: Arc<std::sync::atomic::AtomicU64>,
+    pub cnt_text: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// 认证被拒时按序重试的角色（与 sim-rust / sim 一致）
@@ -230,6 +233,8 @@ impl FmoMqttClient {
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_host: Arc::new(Mutex::new(String::new())),
             traffic: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+            cnt_tele: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            cnt_text: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -328,6 +333,8 @@ impl FmoMqttClient {
         let client_holder = self.client.clone();
         let generation = self.generation.clone();
         let traffic = self.traffic.clone();
+        let cnt_tele = self.cnt_tele.clone();
+        let cnt_text = self.cnt_text.clone();
         *self.current_host.lock().await = host.clone();
 
         *self.client.lock().await = Some(client.clone());
@@ -435,6 +442,12 @@ impl FmoMqttClient {
                             st.last_topic = topic.clone();
                             st.last_msg = readable_msg(&topic, &payload);
                             st.last_ts = chrono::Utc::now().timestamp() as u64;
+                            // FMO 顶栏全局计数：遥测 = TELE+SERVER_INFO；文本 = RAW 以外其它消息
+                            if topic == "FMO/TELE" || topic == "FMO/SERVER_INFO" {
+                                cnt_tele.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            } else if topic != "FMO/RAW" {
+                                cnt_text.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
                             let snapshot = st.clone();
                             (emit)(json!({
                                 "type": "server_traffic", "host": host, "traffic": snapshot,

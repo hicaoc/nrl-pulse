@@ -213,6 +213,8 @@ pub enum CborValue {
     NegInt(i64),
     Bytes(Vec<u8>),
     Text(String),
+    /// CBOR text（major 3）但内容为原始字节（如 GBK 编码的名称，固件按 std::string 直接写入）
+    TextBytes(Vec<u8>),
     Array(Vec<CborValue>),
 }
 
@@ -333,6 +335,10 @@ fn cbor_write_value(v: &CborValue, out: &mut Vec<u8>) {
         CborValue::Text(s) => {
             cbor_head_write(3, s.len() as u64, out);
             out.extend_from_slice(s.as_bytes());
+        }
+        CborValue::TextBytes(b) => {
+            cbor_head_write(3, b.len() as u64, out);
+            out.extend_from_slice(b);
         }
         CborValue::Array(a) => {
             cbor_head_write(4, a.len() as u64, out);

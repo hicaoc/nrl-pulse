@@ -4,10 +4,12 @@
 
 pub mod aprs;
 pub mod audio;
+pub mod broadcast;
 pub mod certstore;
 pub mod fmo_auth;
 pub mod fmo_frame;
 pub mod ima_adpcm;
 pub mod mqtt_client;
 pub mod protocol;
+pub mod qso;
 pub mod state;

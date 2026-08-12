@@ -336,6 +336,36 @@ export interface FmoStatsSnapshot {
   rxCodec: string;
 }
 
+export interface FmoQsoState {
+  phase: "idle" | "querying" | "calling" | "ringing" | "incoming" | "established";
+  peer: string;
+  peerUid: number;
+  outgoing: boolean;
+  detail?: string;
+  autoAccept?: boolean;
+}
+
+export interface FmoQsoRecord {
+  ts: number;
+  dir: "in" | "out";
+  peer: string;
+  peer_uid: number;
+  result: string;
+}
+
+export interface FmoBroadcastConfig {
+  mode_min: number;
+  name: string;
+  host: string;
+  port: number;
+  cover_km: number;
+  online: number;
+  peak: number;
+  country: string;
+  lat: number;
+  lon: number;
+}
+
 export interface FmoEvent {
   type:
     | "log"
@@ -344,6 +374,9 @@ export interface FmoEvent {
     | "server_list"
     | "cert_state"
     | "favorites"
-    | "server_traffic";
+    | "server_traffic"
+    | "qso_state"
+    | "qso_log_changed"
+    | "broadcast_state";
   [key: string]: unknown;
 }

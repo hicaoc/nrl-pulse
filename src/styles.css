@@ -434,7 +434,7 @@ textarea {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--gap-md);
-  margin-bottom: var(--gap-lg);
+  margin-bottom: 8px;
   padding: clamp(12px, 1.4vw, 18px);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: clamp(16px, 1.5vw, 20px);
@@ -3214,4 +3214,237 @@ input[type="range"] {
   .fmo-cert-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* FMO QSO 呼叫 / 来电弹窗 / 服务器广播 */
+.qso-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-md);
+  padding: 10px 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: var(--accent-soft);
+}
+
+.qso-status[data-phase="established"] {
+  background: rgba(92, 230, 169, 0.14);
+}
+
+.qso-status-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.qso-status-main small {
+  color: var(--text-dim);
+}
+
+.qso-form {
+  display: flex;
+  gap: var(--gap-md);
+  align-items: center;
+}
+
+.qso-form .text-input {
+  flex: 1;
+}
+
+.qso-form .qso-uid-input {
+  flex: 0 0 90px;
+}
+
+.qso-pick-head {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.qso-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.qso-pick-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.qso-pick-row:hover {
+  border-color: var(--accent);
+}
+
+.qso-pick-row span {
+  color: var(--cool);
+  font-size: 12px;
+}
+
+.qso-pick-row small {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qso-incoming .qso-incoming-peer {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 20px;
+  padding: 12px 0;
+}
+
+.qso-incoming .qso-incoming-peer span {
+  color: var(--cool);
+  font-size: 13px;
+}
+
+.fmo-qso-log {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.fmo-qso-log-row {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.fmo-qso-log-row span:nth-child(2) {
+  color: inherit;
+  min-width: 110px;
+}
+
+/* 通用文本输入框（QSO 弹窗、广播配置等） */
+.text-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #f7f2e8;
+  font-size: 0.85rem;
+  min-width: 0;
+}
+
+.text-input::placeholder {
+  color: rgba(244, 235, 223, 0.42);
+}
+
+.text-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* 服务器广播配置表单：窄抽屉里单列，数字项两列 */
+.fmo-bc-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fmo-bc-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.fmo-bc-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+/* 数字输入框去掉步进按钮（窄列里会挤掉数字） */
+.fmo-bc-form input[type="number"]::-webkit-outer-spin-button,
+.fmo-bc-form input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.fmo-bc-form input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* 修正：.auth-server-mode/.auth-actions 的 grid-column: span 2 是为登录表单设计的，
+   在 .fmo-section 网格里会逼出隐式第二列（表单被挤到右半边），这里改为占满整行 */
+.fmo-section .auth-server-mode,
+.fmo-section .auth-actions {
+  grid-column: 1 / -1;
+}
+
+/* 自动广播周期 4 个选项一排 */
+.fmo-bc-modes {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+/* 顶部菜单导航栏（语言/登录/配置/更新） */
+.menu-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-md);
+  margin-bottom: 8px;
+  padding: 4px 6px;
+}
+
+.menu-bar-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-left: 6px;
+}
+
+.menu-bar-brand strong {
+  font-size: 1.05rem;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
+.menu-bar-brand .menu-bar-sub {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+
+.menu-bar-actions .ghost-btn {
+  padding: 8px 12px;
+  border-radius: 10px;
+}
+
+@media (max-width: 640px) {
+  .menu-bar-sub {
+    display: none;
+  }
+  .menu-bar-actions {
+    flex-wrap: wrap;
+  }
+}
+
+/* 收紧页面顶部留白：菜单导航栏贴近窗口顶 */
+.shell {
+  padding-top: 8px;
+}
+
+.menu-bar {
+  margin-top: 0;
 }
