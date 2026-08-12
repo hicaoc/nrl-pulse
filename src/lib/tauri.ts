@@ -305,7 +305,7 @@ export async function downloadAndInstallUpdate(
   onProgress: (downloaded: number, total: number | null) => void,
 ): Promise<void> {
   const { check } = await import("@tauri-apps/plugin-updater");
-  const { relaunch, exit: processExit } = await import("@tauri-apps/plugin-process");
+  const { relaunch } = await import("@tauri-apps/plugin-process");
   const update = await check();
   if (!update?.available) return;
   let downloaded = 0;
@@ -315,6 +315,7 @@ export async function downloadAndInstallUpdate(
       onProgress(downloaded, event.data.contentLength ?? null);
     }
   });
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-  await processExit(0);
+  // 安装器完成替换后由 Tauri 重启应用。直接 exit 只会退出当前进程，
+  // 不会启动安装后的新版本，也容易让用户继续从下载缓存启动裸 exe。
+  await relaunch();
 }

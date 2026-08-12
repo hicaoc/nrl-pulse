@@ -469,6 +469,7 @@ impl RuntimeState {
             uplink_kbps: guard.snapshot.uplink_kbps,
             downlink_kbps: guard.snapshot.downlink_kbps,
             is_transmitting: guard.snapshot.is_transmitting,
+            tx_protocol: guard.tx_protocol.clone(),
             rx_codec: self.rx_codec.lock().map(|c| c.clone()).unwrap_or_default(),
             rx_seq: self.rx_voice_seq.load(Ordering::Relaxed),
         }
@@ -539,6 +540,7 @@ impl RuntimeState {
             guard.presence.clear();
             guard.push_presence(&config.callsign, config.ssid, "本机", "online");
             guard.tx_protocol = if is_fmo { "fmo".into() } else { "nrl".into() };
+            guard.snapshot.tx_protocol = guard.tx_protocol.clone();
             if is_fmo {
                 guard.push_event("开始连接", "已发起 FMO MQTT 会话，等待服务器确认", "accent");
             } else {
@@ -650,8 +652,19 @@ impl RuntimeState {
     /// 按指定协议发射（NRL/FMO 各自独立 PTT）。
     pub async fn set_transmit_proto(&self, protocol: &str, enabled: bool) -> SessionSnapshot {
         let mut guard = self.inner.write().await;
-        if guard.snapshot.is_transmitting == enabled {
+        let protocol = if protocol == "fmo" { "fmo" } else { "nrl" };
+        if guard.snapshot.is_transmitting {
+            // 已有一路发射时，不允许另一路 PTT 抢占协议；也忽略来自
+            // 另一协议/窗口的迟到松开事件，避免误停当前发射。
+            if enabled || guard.tx_protocol != protocol {
+                return self.snapshot_locked(&guard);
+            }
+        } else if !enabled {
             return self.snapshot_locked(&guard);
+        }
+        if enabled {
+            guard.tx_protocol = protocol.into();
+            guard.snapshot.tx_protocol = protocol.into();
         }
         guard.snapshot.is_transmitting = enabled;
         let is_fmo = protocol == "fmo";
@@ -723,16 +736,6 @@ impl RuntimeState {
         };
         guard.push_event("发射切换", detail, "accent");
         self.snapshot_locked(&guard)
-    }
-
-    /// 设置当前发射协议（NRL/FMO 各自 PTT 前调用）。
-    pub async fn set_tx_protocol(&self, protocol: &str) {
-        let mut guard = self.inner.write().await;
-        if protocol == "fmo" {
-            guard.tx_protocol = "fmo".into();
-        } else {
-            guard.tx_protocol = "nrl".into();
-        }
     }
 
     pub async fn toggle_monitor(&self) -> SessionSnapshot {
@@ -1637,6 +1640,7 @@ impl RuntimeData {
                 rx_spectrum: vec![0.0; SPECTRUM_BANDS],
                 tx_spectrum: vec![0.0; SPECTRUM_BANDS],
                 is_transmitting: false,
+                tx_protocol: "nrl".into(),
                 is_monitoring: true,
                 queued_frames: 0,
                 last_text_message: "等待连接服务器".into(),

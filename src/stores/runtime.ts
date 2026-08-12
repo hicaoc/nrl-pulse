@@ -54,6 +54,7 @@ const initialSnapshot: SessionSnapshot = {
   rxSpectrum: Array.from({ length: 28 }, () => 0),
   txSpectrum: Array.from({ length: 28 }, () => 0),
   isTransmitting: false,
+  txProtocol: "nrl",
   isMonitoring: true,
   queuedFrames: 4,
   lastTextMessage: "系统初始化中",
@@ -150,6 +151,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     snapshot.value.uplinkKbps = next.uplinkKbps;
     snapshot.value.downlinkKbps = next.downlinkKbps;
     snapshot.value.isTransmitting = next.isTransmitting;
+    snapshot.value.txProtocol = next.txProtocol;
     snapshot.value.rxCodec = next.rxCodec;
     snapshot.value.rxSeq = next.rxSeq;
   }

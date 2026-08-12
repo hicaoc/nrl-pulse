@@ -42,7 +42,7 @@ jobs:
       - name: Install LLVM
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm clang
+          sudo apt-get install -y llvm clang nsis
 
       - name: Generate icon.ico
         run: |
@@ -70,20 +70,17 @@ jobs:
           CXXFLAGS: "-Wno-declaration-after-statement -msse4.1"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: pnpm build && ./node_modules/.bin/tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle
-
-      - name: Sign Windows binary
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: |
-          ./node_modules/.bin/tauri signer sign --password "" \
-            src-tauri/target/x86_64-pc-windows-msvc/release/nrl-pulse.exe
+        # Windows updater 必须发布 NSIS installer，而不是 release 目录下的裸 exe。
+        # createUpdaterArtifacts=true 会同时生成 setup.exe.sig。
+        run: pnpm build && ./node_modules/.bin/tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
 
       - uses: actions/upload-artifact@v4.6.2
         with:
-          name: nrl-pulse-windows-sig
-          path: src-tauri/target/x86_64-pc-windows-msvc/release/nrl-pulse.exe.sig
+          name: nrl-pulse-windows-updater
+          path: |
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe.sig
+          if-no-files-found: error
 
       - uses: actions/upload-artifact@v4.6.2
         with:
@@ -302,7 +299,8 @@ jobs:
       - name: Collect artifacts
         run: |
           cp artifacts/nrl-pulse-windows/nrl-pulse.exe              nrl-pulse-windows.exe
-          cp artifacts/nrl-pulse-windows-sig/nrl-pulse.exe.sig      nrl-pulse-windows.exe.sig
+          find artifacts/nrl-pulse-windows-updater -name "*-setup.exe" -exec cp {} nrl-pulse-windows-setup.exe \;
+          find artifacts/nrl-pulse-windows-updater -name "*-setup.exe.sig" -exec cp {} nrl-pulse-windows-setup.exe.sig \;
           cp artifacts/nrl-pulse-linux/nrl-pulse                    nrl-pulse-linux
           cp artifacts/nrl-pulse-linux-sig/nrl-pulse.sig            nrl-pulse-linux.sig
           cp artifacts/nrl-pulse-mac-arm/nrl-pulse-mac-arm.dmg              nrl-pulse-mac-arm.dmg
@@ -317,7 +315,7 @@ jobs:
           VERSION=${{ steps.version.outputs.version }}
           DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           BASE="https://github.com/hicaoc/nrl-pulse/releases/download/${VERSION}"
-          WIN_SIG=$(cat nrl-pulse-windows.exe.sig)
+          WIN_SIG=$(cat nrl-pulse-windows-setup.exe.sig)
           LIN_SIG=$(cat nrl-pulse-linux.sig)
           MAC_ARM_SIG=$(cat nrl-pulse-mac-arm.sig 2>/dev/null || echo "")
           MAC_X64_SIG=$(cat nrl-pulse-mac-x64.sig 2>/dev/null || echo "")
@@ -328,7 +326,7 @@ jobs:
             "pub_date": "${DATE}",
             "platforms": {
               "windows-x86_64": {
-                "url": "${BASE}/nrl-pulse-windows.exe",
+                "url": "${BASE}/nrl-pulse-windows-setup.exe",
                 "signature": "${WIN_SIG}"
               },
               "linux-x86_64": {
@@ -357,6 +355,7 @@ jobs:
           make_latest: true
           files: |
             nrl-pulse-windows.exe
+            nrl-pulse-windows-setup.exe
             nrl-pulse-linux
             nrl-pulse-mac-arm.dmg
             nrl-pulse-mac-x64.dmg

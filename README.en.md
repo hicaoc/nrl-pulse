@@ -62,7 +62,8 @@ Download the binary for your platform from the [Releases](../../releases) page:
 
 | Platform | File |
 | --- | --- |
-| Windows | `nrl-pulse-windows.exe` |
+| Windows (recommended, auto-update) | `nrl-pulse-windows-setup.exe` |
+| Windows portable | `nrl-pulse-windows.exe` |
 | Linux | `nrl-pulse-linux` |
 | macOS Apple Silicon | `nrl-pulse-mac-arm` |
 | macOS Intel | `nrl-pulse-mac-x64` |
@@ -71,7 +72,7 @@ Download the binary for your platform from the [Releases](../../releases) page:
 
 ## Quick Start
 
-1. Download and run the binary for your platform
+1. On Windows, install `nrl-pulse-windows-setup.exe`; the portable build cannot reliably replace itself in place
 2. Click **Login** and enter your platform account credentials
 3. Select a group, then click **Connect** to join a voice session
 4. Press Space (or your configured hotkey) to start PTT transmission

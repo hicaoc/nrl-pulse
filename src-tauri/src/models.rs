@@ -52,6 +52,8 @@ pub struct SessionSnapshot {
     pub rx_spectrum: Vec<f32>,
     pub tx_spectrum: Vec<f32>,
     pub is_transmitting: bool,
+    /// 当前发射使用的协议（"nrl" | "fmo"），用于双 PTT 独立显示。
+    pub tx_protocol: String,
     pub is_monitoring: bool,
     pub queued_frames: u32,
     pub last_text_message: String,
@@ -120,6 +122,7 @@ pub struct RealtimeAudioState {
     pub uplink_kbps: f32,
     pub downlink_kbps: f32,
     pub is_transmitting: bool,
+    pub tx_protocol: String,
     /// 当前接收语音编码（"G711" | "OPUS"），供呼号区右下角显示
     pub rx_codec: String,
     /// 接收语音帧序号（每帧递增），前端据此判断"有语音进来"

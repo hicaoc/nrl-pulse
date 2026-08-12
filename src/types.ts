@@ -68,6 +68,7 @@ export interface RealtimeAudioState {
   uplinkKbps: number;
   downlinkKbps: number;
   isTransmitting: boolean;
+  txProtocol: "nrl" | "fmo";
   rxCodec: string;
   rxSeq: number;
 }
@@ -90,6 +91,7 @@ export interface SessionSnapshot {
   rxSpectrum: number[];
   txSpectrum: number[];
   isTransmitting: boolean;
+  txProtocol: "nrl" | "fmo";
   isMonitoring: boolean;
   queuedFrames: number;
   lastTextMessage: string;

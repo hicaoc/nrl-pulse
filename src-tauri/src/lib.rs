@@ -101,7 +101,6 @@ async fn set_transmit_proto(
     protocol: String,
     enabled: bool,
 ) -> Result<SessionSnapshot, String> {
-    state.set_tx_protocol(&protocol).await;
     let snapshot = state.set_transmit_proto(&protocol, enabled).await;
     broadcast_snapshot(&app, &snapshot);
     Ok(snapshot)

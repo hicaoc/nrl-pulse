@@ -74,7 +74,8 @@
 
 | 平台 | 文件 |
 | --- | --- |
-| Windows | `nrl-pulse-windows.exe` |
+| Windows（推荐，支持自动升级） | `nrl-pulse-windows-setup.exe` |
+| Windows 便携版 | `nrl-pulse-windows.exe` |
 | Linux | `nrl-pulse-linux` |
 | macOS Apple Silicon | `nrl-pulse-mac-arm` |
 | macOS Intel | `nrl-pulse-mac-x64` |
@@ -85,7 +86,7 @@
 
 ### NRL 模式
 
-1. 下载并运行对应平台的文件
+1. Windows 下载并安装 `nrl-pulse-windows-setup.exe`；便携版不支持可靠的原路径自动替换
 2. 点击**登录**，填写平台账号连接服务器
 3. 选择群组，点击**连接**建立语音会话
 4. 按空格键（或自定义热键）开始 PTT 发射

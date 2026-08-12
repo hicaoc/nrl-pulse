@@ -1111,7 +1111,7 @@ const pttLinksLabel = computed(() => `NRL ${nrlStatusText.value} · FMO ${fmoSta
 
 // 悬浮窗各协议的当前说话人呼号（本机发射时显示本机呼号）
 const nrlTalkerLabel = computed(() => {
-  if (nrlPttActive.value || runtime.snapshot.isTransmitting) {
+  if (nrlPttActive.value) {
     return `${runtime.snapshot.callsign}-${runtime.snapshot.ssid}`;
   }
   return runtime.snapshot.activeSpeaker
@@ -1130,7 +1130,7 @@ const currentTalker = computed(() => {
   if (runtime.snapshot.connection !== "connected") {
     return "-";
   }
-  if (runtime.snapshot.isTransmitting) {
+  if (nrlPttActive.value) {
     return `${runtime.snapshot.callsign}-${runtime.snapshot.ssid}`;
   }
   if (!runtime.snapshot.activeSpeaker) {
@@ -1145,7 +1145,7 @@ const currentTalkerRegion = computed(() => {
   if (runtime.snapshot.connection !== "connected") {
     return t.value.regionUnknown;
   }
-  if (runtime.snapshot.isTransmitting) {
+  if (nrlPttActive.value) {
     return describeCallsignRegion(runtime.snapshot.callsign);
   }
   if (!runtime.snapshot.activeSpeaker) {
@@ -1172,7 +1172,7 @@ const currentGroupText = computed(() => {
   );
 });
 const spectrumBars = computed(() => {
-  const source = runtime.snapshot.isTransmitting
+  const source = nrlPttActive.value
     ? runtime.snapshot.txSpectrum
     : runtime.snapshot.rxSpectrum;
   return Array.from({ length: 28 }, (_, index) => {
@@ -1184,7 +1184,7 @@ const spectrumBars = computed(() => {
 
 // NRL box 内独立波形（28 频段）
 const nrlSpectrumBars = computed(() => {
-  const source = runtime.snapshot.isTransmitting
+  const source = nrlPttActive.value
     ? runtime.snapshot.txSpectrum
     : runtime.snapshot.rxSpectrum;
   return Array.from({ length: 28 }, (_, index) => {
@@ -1195,7 +1195,9 @@ const nrlSpectrumBars = computed(() => {
 
 // FMO box 内独立波形（28 频段，来自 fmo stats）
 const fmoSpectrumBars = computed(() => {
-  const source = fmo.stats.rxSpectrum ?? [];
+  const source = fmoPttActive.value
+    ? runtime.snapshot.txSpectrum
+    : (fmo.stats.rxSpectrum ?? []);
   return Array.from({ length: 28 }, (_, index) => {
     const base = source[index] ?? 0;
     return Math.min(1, Math.max(0.04, base));
@@ -1381,40 +1383,48 @@ function isMatchingPttKey(event: KeyboardEvent) {
 }
 
 // NRL box 内 PTT：按下发射，松开停止
-const nrlPttActive = ref(false);
-const fmoPttActive = ref(false);
+const nrlPttPressed = ref(false);
+const fmoPttPressed = ref(false);
+const nrlPttActive = computed(
+  () => nrlPttPressed.value
+    || (runtime.snapshot.isTransmitting && runtime.snapshot.txProtocol === "nrl"),
+);
+const fmoPttActive = computed(
+  () => fmoPttPressed.value
+    || (runtime.snapshot.isTransmitting && runtime.snapshot.txProtocol === "fmo"),
+);
 
 async function pressNrlPtt(event?: PointerEvent) {
-  if (runtime.busy || nrlPttActive.value || nrlLinkState.value !== "online") {
+  if (runtime.busy || nrlPttPressed.value || runtime.snapshot.isTransmitting || nrlLinkState.value !== "online") {
     return;
   }
   if (event?.currentTarget instanceof Element) {
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* ok */ }
   }
-  nrlPttActive.value = true;
+  nrlPttPressed.value = true;
   await runtime.setTxProto("nrl", true);
 }
 
 async function releaseNrlPtt() {
-  if (!nrlPttActive.value) return;
-  nrlPttActive.value = false;
+  if (!nrlPttPressed.value) return;
+  nrlPttPressed.value = false;
   await runtime.setTxProto("nrl", false);
 }
 
 async function pressFmoPtt(event?: PointerEvent) {
-  if (fmo.busy || fmoPttActive.value || fmo.state.mqttState !== "connected") {
+  if (fmo.busy || fmoPttPressed.value || runtime.snapshot.isTransmitting || fmo.state.mqttState !== "connected") {
     return;
   }
   if (event?.currentTarget instanceof Element) {
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* ok */ }
   }
-  fmoPttActive.value = true;
+  fmoPttPressed.value = true;
   await runtime.setTxProto("fmo", true);
 }
 
 async function releaseFmoPtt() {
-  if (!fmoPttActive.value) return;
-  fmoPttActive.value = false;
+  if (!fmoPttPressed.value) return;
+  fmoPttPressed.value = false;
   await runtime.setTxProto("fmo", false);
 }
 
@@ -2307,7 +2317,14 @@ watch(
 
 <template>
   <main v-if="isPttWindow" class="shell shell-ptt">
-    <section class="ptt-console" :class="{ 'is-tx': runtime.snapshot.isTransmitting }">
+    <section
+      class="ptt-console"
+      :class="{
+        'is-tx': runtime.snapshot.isTransmitting,
+        'is-tx-nrl': nrlPttActive,
+        'is-tx-fmo': fmoPttActive,
+      }"
+    >
       <header class="ptt-console-head" @pointerdown="onHeaderPointerDown">
         <span class="ptt-status-led" :data-state="runtime.snapshot.connection"></span>
         <span class="ptt-status-text">{{ pttLinksLabel }}</span>

@@ -273,7 +273,8 @@ textarea {
   text-overflow: ellipsis;
 }
 
-.is-tx .ptt-dial-talker {
+.is-tx-nrl .ptt-dial-nrl ~ .ptt-dial-talker,
+.is-tx-fmo .ptt-dial-fmo ~ .ptt-dial-talker {
   color: #ffe4e4;
 }
 
