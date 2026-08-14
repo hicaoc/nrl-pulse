@@ -2904,7 +2904,7 @@ dependencies = [
 
 [[package]]
 name = "nrl-pulse"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "audioadapter-buffers",
  "base64 0.22.1",

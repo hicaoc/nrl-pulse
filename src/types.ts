@@ -307,7 +307,7 @@ export interface FmoStateSnapshot {
   aprsDetail: string;
   selectedServer: Partial<FmoServer> | null;
   rxPlay: boolean;
-  rxLoop: boolean;
+  mqttNoLocal: boolean;
 }
 
 export interface FmoStatsSnapshot {

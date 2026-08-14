@@ -1,7 +1,9 @@
 //! rumqttc FMO 连接骨架。
 
 use rand::RngCore;
-use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, SubscribeFilter};
+use rumqttc::v5::mqttbytes::v5::{ConnectReturnCode, Filter, Packet};
+use rumqttc::v5::mqttbytes::QoS;
+use rumqttc::v5::{AsyncClient, Event, MqttOptions};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -16,6 +18,17 @@ pub const SUBSCRIBE_TOPICS: &[&str] = &[
     "FMO/LATE/UID_V1/",
     "FMO/QSO/UID/#",
 ];
+
+fn subscription_filters(no_local: bool) -> Vec<Filter> {
+    SUBSCRIBE_TOPICS
+        .iter()
+        .map(|topic| {
+            let mut filter = Filter::new((*topic).to_string(), QoS::AtMostOnce);
+            filter.nolocal = no_local;
+            filter
+        })
+        .collect()
+}
 
 pub fn client_id_for(callsign: &str, uid: u32, suffix: &str) -> String {
     let cs = callsign.to_uppercase();
@@ -254,6 +267,8 @@ pub struct FmoMqttClient {
     pub client_suffix: String,
     /// Full client ID of the current or most recent MQTT session.
     pub current_client_id: Arc<Mutex<String>>,
+    /// MQTT 5 No Local subscription option; enabled by default.
+    pub no_local: Arc<std::sync::atomic::AtomicBool>,
     pub traffic: Arc<Mutex<std::collections::BTreeMap<String, ServerTraffic>>>,
     /// FMO 顶栏全局计数：遥测（TELE+SERVER_INFO 消息数）/ 文本（RAW 以外的其它消息数）
     pub cnt_tele: Arc<std::sync::atomic::AtomicU64>,
@@ -276,6 +291,7 @@ impl FmoMqttClient {
             current_host: Arc::new(Mutex::new(String::new())),
             client_suffix: new_client_suffix(),
             current_client_id: Arc::new(Mutex::new(String::new())),
+            no_local: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             traffic: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             cnt_tele: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             cnt_text: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -391,6 +407,7 @@ impl FmoMqttClient {
         let traffic = self.traffic.clone();
         let cnt_tele = self.cnt_tele.clone();
         let cnt_text = self.cnt_text.clone();
+        let no_local = self.no_local.clone();
         *self.current_host.lock().await = host.clone();
 
         *self.client.lock().await = Some(client.clone());
@@ -399,10 +416,6 @@ impl FmoMqttClient {
 
         tauri::async_runtime::spawn(async move {
             let mut client = client;
-            let subscribe_topics: Vec<SubscribeFilter> = SUBSCRIBE_TOPICS
-                .iter()
-                .map(|t| SubscribeFilter::new((*t).to_string(), QoS::AtMostOnce))
-                .collect();
             let mut subscribed = false;
             // 初始角色由调用方按「服务器呼号 == 证书呼号 → super，否则 user」选定；
             // 被拒后从该角色起按 ROLE_SEQ 往后重试
@@ -416,12 +429,12 @@ impl FmoMqttClient {
                 }
                 match eventloop.poll().await {
                     Ok(Event::Incoming(Packet::ConnAck(ack))) => {
-                        let code = ack.code as u8;
-                        eprintln!("[FMO-MQTT] ConnAck code={code} host={host}:{port}");
-                        if code != 0 {
+                        let code = ack.code;
+                        eprintln!("[FMO-MQTT] ConnAck code={code:?} host={host}:{port}");
+                        if code != ConnectReturnCode::Success {
                             // 认证被拒：SAS 可能要求 claimed role 与证书登记角色一致，
                             // 按 ROLE_SEQ（user→super→admin）换角色重建凭据重试
-                            if matches!(code, 0x84 | 0x87) && role_idx + 1 < ROLE_SEQ.len() {
+                            if matches!(code, ConnectReturnCode::BadUserNamePassword | ConnectReturnCode::NotAuthorized) && role_idx + 1 < ROLE_SEQ.len() {
                                 let cur = ROLE_SEQ[role_idx];
                                 let next = ROLE_SEQ[role_idx + 1];
                                 let retry = match &cred_factory {
@@ -430,7 +443,7 @@ impl FmoMqttClient {
                                 };
                                 if let Some((u, p)) = retry {
                                     (emit)(json!({"type": "log", "level": "warn",
-                                        "msg": format!("MQTT 角色 {cur} 被拒（code={code}），换 {next} 重试…")}));
+                                        "msg": format!("MQTT 角色 {cur} 被拒（code={code:?}），换 {next} 重试…")}));
                                     role_idx += 1;
                                     let mut opts2 =
                                         MqttOptions::new(cid.clone(), host.clone(), port);
@@ -450,10 +463,10 @@ impl FmoMqttClient {
                                 }
                             }
                             let reason = match code {
-                                0x84 => "用户/密码错误或认证被拒",
-                                0x87 => "未授权",
-                                0x80 => "协议错误",
-                                0x86 => "连接被拒",
+                                ConnectReturnCode::BadUserNamePassword => "用户/密码错误或认证被拒",
+                                ConnectReturnCode::NotAuthorized => "未授权",
+                                ConnectReturnCode::ProtocolError => "协议错误",
+                                ConnectReturnCode::ClientIdentifierNotValid => "客户端 ID 无效",
                                 _ => "服务器拒绝连接",
                             };
                             let msg = format!(
@@ -461,7 +474,7 @@ impl FmoMqttClient {
                                  host={host} port={port}\n\
                                  请检查证书(cert_user/cert_int/cert_devicekey)是否正确、\
                                  呼号/uid 是否与证书一致、服务器是否允许当前身份连接",
-                                code = code
+                                code = format!("{code:?}")
                             );
                             *state.lock().await = "error".to_string();
                             *detail.lock().await = msg.clone();
@@ -484,12 +497,15 @@ impl FmoMqttClient {
                                            String::new()
                                        })}));
                         if !subscribed {
-                            let _ = client.subscribe_many(subscribe_topics.clone()).await;
+                            let filters = subscription_filters(
+                                no_local.load(std::sync::atomic::Ordering::Relaxed),
+                            );
+                            let _ = client.subscribe_many(filters).await;
                             subscribed = true;
                         }
                     }
                     Ok(Event::Incoming(Packet::Publish(pub_msg))) => {
-                        let topic = pub_msg.topic.clone();
+                        let topic = String::from_utf8_lossy(&pub_msg.topic).into_owned();
                         let payload = pub_msg.payload.to_vec();
                         {
                             let mut t = traffic.lock().await;
@@ -534,7 +550,7 @@ impl FmoMqttClient {
                                 "msg": format!("MQTT {}", readable_msg(&topic, &payload))}));
                         }
                     }
-                    Ok(Event::Incoming(Packet::Disconnect)) => {
+                    Ok(Event::Incoming(Packet::Disconnect(_))) => {
                         *state.lock().await = "disconnected".to_string();
                         (emit)(json!({"type": "mqtt_state", "state": "disconnected",
                                       "detail": "对端断开", "client_id": cid}));
@@ -580,6 +596,22 @@ impl FmoMqttClient {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         *self.client.lock().await = None;
         self.set_state("disconnected", "用户断开").await;
+    }
+
+    pub async fn set_no_local(&self, enabled: bool) -> Result<(), String> {
+        self.no_local
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+        if let Some(client) = self.client.lock().await.clone() {
+            client
+                .subscribe_many(subscription_filters(enabled))
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn no_local_enabled(&self) -> bool {
+        self.no_local.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub async fn publish(&self, topic: &str, payload: Vec<u8>, qos: u8) -> Result<(), String> {

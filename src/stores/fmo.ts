@@ -15,13 +15,13 @@ import {
   fmoFavoritesRemove,
   fmoMqttConnect,
   fmoMqttDisconnect,
+  fmoMqttNoLocal,
   fmoQsoAnswer,
   fmoQsoCall,
   fmoQsoCancel,
   fmoQsoLog,
   fmoQsoSetAutoAccept,
   fmoQsoState,
-  fmoRxLoop,
   fmoRxPlay,
   fmoServerSelect,
   fmoStateSnapshot,
@@ -46,7 +46,7 @@ const initial: FmoStateSnapshot = {
   aprsDetail: "",
   selectedServer: null,
   rxPlay: true,
-  rxLoop: false,
+  mqttNoLocal: true,
 };
 
 const initialStats: FmoStatsSnapshot = {
@@ -311,9 +311,9 @@ export const useFmoStore = defineStore("fmo", () => {
     await runAction(() => fmoRxPlay(enabled));
   }
 
-  async function setRxLoop(enabled: boolean) {
-    state.value.rxLoop = enabled;
-    await runAction(() => fmoRxLoop(enabled));
+  async function setMqttNoLocal(enabled: boolean) {
+    state.value.mqttNoLocal = enabled;
+    await runAction(() => fmoMqttNoLocal(enabled));
   }
 
   async function refreshQsoLog() {
@@ -374,7 +374,7 @@ export const useFmoStore = defineStore("fmo", () => {
     addFavorite,
     removeFavorite,
     setRxPlay,
-    setRxLoop,
+    setMqttNoLocal,
     refreshQsoLog,
     qsoCall,
     qsoAnswer,

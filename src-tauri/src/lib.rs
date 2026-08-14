@@ -378,7 +378,7 @@ async fn fmo_state_snapshot(
         "aprsDetail": fmo.aprs_client.detail.lock().await.clone(),
         "selectedServer": fmo.selected_server.lock().await.clone(),
         "rxPlay": *fmo.rx_play_enabled.lock().unwrap(),
-        "rxLoop": *fmo.rx_loop_enabled.lock().unwrap(),
+        "mqttNoLocal": fmo.mqtt_client.no_local_enabled(),
     });
     out["mqttDetail"] = serde_json::Value::String(fmo.mqtt_client.detail.lock().await.clone());
     out["aprsDetail"] = serde_json::Value::String(fmo.aprs_client.detail.lock().await.clone());
@@ -545,12 +545,11 @@ async fn fmo_rx_play(state: tauri::State<'_, RuntimeState>, enabled: bool) -> Re
 }
 
 #[tauri::command]
-async fn fmo_rx_loop(state: tauri::State<'_, RuntimeState>, enabled: bool) -> Result<(), String> {
+async fn fmo_mqtt_no_local(state: tauri::State<'_, RuntimeState>, enabled: bool) -> Result<(), String> {
     let Some(fmo) = state.fmo_state().await else {
         return Err("FMO 未初始化".into());
     };
-    *fmo.rx_loop_enabled.lock().unwrap() = enabled;
-    Ok(())
+    fmo.mqtt_client.set_no_local(enabled).await
 }
 
 #[tauri::command]
@@ -722,7 +721,7 @@ pub fn run() {
             fmo_favorites_add,
             fmo_favorites_remove,
             fmo_rx_play,
-            fmo_rx_loop,
+            fmo_mqtt_no_local,
             fmo_stats_snapshot,
             fmo_qso_call,
             fmo_qso_answer,

@@ -220,8 +220,8 @@ export async function fmoRxPlay(enabled: boolean): Promise<void> {
   return invoke("fmo_rx_play", { enabled });
 }
 
-export async function fmoRxLoop(enabled: boolean): Promise<void> {
-  return invoke("fmo_rx_loop", { enabled });
+export async function fmoMqttNoLocal(enabled: boolean): Promise<void> {
+  return invoke("fmo_mqtt_no_local", { enabled });
 }
 
 export async function fmoQsoCall(target: string, uid?: number): Promise<void> {

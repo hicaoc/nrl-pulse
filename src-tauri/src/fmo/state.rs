@@ -60,7 +60,6 @@ pub struct FmoState {
     /// 服务器广播引擎（APRS APFMO4 STATION）
     pub broadcast: Arc<BroadcastEngine>,
     pub rx_play_enabled: Arc<std::sync::Mutex<bool>>,
-    pub rx_loop_enabled: Arc<std::sync::Mutex<bool>>,
     pub selected_server: Arc<Mutex<serde_json::Value>>,
     pub favorites: Arc<Mutex<Vec<serde_json::Value>>>,
     pub favorites_path: PathBuf,
@@ -204,7 +203,6 @@ impl FmoState {
             qso,
             broadcast,
             rx_play_enabled: Arc::new(std::sync::Mutex::new(true)),
-            rx_loop_enabled: Arc::new(std::sync::Mutex::new(false)),
             selected_server,
             favorites: Arc::new(Mutex::new(favorites)),
             favorites_path,
@@ -489,10 +487,7 @@ impl FmoState {
     pub fn install_raw_handler(&self) {
         let rx_audio = self.rx_audio.clone();
         let rx_play = self.rx_play_enabled.clone();
-        let rx_loop = self.rx_loop_enabled.clone();
-        let emit = self.emit.clone();
         let speaker = self.current_speaker.clone();
-        let callsign = self.current_callsign();
         let stats = self.stats.clone();
         self.mqtt_client.on_raw_payload.lock().unwrap().replace(
             Arc::new(move |payload: Vec<u8>| {
@@ -504,14 +499,6 @@ impl FmoState {
                     .rx_frames
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 *speaker.lock().unwrap() = p.callsign.clone();
-                let mine = p.callsign == callsign;
-                if mine {
-                    emit(json!({"type": "log", "level": "info",
-                        "msg": format!("回环确认：本机 {} 包已送达服务器并返回", p.packets.len())}));
-                    if !*rx_loop.lock().unwrap() {
-                        return;
-                    }
-                }
                 if !*rx_play.lock().unwrap() {
                     return;
                 }

@@ -1654,6 +1654,11 @@ async function toggleFmoMute() {
   await fmo.setRxPlay(!fmoMuted.value);
 }
 
+async function toggleFmoNoLocal(event: Event) {
+  const target = event.target as HTMLInputElement;
+  await fmo.setMqttNoLocal(target.checked);
+}
+
 async function onFmoCertSlotChange(name: string) {
   fmoCertMsg.value = "";
   try {
@@ -3443,6 +3448,10 @@ watch(
             <div class="fmo-conn-detail" v-if="fmo.state.mqttClientId">
               MQTT Client ID: {{ fmo.state.mqttClientId }}
             </div>
+            <label class="fmo-conn-row" title="关闭后服务器会返回本客户端发布的消息，用于调试">
+              <span class="fmo-conn-label">MQTT No Local</span>
+              <input type="checkbox" :checked="fmo.state.mqttNoLocal" @change="toggleFmoNoLocal">
+            </label>
             <div class="fmo-conn-detail" v-if="fmo.state.mqttDetail || fmo.state.aprsDetail">
               {{ fmo.state.mqttDetail || fmo.state.aprsDetail }}
             </div>
