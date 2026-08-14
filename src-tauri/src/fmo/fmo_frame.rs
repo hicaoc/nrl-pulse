@@ -8,14 +8,25 @@ fn crc32(data: &[u8]) -> u32 {
     for &b in data {
         crc ^= b as u32;
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB88320 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB88320
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc
 }
 
-fn pack(callsign: &str, session: u16, ts1: u32, ts2: u32,
-        blocks: &[u8], nblocks: u16, buf_depth: u8) -> Vec<u8> {
+fn pack(
+    callsign: &str,
+    session: u16,
+    ts1: u32,
+    ts2: u32,
+    blocks: &[u8],
+    nblocks: u16,
+    buf_depth: u8,
+) -> Vec<u8> {
     let total = 64 + blocks.len() as u32;
     let mut cs = [0u8; 6];
     let bytes = callsign.to_uppercase().into_bytes();
@@ -59,23 +70,51 @@ fn make_block(idx: u8, inner_type: u8, payload: &[u8]) -> Vec<u8> {
 }
 
 /// 把若干 Opus 包（SILK NB 40ms）打包成一帧 FMO/RAW（老格式 0x01 块）。
-pub fn build_frame(callsign: &str, session: u16, ts1: u32, ts2: u32,
-                   opus_packets: &[Vec<u8>], buf_depth: u8) -> Vec<u8> {
+pub fn build_frame(
+    callsign: &str,
+    session: u16,
+    ts1: u32,
+    ts2: u32,
+    opus_packets: &[Vec<u8>],
+    buf_depth: u8,
+) -> Vec<u8> {
     let mut blocks = Vec::new();
     for (i, pkt) in opus_packets.iter().enumerate() {
         blocks.extend_from_slice(&make_block((i + 1) as u8 & 0xFF, 0x01, pkt));
     }
-    pack(callsign, session, ts1, ts2, &blocks, opus_packets.len() as u16, buf_depth)
+    pack(
+        callsign,
+        session,
+        ts1,
+        ts2,
+        &blocks,
+        opus_packets.len() as u16,
+        buf_depth,
+    )
 }
 
 /// 把若干 IMA ADPCM 块（328B：8B 头 + 320B 数据）打包成一帧（新格式 0x02 块）。
-pub fn build_frame_adpcm(callsign: &str, session: u16, ts1: u32, ts2: u32,
-                         payloads: &[Vec<u8>], buf_depth: u8) -> Vec<u8> {
+pub fn build_frame_adpcm(
+    callsign: &str,
+    session: u16,
+    ts1: u32,
+    ts2: u32,
+    payloads: &[Vec<u8>],
+    buf_depth: u8,
+) -> Vec<u8> {
     let mut blocks = Vec::new();
     for (i, pl) in payloads.iter().enumerate() {
         blocks.extend_from_slice(&make_block((i + 1) as u8 & 0xFF, 0x02, pl));
     }
-    pack(callsign, session, ts1, ts2, &blocks, payloads.len() as u16, buf_depth)
+    pack(
+        callsign,
+        session,
+        ts1,
+        ts2,
+        &blocks,
+        payloads.len() as u16,
+        buf_depth,
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -137,7 +176,9 @@ pub fn parse_frame(f: &[u8]) -> Option<ParsedFrame> {
     }
     Some(ParsedFrame {
         session: u16::from_le_bytes([f[6], f[7]]),
-        callsign: String::from_utf8_lossy(&f[10..16]).trim_end_matches('\x00').to_string(),
+        callsign: String::from_utf8_lossy(&f[10..16])
+            .trim_end_matches('\x00')
+            .to_string(),
         ts1: u32::from_le_bytes(f[22..26].try_into().ok()?),
         ts2: u32::from_le_bytes(f[26..30].try_into().ok()?),
         block_count: u16::from_le_bytes(f[34..36].try_into().ok()?),
@@ -158,14 +199,26 @@ mod tests {
 
     #[test]
     fn roundtrip_opus() {
-        let frame = build_frame("BG9JYT", 0x1234, 1000, 1010,
-                                &[vec![0x80; 12], vec![0x81; 20]], 9);
+        let frame = build_frame(
+            "BG9JYT",
+            0x1234,
+            1000,
+            1010,
+            &[vec![0x80; 12], vec![0x81; 20]],
+            9,
+        );
         let p = parse_frame(&frame).unwrap();
         assert_eq!(p.callsign, "BG9JYT");
         assert_eq!(p.session, 0x1234);
         assert_eq!(p.packets.len(), 2);
-        let rebuilt = build_frame(&p.callsign, p.session, p.ts1, p.ts2,
-                                  &p.packets, p.buf_depth);
+        let rebuilt = build_frame(
+            &p.callsign,
+            p.session,
+            p.ts1,
+            p.ts2,
+            &p.packets,
+            p.buf_depth,
+        );
         assert_eq!(rebuilt, frame);
     }
 

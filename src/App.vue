@@ -3440,6 +3440,9 @@ watch(
                 }}
               </button>
             </div>
+            <div class="fmo-conn-detail" v-if="fmo.state.mqttClientId">
+              MQTT Client ID: {{ fmo.state.mqttClientId }}
+            </div>
             <div class="fmo-conn-detail" v-if="fmo.state.mqttDetail || fmo.state.aprsDetail">
               {{ fmo.state.mqttDetail || fmo.state.aprsDetail }}
             </div>

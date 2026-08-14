@@ -302,6 +302,7 @@ export interface FmoStateSnapshot {
   clients: FmoClient[];
   mqttState: string;
   mqttDetail: string;
+  mqttClientId: string;
   aprsState: string;
   aprsDetail: string;
   selectedServer: Partial<FmoServer> | null;
@@ -314,6 +315,7 @@ export interface FmoStatsSnapshot {
   uid: number;
   mqttState: string;
   mqttDetail: string;
+  mqttClientId: string;
   aprsState: string;
   aprsDetail: string;
   serverHost: string;

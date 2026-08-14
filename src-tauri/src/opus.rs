@@ -27,8 +27,12 @@ pub struct NrlOpusEncoder {
 
 impl NrlOpusEncoder {
     pub fn new() -> Result<Self, String> {
-        let mut encoder = Encoder::new(NRL_OPUS_SAMPLE_RATE, opus::Channels::Mono, Application::Voip)
-            .map_err(|e| e.to_string())?;
+        let mut encoder = Encoder::new(
+            NRL_OPUS_SAMPLE_RATE,
+            opus::Channels::Mono,
+            Application::Voip,
+        )
+        .map_err(|e| e.to_string())?;
         encoder
             .set_bitrate(opus::Bitrate::Bits(32_000))
             .map_err(|e| e.to_string())?;
@@ -76,8 +80,8 @@ pub struct NrlOpusDecoder {
 
 impl NrlOpusDecoder {
     pub fn new() -> Result<Self, String> {
-        let decoder = Decoder::new(NRL_OPUS_SAMPLE_RATE, opus::Channels::Mono)
-            .map_err(|e| e.to_string())?;
+        let decoder =
+            Decoder::new(NRL_OPUS_SAMPLE_RATE, opus::Channels::Mono).map_err(|e| e.to_string())?;
         Ok(Self { decoder })
     }
 

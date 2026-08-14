@@ -41,6 +41,7 @@ const initial: FmoStateSnapshot = {
   clients: [],
   mqttState: "disconnected",
   mqttDetail: "",
+  mqttClientId: "",
   aprsState: "disconnected",
   aprsDetail: "",
   selectedServer: null,
@@ -53,6 +54,7 @@ const initialStats: FmoStatsSnapshot = {
   uid: 0,
   mqttState: "disconnected",
   mqttDetail: "",
+  mqttClientId: "",
   aprsState: "disconnected",
   aprsDetail: "",
   serverHost: "",
@@ -131,6 +133,9 @@ export const useFmoStore = defineStore("fmo", () => {
       case "mqtt_state":
         state.value.mqttState = (ev.state as string) ?? "disconnected";
         state.value.mqttDetail = (ev.detail as string) ?? "";
+        if (typeof ev.client_id === "string" && ev.client_id) {
+          state.value.mqttClientId = ev.client_id;
+        }
         break;
       case "aprs_state":
         state.value.aprsState = (ev.state as string) ?? "disconnected";

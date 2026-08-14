@@ -52,8 +52,14 @@ pub fn generate_keypair() -> serde_json::Map<String, serde_json::Value> {
     let mut csprng = rand::rngs::OsRng;
     let kp = ed25519_dalek::SigningKey::generate(&mut csprng);
     let mut m = serde_json::Map::new();
-    m.insert("seed".into(), serde_json::Value::String(b64_encode(&kp.to_bytes())));
-    m.insert("pubKey".into(), serde_json::Value::String(b64_encode(&kp.verifying_key().to_bytes())));
+    m.insert(
+        "seed".into(),
+        serde_json::Value::String(b64_encode(&kp.to_bytes())),
+    );
+    m.insert(
+        "pubKey".into(),
+        serde_json::Value::String(b64_encode(&kp.verifying_key().to_bytes())),
+    );
     m
 }
 
@@ -120,14 +126,12 @@ pub fn jwt_decode(
     let (Some(seg_h), Some(seg_p), Some(seg_s)) = (seg_h, seg_p, seg_s) else {
         return Err("JWT 段数不足".into());
     };
-    let header: serde_json::Value = serde_json::from_slice(
-        &b64url_decode(seg_h).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    let payload: serde_json::Value = serde_json::from_slice(
-        &b64url_decode(seg_p).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    let header: serde_json::Value =
+        serde_json::from_slice(&b64url_decode(seg_h).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let payload: serde_json::Value =
+        serde_json::from_slice(&b64url_decode(seg_p).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
     let mut ok = false;
     if let Some(k) = key {
         let mut mac = <Hmac<Sha256>>::new_from_slice(k).map_err(|e| e.to_string())?;

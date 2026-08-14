@@ -1,5 +1,6 @@
 //! rumqttc FMO 连接骨架。
 
+use rand::RngCore;
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, SubscribeFilter};
 use serde_json::json;
 use std::sync::Arc;
@@ -18,8 +19,22 @@ pub const SUBSCRIBE_TOPICS: &[&str] = &[
 
 pub fn client_id_for(callsign: &str, uid: u32, suffix: &str) -> String {
     let cs = callsign.to_uppercase();
-    let cs = if cs.is_empty() { "N0CALL".to_string() } else { cs };
+    let cs = if cs.is_empty() {
+        "N0CALL".to_string()
+    } else {
+        cs
+    };
     format!("FMO-{cs}-{uid}-{suffix}")
+}
+
+/// Generate one random identifier suffix for this application process. It is
+/// reused by reconnects, but changes after the application restarts so cloned
+/// installations using the same FMO identity do not continuously kick each
+/// other off the broker.
+fn new_client_suffix() -> String {
+    let mut bytes = [0u8; 2];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    hex::encode_upper(bytes)
 }
 
 /// GBK/UTF-8 容错解码。
@@ -89,7 +104,10 @@ fn extract_strings(b: &[u8], from: usize) -> Vec<String> {
     }
     // 去重保序，最多 6 条
     let mut seen = std::collections::HashSet::new();
-    out.into_iter().filter(|s| seen.insert(s.clone())).take(6).collect()
+    out.into_iter()
+        .filter(|s| seen.insert(s.clone()))
+        .take(6)
+        .collect()
 }
 
 /// 解析 FMO/TELE 遥测帧（33B，参照 open-fmo sim 逆向结论）：
@@ -124,8 +142,16 @@ pub fn parse_server_info(payload: &[u8]) -> String {
     }
     let seq = u32::from_le_bytes(payload[1..5].try_into().unwrap_or([0; 4]));
     let callsign = cstr_field(payload, 9, 12);
-    let name = if payload.len() > 25 { cstr_field(payload, 25, 30) } else { String::new() };
-    let desc = if payload.len() > 55 { cstr_field(payload, 55, 30) } else { String::new() };
+    let name = if payload.len() > 25 {
+        cstr_field(payload, 25, 30)
+    } else {
+        String::new()
+    };
+    let desc = if payload.len() > 55 {
+        cstr_field(payload, 55, 30)
+    } else {
+        String::new()
+    };
     let mut out = format!("序号{seq} 服务器 {callsign}");
     if !name.is_empty() {
         out.push_str(&format!(" 名称[{name}]"));
@@ -144,13 +170,19 @@ pub fn parse_server_info(payload: &[u8]) -> String {
 /// 解析 FMO/PROFILE（128B）：id + 若干 u32 + 可读字符串兜底。
 pub fn parse_profile(payload: &[u8]) -> String {
     if payload.len() < 32 {
-        return format!("{}B {}", payload.len(), hex::encode(&payload[..payload.len().min(64)]));
+        return format!(
+            "{}B {}",
+            payload.len(),
+            hex::encode(&payload[..payload.len().min(64)])
+        );
     }
     let id = u32::from_le_bytes(payload[1..5].try_into().unwrap_or([0; 4]));
     let mut u32s = Vec::new();
     for off in [8usize, 12, 16] {
         if off + 4 <= payload.len() {
-            u32s.push(u32::from_le_bytes(payload[off..off + 4].try_into().unwrap_or([0; 4])));
+            u32s.push(u32::from_le_bytes(
+                payload[off..off + 4].try_into().unwrap_or([0; 4]),
+            ));
         }
     }
     let strings = extract_strings(payload, 0);
@@ -166,7 +198,11 @@ pub fn parse_profile(payload: &[u8]) -> String {
 /// [24:36]对方呼号12B [40:52]Maidenhead网格12B [48:60]中继/服务器名UTF-8
 pub fn parse_qso(payload: &[u8]) -> String {
     if payload.len() < 60 {
-        return format!("{}B {}", payload.len(), hex::encode(&payload[..payload.len().min(64)]));
+        return format!(
+            "{}B {}",
+            payload.len(),
+            hex::encode(&payload[..payload.len().min(64)])
+        );
     }
     let typ = u32::from_le_bytes(payload[0..4].try_into().unwrap_or([0; 4]));
     let uid = u32::from_le_bytes(payload[12..16].try_into().unwrap_or([0; 4]));
@@ -206,12 +242,18 @@ pub struct FmoMqttClient {
     /// 凭据工厂：role → (username, password)。
     /// SAS ACL 要求 claimed role 与证书登记角色一致（如登记 super 却声称 user 会被拒），
     /// 认证被拒时按 ROLE_SEQ 换角色重建凭据重试（参照 sim 的 _role_seq 机制）。
-    pub cred_factory: std::sync::Mutex<Option<Arc<dyn Fn(&str) -> Result<(String, String), String> + Send + Sync>>>,
+    pub cred_factory: std::sync::Mutex<
+        Option<Arc<dyn Fn(&str) -> Result<(String, String), String> + Send + Sync>>,
+    >,
     pub state: Arc<Mutex<String>>,
     pub detail: Arc<Mutex<String>>,
     pub client: Arc<Mutex<Option<AsyncClient>>>,
     pub generation: Arc<std::sync::atomic::AtomicU64>,
     pub current_host: Arc<Mutex<String>>,
+    /// Random for this process and stable across reconnects.
+    pub client_suffix: String,
+    /// Full client ID of the current or most recent MQTT session.
+    pub current_client_id: Arc<Mutex<String>>,
     pub traffic: Arc<Mutex<std::collections::BTreeMap<String, ServerTraffic>>>,
     /// FMO 顶栏全局计数：遥测（TELE+SERVER_INFO 消息数）/ 文本（RAW 以外的其它消息数）
     pub cnt_tele: Arc<std::sync::atomic::AtomicU64>,
@@ -232,6 +274,8 @@ impl FmoMqttClient {
             client: Arc::new(Mutex::new(None)),
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_host: Arc::new(Mutex::new(String::new())),
+            client_suffix: new_client_suffix(),
+            current_client_id: Arc::new(Mutex::new(String::new())),
             traffic: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             cnt_tele: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             cnt_text: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -241,12 +285,24 @@ impl FmoMqttClient {
     async fn set_state(&self, state: &str, detail: &str) {
         *self.state.lock().await = state.to_string();
         *self.detail.lock().await = detail.to_string();
-        (self.emit)(json!({"type": "mqtt_state", "state": state, "detail": detail}));
+        let client_id = self.current_client_id.lock().await.clone();
+        (self.emit)(
+            json!({"type": "mqtt_state", "state": state, "detail": detail,
+                           "client_id": client_id}),
+        );
     }
 
-    pub async fn connect(&self, host: &str, port: u16, uid: u32,
-                         username: Option<String>, password: Option<String>,
-                         tls: bool, callsign: Option<String>, initial_role: String) {
+    pub async fn connect(
+        &self,
+        host: &str,
+        port: u16,
+        uid: u32,
+        username: Option<String>,
+        password: Option<String>,
+        tls: bool,
+        callsign: Option<String>,
+        initial_role: String,
+    ) {
         let mut tls = tls;
         let port = port;
         let host = host.to_string();
@@ -258,6 +314,9 @@ impl FmoMqttClient {
             tls = true;
         }
         self.disconnect().await;
+        let cs = callsign.unwrap_or_default();
+        let cid = client_id_for(&cs, uid, &self.client_suffix);
+        *self.current_client_id.lock().await = cid.clone();
         // 连接前预检：解析 host 并测试 TCP 连通，失败快速返回明确错误
         {
             let addr_str = format!("{host}:{port}");
@@ -295,26 +354,20 @@ impl FmoMqttClient {
                         let msg = format!(
                             "无法连接 MQTT 服务器 {addr_str}（{first_err}）。请检查服务器地址/端口是否正确"
                         );
+                        self.set_state("error", &msg).await;
                         (self.emit)(json!({"type": "log", "level": "error", "msg": msg}));
-                        (self.emit)(json!({"type": "mqtt_state", "state": "error", "detail": msg}));
-                        *self.state.lock().await = "error".to_string();
-                        *self.detail.lock().await = msg.clone();
                         return;
                     }
                 }
                 Err(e) => {
                     let msg = format!("MQTT 服务器 DNS 解析失败 {addr_str}: {e}");
+                    self.set_state("error", &msg).await;
                     (self.emit)(json!({"type": "log", "level": "error", "msg": msg}));
-                    (self.emit)(json!({"type": "mqtt_state", "state": "error", "detail": msg}));
-                    *self.state.lock().await = "error".to_string();
-                    *self.detail.lock().await = msg.clone();
                     return;
                 }
             }
         }
-        let cs = callsign.unwrap_or_default();
-        let cid = client_id_for(&cs, uid, "0C4D");
-        let mut opts = MqttOptions::new(cid, host.to_string(), port);
+        let mut opts = MqttOptions::new(cid.clone(), host.to_string(), port);
         opts.set_keep_alive(std::time::Duration::from_secs(60));
         if let Some(u) = username {
             opts.set_credentials(u, password.unwrap_or_default());
@@ -323,7 +376,10 @@ impl FmoMqttClient {
             opts.set_transport(rumqttc::Transport::tls_with_default_config());
         }
         let (client, mut eventloop) = AsyncClient::new(opts, 100);
-        let gen = self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let gen = self
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
 
         let emit = self.emit.clone();
         let state = self.state.clone();
@@ -338,18 +394,22 @@ impl FmoMqttClient {
         *self.current_host.lock().await = host.clone();
 
         *self.client.lock().await = Some(client.clone());
-        self.set_state("connecting", &format!("{host}:{port}")).await;
+        self.set_state("connecting", &format!("{host}:{port}"))
+            .await;
 
         tauri::async_runtime::spawn(async move {
             let mut client = client;
-            let subscribe_topics: Vec<SubscribeFilter> =
-                SUBSCRIBE_TOPICS.iter()
-                    .map(|t| SubscribeFilter::new((*t).to_string(), QoS::AtMostOnce))
-                    .collect();
+            let subscribe_topics: Vec<SubscribeFilter> = SUBSCRIBE_TOPICS
+                .iter()
+                .map(|t| SubscribeFilter::new((*t).to_string(), QoS::AtMostOnce))
+                .collect();
             let mut subscribed = false;
             // 初始角色由调用方按「服务器呼号 == 证书呼号 → super，否则 user」选定；
             // 被拒后从该角色起按 ROLE_SEQ 往后重试
-            let mut role_idx = ROLE_SEQ.iter().position(|r| *r == initial_role).unwrap_or(0);
+            let mut role_idx = ROLE_SEQ
+                .iter()
+                .position(|r| *r == initial_role)
+                .unwrap_or(0);
             loop {
                 if generation.load(std::sync::atomic::Ordering::SeqCst) != gen {
                     return;
@@ -372,12 +432,14 @@ impl FmoMqttClient {
                                     (emit)(json!({"type": "log", "level": "warn",
                                         "msg": format!("MQTT 角色 {cur} 被拒（code={code}），换 {next} 重试…")}));
                                     role_idx += 1;
-                                    let mut opts2 = MqttOptions::new(
-                                        client_id_for(&cs, uid, "0C4D"), host.clone(), port);
+                                    let mut opts2 =
+                                        MqttOptions::new(cid.clone(), host.clone(), port);
                                     opts2.set_keep_alive(std::time::Duration::from_secs(60));
                                     opts2.set_credentials(u, p);
                                     if tls {
-                                        opts2.set_transport(rumqttc::Transport::tls_with_default_config());
+                                        opts2.set_transport(
+                                            rumqttc::Transport::tls_with_default_config(),
+                                        );
                                     }
                                     let (new_client, new_eventloop) = AsyncClient::new(opts2, 100);
                                     *client_holder.lock().await = Some(new_client.clone());
@@ -404,20 +466,23 @@ impl FmoMqttClient {
                             *state.lock().await = "error".to_string();
                             *detail.lock().await = msg.clone();
                             (emit)(json!({"type": "log", "level": "error", "msg": msg}));
-                            (emit)(json!({"type": "mqtt_state", "state": "error", "detail": msg}));
+                            (emit)(
+                                json!({"type": "mqtt_state", "state": "error", "detail": msg,
+                                         "client_id": cid}),
+                            );
                             return;
                         }
                         *state.lock().await = "connected".to_string();
                         (emit)(json!({"type": "mqtt_state", "state": "connected",
-                                      "detail": format!("{host}:{port}")}));
+                                      "detail": format!("{host}:{port}"), "client_id": cid}));
                         (emit)(json!({"type": "log", "level": "info",
-                            "msg": format!("MQTT 已连接 {host}:{port}，订阅 {} 个 topic{}",
-                                           SUBSCRIBE_TOPICS.len(),
-                                           if role_idx > 0 {
-                                               format!("（角色 {}）", ROLE_SEQ[role_idx])
-                                           } else {
-                                               String::new()
-                                           })}));
+                        "msg": format!("MQTT 已连接 {host}:{port}，client id={cid}，订阅 {} 个 topic{}",
+                                       SUBSCRIBE_TOPICS.len(),
+                                       if role_idx > 0 {
+                                           format!("（角色 {}）", ROLE_SEQ[role_idx])
+                                       } else {
+                                           String::new()
+                                       })}));
                         if !subscribed {
                             let _ = client.subscribe_many(subscribe_topics.clone()).await;
                             subscribed = true;
@@ -472,7 +537,7 @@ impl FmoMqttClient {
                     Ok(Event::Incoming(Packet::Disconnect)) => {
                         *state.lock().await = "disconnected".to_string();
                         (emit)(json!({"type": "mqtt_state", "state": "disconnected",
-                                      "detail": "对端断开"}));
+                                      "detail": "对端断开", "client_id": cid}));
                     }
                     Ok(Event::Incoming(_)) => {}
                     Ok(Event::Outgoing(_)) => {}
@@ -498,7 +563,10 @@ impl FmoMqttClient {
                         *state.lock().await = "error".to_string();
                         *detail.lock().await = msg.clone();
                         (emit)(json!({"type": "log", "level": "error", "msg": msg}));
-                        (emit)(json!({"type": "mqtt_state", "state": "error", "detail": msg}));
+                        (emit)(
+                            json!({"type": "mqtt_state", "state": "error", "detail": msg,
+                                     "client_id": cid}),
+                        );
                         // 超时/认证失败不做无限重连，避免反复等待；用户可手动重新连接
                         return;
                     }
@@ -508,7 +576,8 @@ impl FmoMqttClient {
     }
 
     pub async fn disconnect(&self) {
-        self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         *self.client.lock().await = None;
         self.set_state("disconnected", "用户断开").await;
     }
@@ -525,17 +594,37 @@ impl FmoMqttClient {
         } else {
             QoS::AtMostOnce
         };
-        client.publish(topic, q, false, payload).await.map_err(|e| e.to_string())
+        client
+            .publish(topic, q, false, payload)
+            .await
+            .map_err(|e| e.to_string())
     }
 
     pub async fn state_str(&self) -> String {
         self.state.lock().await.clone()
+    }
+
+    pub async fn client_id_str(&self) -> String {
+        self.current_client_id.lock().await.clone()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mqtt_client_id_uses_callsign_uid_and_random_suffix_shape() {
+        let suffix = new_client_suffix();
+        assert_eq!(suffix.len(), 4);
+        assert!(suffix
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b)));
+        assert_eq!(
+            client_id_for("bg8lld", 42, &suffix),
+            format!("FMO-BG8LLD-42-{suffix}")
+        );
+    }
 
     #[test]
     fn tele_parse() {

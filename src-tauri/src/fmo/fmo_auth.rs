@@ -37,16 +37,22 @@ pub fn beacon_cert_fingerprint(beacon_cert: &serde_json::Value) -> Vec<u8> {
 }
 
 /// server = {"callsign", "uid", "host", "port", "fingerprint"(bytes)}
-pub fn build_mqtt_password(user_cert: &serde_json::Value,
-                           intermediate_cert: &serde_json::Value,
-                           seed_b64: &str,
-                           server: &serde_json::Value,
-                           role: &str,
-                           timestamp: Option<i64>) -> Result<String, String> {
+pub fn build_mqtt_password(
+    user_cert: &serde_json::Value,
+    intermediate_cert: &serde_json::Value,
+    seed_b64: &str,
+    server: &serde_json::Value,
+    role: &str,
+    timestamp: Option<i64>,
+) -> Result<String, String> {
     let ts = timestamp.unwrap_or_else(protocol::now_ts);
-    let srv_fp = server["fingerprint"].as_array()
+    let srv_fp = server["fingerprint"]
+        .as_array()
         .ok_or("fingerprint 缺失")?
-        .iter().filter_map(|b| b.as_u64()).map(|b| b as u8).collect::<Vec<u8>>();
+        .iter()
+        .filter_map(|b| b.as_u64())
+        .map(|b| b as u8)
+        .collect::<Vec<u8>>();
     let u_fp = cert_fingerprint(user_cert);
 
     let server_uid = server["uid"].as_u64().unwrap_or(0);
@@ -81,7 +87,9 @@ pub fn build_mqtt_password(user_cert: &serde_json::Value,
         "timestamp": ts,
         "proof": {"signature": protocol::b64url_encode(&sig)},
     });
-    Ok(protocol::b64url_encode(&serde_json::to_vec(&payload).map_err(|e| e.to_string())?))
+    Ok(protocol::b64url_encode(
+        &serde_json::to_vec(&payload).map_err(|e| e.to_string())?,
+    ))
 }
 
 const BUILTIN_CERT_ROOT: &str = include_str!("../../builtin_certs/cert_root.json");
@@ -107,8 +115,8 @@ pub fn load_identity(certs_dir: &Path) -> Result<serde_json::Value, String> {
     let intermediate_cert = _load_cert(certs_dir, "cert_int.json")?;
     let dk_text = std::fs::read_to_string(certs_dir.join("cert_devicekey.json"))
         .map_err(|e| format!("cert_devicekey.json: {e}"))?;
-    let dk: serde_json::Value = serde_json::from_str(&dk_text)
-        .map_err(|e| format!("cert_devicekey.json: {e}"))?;
+    let dk: serde_json::Value =
+        serde_json::from_str(&dk_text).map_err(|e| format!("cert_devicekey.json: {e}"))?;
     Ok(serde_json::json!({
         "user_cert": user_cert,
         "intermediate_cert": intermediate_cert,
@@ -117,13 +125,20 @@ pub fn load_identity(certs_dir: &Path) -> Result<serde_json::Value, String> {
 }
 
 /// 一站式：返回 {username, password, role}。
-pub fn mqtt_credentials(certs_dir: &Path, server: &serde_json::Value,
-                        role: &str) -> Result<serde_json::Value, String> {
+pub fn mqtt_credentials(
+    certs_dir: &Path,
+    server: &serde_json::Value,
+    role: &str,
+) -> Result<serde_json::Value, String> {
     let ident = load_identity(certs_dir)?;
     let pw = build_mqtt_password(
-        &ident["user_cert"], &ident["intermediate_cert"],
+        &ident["user_cert"],
+        &ident["intermediate_cert"],
         ident["seed"].as_str().unwrap_or(""),
-        server, role, None)?;
+        server,
+        role,
+        None,
+    )?;
     Ok(serde_json::json!({
         "username": ident["user_cert"]["subject"]["callsign"],
         "password": pw,
@@ -134,8 +149,13 @@ pub fn mqtt_credentials(certs_dir: &Path, server: &serde_json::Value,
 /// 初始角色选择：登录服务器呼号与证书呼号一致（自己的服务器）默认 super，
 /// 否则默认 user；被拒后 MQTT 客户端按 ROLE_SEQ 从该角色起继续往后重试。
 pub fn initial_role(certs_dir: &Path, server: &serde_json::Value) -> String {
-    let cert_cs = load_identity(certs_dir).ok()
-        .and_then(|i| i["user_cert"]["subject"]["callsign"].as_str().map(|s| s.to_uppercase()))
+    let cert_cs = load_identity(certs_dir)
+        .ok()
+        .and_then(|i| {
+            i["user_cert"]["subject"]["callsign"]
+                .as_str()
+                .map(|s| s.to_uppercase())
+        })
         .unwrap_or_default();
     let srv_cs = server["callsign"].as_str().unwrap_or("").to_uppercase();
     if !cert_cs.is_empty() && !srv_cs.is_empty() && cert_cs == srv_cs {
@@ -161,9 +181,10 @@ pub fn validate_identity(certs_dir: &Path) -> Result<(), String> {
     let seed = ident["seed"].as_str().unwrap_or("");
     let cert_pk = user_cert["subject"]["publicKey"].as_str().unwrap_or("");
     if !seed.is_empty() && !cert_pk.is_empty() {
-        if let (Some(derived), Some(in_cert)) =
-            (protocol::pubkey_from_seed(seed), protocol::decode_seed(cert_pk))
-        {
+        if let (Some(derived), Some(in_cert)) = (
+            protocol::pubkey_from_seed(seed),
+            protocol::decode_seed(cert_pk),
+        ) {
             if derived != in_cert {
                 let cs = user_cert["subject"]["callsign"].as_str().unwrap_or("?");
                 return Err(format!(
@@ -183,7 +204,9 @@ pub fn identity_status(certs_dir: &Path) -> Option<Result<String, String>> {
         return None;
     }
     if !certs_dir.join("cert_devicekey.json").is_file() {
-        return Some(Err("缺少 cert_devicekey.json（私钥），MQTT 认证无法签名".into()));
+        return Some(Err(
+            "缺少 cert_devicekey.json（私钥），MQTT 认证无法签名".into()
+        ));
     }
     if let Err(e) = validate_identity(certs_dir) {
         return Some(Err(e));
@@ -262,7 +285,15 @@ mod tests {
                 "alg": 1001, "iat": 1784975543, "exp": 1816511543,
             })).into_iter().map(|b| serde_json::Value::from(b)).collect::<Vec<_>>(),
         });
-        let pw = build_mqtt_password(&user_cert, &int_cert, "taIOylDLfECyOfG7PQFVO54jAGUbtMx7ztyYSQLUHGQ", &server, "user", Some(1786323504)).unwrap();
+        let pw = build_mqtt_password(
+            &user_cert,
+            &int_cert,
+            "taIOylDLfECyOfG7PQFVO54jAGUbtMx7ztyYSQLUHGQ",
+            &server,
+            "user",
+            Some(1786323504),
+        )
+        .unwrap();
         // password 应为 base64url JSON
         // password 应为 base64url JSON
         let decoded = protocol::b64url_decode(&pw).unwrap();

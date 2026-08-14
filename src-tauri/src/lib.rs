@@ -373,6 +373,7 @@ async fn fmo_state_snapshot(
         "clients": fmo.server_table.client_list().await,
         "mqttState": fmo.mqtt_client.state_str().await,
         "mqttDetail": fmo.mqtt_client.detail.lock().await.clone(),
+        "mqttClientId": fmo.mqtt_client.client_id_str().await,
         "aprsState": fmo.aprs_client.state.lock().await.clone(),
         "aprsDetail": fmo.aprs_client.detail.lock().await.clone(),
         "selectedServer": fmo.selected_server.lock().await.clone(),
@@ -469,9 +470,7 @@ async fn fmo_aprs_connect(
 }
 
 #[tauri::command]
-async fn fmo_aprs_disconnect(
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<(), String> {
+async fn fmo_aprs_disconnect(state: tauri::State<'_, RuntimeState>) -> Result<(), String> {
     let Some(fmo) = state.fmo_state().await else {
         return Err("FMO 未初始化".into());
     };
@@ -505,9 +504,7 @@ async fn fmo_mqtt_connect(
 }
 
 #[tauri::command]
-async fn fmo_mqtt_disconnect(
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<(), String> {
+async fn fmo_mqtt_disconnect(state: tauri::State<'_, RuntimeState>) -> Result<(), String> {
     let Some(fmo) = state.fmo_state().await else {
         return Err("FMO 未初始化".into());
     };
@@ -539,10 +536,7 @@ async fn fmo_favorites_remove(
 }
 
 #[tauri::command]
-async fn fmo_rx_play(
-    state: tauri::State<'_, RuntimeState>,
-    enabled: bool,
-) -> Result<(), String> {
+async fn fmo_rx_play(state: tauri::State<'_, RuntimeState>, enabled: bool) -> Result<(), String> {
     let Some(fmo) = state.fmo_state().await else {
         return Err("FMO 未初始化".into());
     };
@@ -551,10 +545,7 @@ async fn fmo_rx_play(
 }
 
 #[tauri::command]
-async fn fmo_rx_loop(
-    state: tauri::State<'_, RuntimeState>,
-    enabled: bool,
-) -> Result<(), String> {
+async fn fmo_rx_loop(state: tauri::State<'_, RuntimeState>, enabled: bool) -> Result<(), String> {
     let Some(fmo) = state.fmo_state().await else {
         return Err("FMO 未初始化".into());
     };
@@ -587,10 +578,7 @@ async fn fmo_qso_call(
 }
 
 #[tauri::command]
-async fn fmo_qso_answer(
-    state: tauri::State<'_, RuntimeState>,
-    accept: bool,
-) -> Result<(), String> {
+async fn fmo_qso_answer(state: tauri::State<'_, RuntimeState>, accept: bool) -> Result<(), String> {
     let Some(fmo) = state.fmo_state().await else {
         return Err("FMO 未初始化".into());
     };
@@ -606,9 +594,7 @@ async fn fmo_qso_cancel(state: tauri::State<'_, RuntimeState>) -> Result<(), Str
 }
 
 #[tauri::command]
-async fn fmo_qso_state(
-    state: tauri::State<'_, RuntimeState>,
-) -> Result<serde_json::Value, String> {
+async fn fmo_qso_state(state: tauri::State<'_, RuntimeState>) -> Result<serde_json::Value, String> {
     let Some(fmo) = state.fmo_state().await else {
         return Err("FMO 未初始化".into());
     };

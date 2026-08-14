@@ -271,13 +271,21 @@ impl RuntimeState {
         // 事件桥接：FMO log/mqtt/aprs 事件 → runtime timeline/snapshot
         let runtime = self.clone();
         let bridge: Arc<dyn Fn(serde_json::Value) + Send + Sync> = Arc::new(move |ev| {
-            let ty = ev.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let ty = ev
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
             let runtime = runtime.clone();
             tauri::async_runtime::spawn(async move {
                 match ty.as_str() {
                     "log" => {
                         let level = ev.get("level").and_then(|l| l.as_str()).unwrap_or("info");
-                        let msg = ev.get("msg").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                        let msg = ev
+                            .get("msg")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         let tone = match level {
                             "error" => "warn",
                             "warn" => "warn",
@@ -286,13 +294,27 @@ impl RuntimeState {
                         runtime.push_runtime_event("FMO 事件", &msg, tone).await;
                     }
                     "mqtt_state" => {
-                        let state = ev.get("state").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                        let detail = ev.get("detail").and_then(|d| d.as_str()).unwrap_or("").to_string();
+                        let state = ev
+                            .get("state")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let detail = ev
+                            .get("detail")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         runtime.apply_fmo_mqtt_state(&state, &detail).await;
                     }
                     "aprs_state" => {
-                        let detail = ev.get("detail").and_then(|d| d.as_str()).unwrap_or("").to_string();
-                        runtime.push_runtime_event("FMO APRS", &detail, "info").await;
+                        let detail = ev
+                            .get("detail")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        runtime
+                            .push_runtime_event("FMO APRS", &detail, "info")
+                            .await;
                     }
                     _ => {}
                 }
@@ -925,8 +947,10 @@ impl RuntimeState {
         spectrum: &[f32],
         pcm_data: &[i16],
     ) {
-        self.note_voice_frame_impl(callsign, ssid, samples, level, spectrum, pcm_data, true, "nrl")
-            .await
+        self.note_voice_frame_impl(
+            callsign, ssid, samples, level, spectrum, pcm_data, true, "nrl",
+        )
+        .await
     }
 
     /// FMO 专用：录音与会话逻辑与 NRL 一致，但不更新共享显示字段
@@ -939,8 +963,10 @@ impl RuntimeState {
         spectrum: &[f32],
         pcm_data: &[i16],
     ) {
-        self.note_voice_frame_impl(callsign, 0, samples, level, spectrum, pcm_data, false, "fmo")
-            .await
+        self.note_voice_frame_impl(
+            callsign, 0, samples, level, spectrum, pcm_data, false, "fmo",
+        )
+        .await
     }
 
     async fn note_voice_frame_impl(

@@ -194,8 +194,8 @@ impl BroadcastEngine {
         // 设备私钥 seed（cert_devicekey.json），用于 SIG 签名
         let dk_text = std::fs::read_to_string(certs.join("cert_devicekey.json"))
             .map_err(|e| format!("读取 cert_devicekey.json 失败：{e}"))?;
-        let dk: serde_json::Value =
-            serde_json::from_str(&dk_text).map_err(|e| format!("cert_devicekey.json 解析失败：{e}"))?;
+        let dk: serde_json::Value = serde_json::from_str(&dk_text)
+            .map_err(|e| format!("cert_devicekey.json 解析失败：{e}"))?;
         let seed = dk["seed"].as_str().unwrap_or("").to_string();
         if seed.is_empty() {
             return Err("cert_devicekey.json 缺少 seed".into());
@@ -222,9 +222,19 @@ impl BroadcastEngine {
         let ts_slot = (now() / 600) as u64;
         // 呼号无 SSID（证书呼号），ssid=0
         let tbs = build_station_tbs(
-            &callsign, 0, &lat_str, &lon_str, &cert_hash,
-            &cfg.country, &cfg.name, &cfg.host,
-            cfg.port, cfg.cover_km, cfg.online, cfg.peak, ts_slot,
+            &callsign,
+            0,
+            &lat_str,
+            &lon_str,
+            &cert_hash,
+            &cfg.country,
+            &cfg.name,
+            &cfg.host,
+            cfg.port,
+            cfg.cover_km,
+            cfg.online,
+            cfg.peak,
+            ts_slot,
         );
         let sig = protocol::sign(&seed, &tbs)?;
         let mut line = format!(
@@ -259,7 +269,10 @@ impl BroadcastEngine {
             let last = *self.last_sent.lock().await;
             if t - last < MIN_INTERVAL_S {
                 if manual {
-                    return Err(format!("距上次广播不足 {}s，稍后再试", MIN_INTERVAL_S - (t - last)));
+                    return Err(format!(
+                        "距上次广播不足 {}s，稍后再试",
+                        MIN_INTERVAL_S - (t - last)
+                    ));
                 }
                 return Ok(());
             }
@@ -293,8 +306,7 @@ impl BroadcastEngine {
                 let (mode_min, due) = {
                     let cfg = this.cfg.lock().await;
                     let last = *this.last_sent.lock().await;
-                    let due = cfg.mode_min > 0
-                        && now() - last >= (cfg.mode_min as i64) * 60;
+                    let due = cfg.mode_min > 0 && now() - last >= (cfg.mode_min as i64) * 60;
                     (cfg.mode_min, due)
                 };
                 if mode_min > 0 && due {
@@ -327,8 +339,19 @@ mod tests {
         // 实网实锤布局（30/30 台 STATION 验签通过）：
         // ["FMO",4,"STATION",呼号大写,ssid,latStr,lonStr,sha256(certBlob),国家,名(UTF-8),host,port,km,在线,峰值,ts/600]
         let tbs = build_station_tbs(
-            "BD4XGT", 0, "3952.80N", "11931.57E", &[7u8; 32], "CN", "测试台",
-            "fmo.example.com", 1883, 100, 3, 9, 2987654,
+            "BD4XGT",
+            0,
+            "3952.80N",
+            "11931.57E",
+            &[7u8; 32],
+            "CN",
+            "测试台",
+            "fmo.example.com",
+            1883,
+            100,
+            3,
+            9,
+            2987654,
         );
         let Some(protocol::CborValue::Array(arr)) = protocol::cbor_decode(&tbs) else {
             panic!("TBS 应为 CBOR 数组");

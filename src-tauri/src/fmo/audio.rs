@@ -36,7 +36,10 @@ impl OpusCodec {
     /// 编码 40ms PCM（8kHz 320 样本）→ Opus 包（SILK NB）。
     pub fn encode_frame(&mut self, pcm: &[i16]) -> Result<Vec<u8>, String> {
         let mut out = [0u8; 1500];
-        let n = self.encoder.encode(pcm, &mut out).map_err(|e| e.to_string())?;
+        let n = self
+            .encoder
+            .encode(pcm, &mut out)
+            .map_err(|e| e.to_string())?;
         Ok(out[..n].to_vec())
     }
 }
@@ -129,7 +132,11 @@ impl TxSession {
         let ts1 = (chrono::Utc::now().timestamp_millis() & 0xFFFFFFFF) as u32;
         Ok(Self {
             callsign: callsign.to_string(),
-            mode: if mode == "adpcm" { "adpcm".into() } else { "opus".into() },
+            mode: if mode == "adpcm" {
+                "adpcm".into()
+            } else {
+                "opus".into()
+            },
             session,
             ts1,
             packets_sent: Arc::new(std::sync::Mutex::new(0)),
@@ -161,11 +168,23 @@ impl TxSession {
             (ts2, buf_depth)
         };
         let frame = if self.mode == "adpcm" {
-            fmo_frame::build_frame_adpcm(&self.callsign, self.session, self.ts1, ts2 as u32,
-                                         &packets, buf_depth)
+            fmo_frame::build_frame_adpcm(
+                &self.callsign,
+                self.session,
+                self.ts1,
+                ts2 as u32,
+                &packets,
+                buf_depth,
+            )
         } else {
-            fmo_frame::build_frame(&self.callsign, self.session, self.ts1, ts2 as u32,
-                                   &packets, buf_depth)
+            fmo_frame::build_frame(
+                &self.callsign,
+                self.session,
+                self.ts1,
+                ts2 as u32,
+                &packets,
+                buf_depth,
+            )
         };
         let _ = self.mqtt.publish("FMO/RAW", frame, 0).await;
         if let Some(counter) = &self.total_tx_counter {
@@ -208,8 +227,7 @@ impl TxSession {
 
     fn encode_block(&self, pcm640: &[i16]) {
         let (vp, idx) = *self.adpcm_state.lock().unwrap();
-        let (payload, vp2, idx2) = ima_adpcm::encode_block(
-            &to_bytes(pcm640), vp, idx);
+        let (payload, vp2, idx2) = ima_adpcm::encode_block(&to_bytes(pcm640), vp, idx);
         *self.adpcm_state.lock().unwrap() = (vp2, idx2);
         let mut seq = self.adpcm_seq.lock().unwrap();
         let mut hdr = vec![*seq & 0xFF, ADPCM_PARAM];

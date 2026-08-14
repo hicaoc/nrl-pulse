@@ -158,8 +158,7 @@ impl QsoEngine {
     /// `:TO<补齐9>:<载荷>{<seq>` 的 APFMO0 消息行（载荷可含 GBK 字节）
     fn build_message(&self, to: &str, payload: Vec<u8>, seq: u32) -> Vec<u8> {
         let (my_call, _) = self.identity();
-        let mut line = format!("{my_call}>APFMO0,TCPIP*::{:<9.9}", to.to_uppercase())
-            .into_bytes();
+        let mut line = format!("{my_call}>APFMO0,TCPIP*::{:<9.9}", to.to_uppercase()).into_bytes();
         line.push(b':');
         line.extend_from_slice(&payload);
         line.push(b'{');
@@ -188,7 +187,12 @@ impl QsoEngine {
             QsoPhase::OutQuery { peer, peer_uid, .. } => {
                 ("querying", peer.clone(), *peer_uid, true)
             }
-            QsoPhase::OutCall { peer, peer_uid, stage, .. } => (
+            QsoPhase::OutCall {
+                peer,
+                peer_uid,
+                stage,
+                ..
+            } => (
                 match stage {
                     OutStage::WaitRing => "calling",
                     OutStage::WaitAccept => "ringing",
@@ -198,9 +202,12 @@ impl QsoEngine {
                 true,
             ),
             QsoPhase::InRing { peer, peer_uid, .. } => ("incoming", peer.clone(), *peer_uid, false),
-            QsoPhase::Established { peer, peer_uid, outgoing, .. } => {
-                ("established", peer.clone(), *peer_uid, *outgoing)
-            }
+            QsoPhase::Established {
+                peer,
+                peer_uid,
+                outgoing,
+                ..
+            } => ("established", peer.clone(), *peer_uid, *outgoing),
         };
         *self.phase.lock().await = phase;
         (self.emit)(json!({
@@ -213,8 +220,15 @@ impl QsoEngine {
         let phase = self.phase.lock().await.clone();
         let (name, peer, peer_uid, outgoing) = match &phase {
             QsoPhase::Idle => ("idle", String::new(), 0u32, false),
-            QsoPhase::OutQuery { peer, peer_uid, .. } => ("querying", peer.clone(), *peer_uid, true),
-            QsoPhase::OutCall { peer, peer_uid, stage, .. } => (
+            QsoPhase::OutQuery { peer, peer_uid, .. } => {
+                ("querying", peer.clone(), *peer_uid, true)
+            }
+            QsoPhase::OutCall {
+                peer,
+                peer_uid,
+                stage,
+                ..
+            } => (
                 match stage {
                     OutStage::WaitRing => "calling",
                     OutStage::WaitAccept => "ringing",
@@ -224,9 +238,12 @@ impl QsoEngine {
                 true,
             ),
             QsoPhase::InRing { peer, peer_uid, .. } => ("incoming", peer.clone(), *peer_uid, false),
-            QsoPhase::Established { peer, peer_uid, outgoing, .. } => {
-                ("established", peer.clone(), *peer_uid, *outgoing)
-            }
+            QsoPhase::Established {
+                peer,
+                peer_uid,
+                outgoing,
+                ..
+            } => ("established", peer.clone(), *peer_uid, *outgoing),
         };
         json!({
             "phase": name, "peer": peer, "peerUid": peer_uid,
@@ -322,14 +339,20 @@ impl QsoEngine {
             self.send_to(&peer, b"CALLANS,ACCEPT".to_vec()).await?;
             self.record("in", &peer, peer_uid, "已接听");
             self.set_phase(
-                QsoPhase::Established { peer: peer.clone(), peer_uid, since: now(), outgoing: false },
+                QsoPhase::Established {
+                    peer: peer.clone(),
+                    peer_uid,
+                    since: now(),
+                    outgoing: false,
+                },
                 &format!("与 {peer} 的 QSO 已建立"),
             )
             .await;
         } else {
             self.send_to(&peer, b"CALLANS,REJECT".to_vec()).await?;
             self.record("in", &peer, peer_uid, "已拒绝");
-            self.set_phase(QsoPhase::Idle, &format!("已拒绝 {peer} 的呼叫")).await;
+            self.set_phase(QsoPhase::Idle, &format!("已拒绝 {peer} 的呼叫"))
+                .await;
         }
         Ok(())
     }
@@ -341,20 +364,36 @@ impl QsoEngine {
             QsoPhase::OutQuery { peer, peer_uid, .. }
             | QsoPhase::OutCall { peer, peer_uid, .. } => {
                 let (_, my_uid) = self.identity();
-                self.send_to(&peer, format!("CALLCANCEL,Q{my_uid},U{peer_uid}").into_bytes())
-                    .await
-                    .ok();
+                self.send_to(
+                    &peer,
+                    format!("CALLCANCEL,Q{my_uid},U{peer_uid}").into_bytes(),
+                )
+                .await
+                .ok();
                 self.record("out", &peer, peer_uid, "已取消");
-                self.set_phase(QsoPhase::Idle, &format!("已取消对 {peer} 的呼叫")).await;
+                self.set_phase(QsoPhase::Idle, &format!("已取消对 {peer} 的呼叫"))
+                    .await;
             }
-            QsoPhase::Established { peer, peer_uid, outgoing, .. } => {
-                self.record(if outgoing { "out" } else { "in" }, &peer, peer_uid, "已结束");
-                self.set_phase(QsoPhase::Idle, &format!("与 {peer} 的 QSO 已结束")).await;
+            QsoPhase::Established {
+                peer,
+                peer_uid,
+                outgoing,
+                ..
+            } => {
+                self.record(
+                    if outgoing { "out" } else { "in" },
+                    &peer,
+                    peer_uid,
+                    "已结束",
+                );
+                self.set_phase(QsoPhase::Idle, &format!("与 {peer} 的 QSO 已结束"))
+                    .await;
             }
             QsoPhase::InRing { peer, peer_uid, .. } => {
                 self.send_to(&peer, b"CALLANS,REJECT".to_vec()).await.ok();
                 self.record("in", &peer, peer_uid, "已拒绝");
-                self.set_phase(QsoPhase::Idle, &format!("已拒绝 {peer} 的呼叫")).await;
+                self.set_phase(QsoPhase::Idle, &format!("已拒绝 {peer} 的呼叫"))
+                    .await;
             }
             QsoPhase::Idle => {}
         }
@@ -370,7 +409,10 @@ impl QsoEngine {
         // 去重：主全馈与上行连接会投递同一条信令（q 构造可能不同，用 来源|目标|动词|msgId 作键）
         let dedup_key = format!(
             "{}|{}|{}|{}",
-            parsed.get("callsign").and_then(|c| c.as_str()).unwrap_or(""),
+            parsed
+                .get("callsign")
+                .and_then(|c| c.as_str())
+                .unwrap_or(""),
             parsed.get("to").and_then(|t| t.as_str()).unwrap_or(""),
             parsed.get("verb").and_then(|v| v.as_str()).unwrap_or(""),
             parsed.get("msg_id").and_then(|m| m.as_str()).unwrap_or(""),
@@ -391,12 +433,24 @@ impl QsoEngine {
         if base_call(to) != my_base {
             return;
         }
-        let from = parsed.get("callsign").and_then(|c| c.as_str()).unwrap_or("").to_string();
-        let verb = parsed.get("verb").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let from = parsed
+            .get("callsign")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
+        let verb = parsed
+            .get("verb")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let fields: Vec<String> = parsed
             .get("fields")
             .and_then(|f| f.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
             .unwrap_or_default();
         match verb.as_str() {
             "QTHQRY" => self.on_qthqry(&from, &fields, my_uid).await,
@@ -416,9 +470,18 @@ impl QsoEngine {
             // Q/U/S 标记：首字节 ASCII 字母 + 其余全数字（首字节非 ASCII 的名称不能按字节切，防 panic）
             let matched = if b.len() >= 2 && b[1..].iter().all(|c| c.is_ascii_digit()) {
                 match b[0] {
-                    b'Q' => { q = f[1..].parse().ok(); true }
-                    b'U' => { u = f[1..].parse().ok(); true }
-                    b'S' => { s = f[1..].parse().ok(); true }
+                    b'Q' => {
+                        q = f[1..].parse().ok();
+                        true
+                    }
+                    b'U' => {
+                        u = f[1..].parse().ok();
+                        true
+                    }
+                    b'S' => {
+                        s = f[1..].parse().ok();
+                        true
+                    }
                     _ => false,
                 }
             } else {
@@ -443,7 +506,10 @@ impl QsoEngine {
         let sel = self.selected_server.lock().await.clone();
         let srv_uid = sel.get("uid").and_then(|u| u.as_u64()).unwrap_or(0) as u32;
         if srv_uid == 0 {
-            self.log("warn".into(), format!("收到 {from} 的 QTHQRY，但本机未选定服务器，未应答"));
+            self.log(
+                "warn".into(),
+                format!("收到 {from} 的 QTHQRY，但本机未选定服务器，未应答"),
+            );
             return;
         }
         let srv_name = sel
@@ -458,7 +524,10 @@ impl QsoEngine {
             self.log("warn".into(), format!("应答 {from} 的 QTHQRY 失败：{e}"));
             return;
         }
-        self.log("info".into(), format!("已应答 {from} 的服务器查询（S{srv_uid} {srv_name}）"));
+        self.log(
+            "info".into(),
+            format!("已应答 {from} 的服务器查询（S{srv_uid} {srv_name}）"),
+        );
     }
 
     /// 收到 QTHANS（我是主叫）：跳到对方服务器并发 CALL
@@ -475,7 +544,10 @@ impl QsoEngine {
             self.log("warn".into(), format!("{from} 的 QTHANS 缺少服务器编号"));
             return;
         };
-        self.log("info".into(), format!("{from} 在服务器 S{srv_uid}（{srv_name}），跳台并呼叫…"));
+        self.log(
+            "info".into(),
+            format!("{from} 在服务器 S{srv_uid}（{srv_name}），跳台并呼叫…"),
+        );
         // 主叫跳到被叫服务器（固件："Remote Has Jumped to Your Server"）
         if let Some(hook) = self.jump_hook.lock().unwrap().clone() {
             hook(srv_uid);
@@ -484,7 +556,8 @@ impl QsoEngine {
         let mut payload = format!("CALL,Q{my_uid},U{peer_uid},S{srv_uid},").into_bytes();
         payload.extend_from_slice(&gbk_bytes(&srv_name));
         if let Err(e) = self.send_to(&peer, payload).await {
-            self.set_phase(QsoPhase::Idle, &format!("发送 CALL 失败：{e}")).await;
+            self.set_phase(QsoPhase::Idle, &format!("发送 CALL 失败：{e}"))
+                .await;
             return;
         }
         self.set_phase(
@@ -519,7 +592,12 @@ impl QsoEngine {
             }
             self.record("in", from, peer_uid, "已接听（自动）");
             self.set_phase(
-                QsoPhase::Established { peer: from.to_string(), peer_uid, since: now(), outgoing: false },
+                QsoPhase::Established {
+                    peer: from.to_string(),
+                    peer_uid,
+                    since: now(),
+                    outgoing: false,
+                },
                 &format!("已自动接受 {from} 的呼叫"),
             )
             .await;
@@ -540,7 +618,15 @@ impl QsoEngine {
     /// 收到 CALLANS（我是主叫）
     async fn on_callans(&self, from: &str, fields: &[String]) {
         let phase = self.phase.lock().await.clone();
-        let QsoPhase::OutCall { peer, peer_uid, srv_uid, srv_name, stage, .. } = phase else {
+        let QsoPhase::OutCall {
+            peer,
+            peer_uid,
+            srv_uid,
+            srv_name,
+            stage,
+            ..
+        } = phase
+        else {
             return;
         };
         if base_call(from) != base_call(&peer) {
@@ -567,7 +653,12 @@ impl QsoEngine {
             "ACCEPT" => {
                 self.record("out", &peer, peer_uid, "接通");
                 self.set_phase(
-                    QsoPhase::Established { peer: peer.clone(), peer_uid, since: now(), outgoing: true },
+                    QsoPhase::Established {
+                        peer: peer.clone(),
+                        peer_uid,
+                        since: now(),
+                        outgoing: true,
+                    },
                     &format!("{peer} 已接听，QSO 建立"),
                 )
                 .await;
@@ -583,7 +674,8 @@ impl QsoEngine {
                     _ => "对方未应答",
                 };
                 self.record("out", &peer, peer_uid, text);
-                self.set_phase(QsoPhase::Idle, &format!("呼叫 {peer} 失败：{text}")).await;
+                self.set_phase(QsoPhase::Idle, &format!("呼叫 {peer} 失败：{text}"))
+                    .await;
             }
         }
     }
@@ -594,13 +686,23 @@ impl QsoEngine {
         match phase {
             QsoPhase::InRing { peer, peer_uid, .. } if base_call(&peer) == base_call(from) => {
                 self.record("in", &peer, peer_uid, "对方取消");
-                self.set_phase(QsoPhase::Idle, &format!("{peer} 取消了呼叫")).await;
+                self.set_phase(QsoPhase::Idle, &format!("{peer} 取消了呼叫"))
+                    .await;
             }
-            QsoPhase::Established { peer, peer_uid, outgoing, .. }
-                if base_call(&peer) == base_call(from) =>
-            {
-                self.record(if outgoing { "out" } else { "in" }, &peer, peer_uid, "对方结束");
-                self.set_phase(QsoPhase::Idle, &format!("{peer} 结束了 QSO")).await;
+            QsoPhase::Established {
+                peer,
+                peer_uid,
+                outgoing,
+                ..
+            } if base_call(&peer) == base_call(from) => {
+                self.record(
+                    if outgoing { "out" } else { "in" },
+                    &peer,
+                    peer_uid,
+                    "对方结束",
+                );
+                self.set_phase(QsoPhase::Idle, &format!("{peer} 结束了 QSO"))
+                    .await;
             }
             _ => {}
         }
@@ -612,10 +714,17 @@ impl QsoEngine {
         let phase = self.phase.lock().await.clone();
         let t = now();
         match phase {
-            QsoPhase::OutQuery { peer, peer_uid, last_sent, deadline, .. } => {
+            QsoPhase::OutQuery {
+                peer,
+                peer_uid,
+                last_sent,
+                deadline,
+                ..
+            } => {
                 if t >= deadline {
                     self.record("out", &peer, peer_uid, "查询无应答");
-                    self.set_phase(QsoPhase::Idle, &format!("{peer} 未应答服务器查询")).await;
+                    self.set_phase(QsoPhase::Idle, &format!("{peer} 未应答服务器查询"))
+                        .await;
                 } else if t - last_sent >= QUERY_RETRY_S {
                     // 重发 QTHQRY（msgId 递增，与原厂固件一致）
                     let (_, my_uid) = self.identity();
@@ -624,26 +733,41 @@ impl QsoEngine {
                         .await
                         .is_ok()
                     {
-                        if let QsoPhase::OutQuery { last_sent: ls, .. } = &mut *self.phase.lock().await {
+                        if let QsoPhase::OutQuery { last_sent: ls, .. } =
+                            &mut *self.phase.lock().await
+                        {
                             *ls = t;
                         }
                     }
                 }
             }
-            QsoPhase::OutCall { peer, peer_uid, stage, deadline, .. } => {
+            QsoPhase::OutCall {
+                peer,
+                peer_uid,
+                stage,
+                deadline,
+                ..
+            } => {
                 if t >= deadline {
                     let text = match stage {
                         OutStage::WaitRing => "对方无应答",
                         OutStage::WaitAccept => "对方未接听（超时）",
                     };
                     self.record("out", &peer, peer_uid, text);
-                    self.set_phase(QsoPhase::Idle, &format!("呼叫 {peer} 失败：{text}")).await;
+                    self.set_phase(QsoPhase::Idle, &format!("呼叫 {peer} 失败：{text}"))
+                        .await;
                 }
             }
-            QsoPhase::InRing { peer, peer_uid, deadline, .. } => {
+            QsoPhase::InRing {
+                peer,
+                peer_uid,
+                deadline,
+                ..
+            } => {
                 if t >= deadline {
                     self.record("in", &peer, peer_uid, "未接来电");
-                    self.set_phase(QsoPhase::Idle, &format!("未接来电：{peer}")).await;
+                    self.set_phase(QsoPhase::Idle, &format!("未接来电：{peer}"))
+                        .await;
                 }
             }
             _ => {}

@@ -19,13 +19,28 @@ pub type EmitFn = Arc<dyn Fn(serde_json::Value) + Send + Sync>;
 /// 信令消息回调（kind = message/ack 的解析结果），由 QSO 引擎安装
 pub type MsgCallback = Arc<std::sync::Mutex<Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>>>;
 
-const V4_SUBTYPES: &[&[u8]] = &[b"STATION", b"ONLINE", b"BEACON", b"VOCAL", b"EVENT", b"JOINT"];
+const V4_SUBTYPES: &[&[u8]] = &[
+    b"STATION", b"ONLINE", b"BEACON", b"VOCAL", b"EVENT", b"JOINT",
+];
 const LEGACY_SUBTYPES: &[&[u8]] = &[b"OMCQ", b"VOCAL", b"ONLINE", b"BEACON"];
 const FMO_MARKERS: &[&[u8]] = &[b"FMO-V4", b"FMO-CLIENT", b"FMO-STATION"];
 const SIGNAL_VERBS: &[&[u8]] = &[
-    b"QTHQRY", b"QTHANS", b"CALL", b"CALLANS", b"CALLCANCEL",
-    b"ACCEPT", b"REJECT", b"BUSY", b"DND", b"TIMEOUT", b"RING",
-    b"NOTFRIEND", b"NOSERVER", b"CONTROL", b"NORMAL", b"STANDBY",
+    b"QTHQRY",
+    b"QTHANS",
+    b"CALL",
+    b"CALLANS",
+    b"CALLCANCEL",
+    b"ACCEPT",
+    b"REJECT",
+    b"BUSY",
+    b"DND",
+    b"TIMEOUT",
+    b"RING",
+    b"NOTFRIEND",
+    b"NOSERVER",
+    b"CONTROL",
+    b"NORMAL",
+    b"STANDBY",
     b"REBOOT",
 ];
 
@@ -39,10 +54,8 @@ fn gbk_decode(b: &[u8]) -> String {
 
 fn is_host(s: &[u8]) -> bool {
     let s = String::from_utf8_lossy(s);
-    let host_re = regex::Regex::new(
-        r"^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$|^\d{1,3}(?:\.\d{1,3}){3}$",
-    )
-    .unwrap();
+    let host_re =
+        regex::Regex::new(r"^(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}$|^\d{1,3}(?:\.\d{1,3}){3}$").unwrap();
     host_re.is_match(&s)
 }
 
@@ -51,10 +64,8 @@ fn is_country(s: &[u8]) -> bool {
 }
 
 fn parse_position_comment(body: &[u8]) -> (serde_json::Value, usize) {
-    let re = regex::Regex::new(
-        r"^[=!](\d{2})(\d{2}\.\d+)([NS]).(\d{3})(\d{2}\.\d+)([EW]).",
-    )
-    .unwrap();
+    let re =
+        regex::Regex::new(r"^[=!](\d{2})(\d{2}\.\d+)([NS]).(\d{3})(\d{2}\.\d+)([EW]).").unwrap();
     let text = String::from_utf8_lossy(body);
     let mut pos = serde_json::Map::new();
     let mut comment_start = 0usize;
@@ -68,8 +79,13 @@ fn parse_position_comment(body: &[u8]) -> (serde_json::Value, usize) {
     (serde_json::Value::Object(pos), comment_start)
 }
 
-fn parse_v4(callsign: &str, dest: &str, comment: &[u8], raw: &[u8],
-            pos: &serde_json::Value) -> serde_json::Value {
+fn parse_v4(
+    callsign: &str,
+    dest: &str,
+    comment: &[u8],
+    raw: &[u8],
+    pos: &serde_json::Value,
+) -> serde_json::Value {
     let mut out = json!({
         "kind": "broadcast", "version": "FMO-V4",
         "callsign": callsign, "dest": dest,
@@ -80,7 +96,11 @@ fn parse_v4(callsign: &str, dest: &str, comment: &[u8], raw: &[u8],
             out[k] = v.clone();
         }
     }
-    let after_prefix = comment.iter().position(|&b| b == b',').unwrap_or(comment.len()) + 1;
+    let after_prefix = comment
+        .iter()
+        .position(|&b| b == b',')
+        .unwrap_or(comment.len())
+        + 1;
     let rest = &comment[after_prefix.min(comment.len())..];
     let tokens: Vec<&[u8]> = rest.split(|&b| b == b',').collect();
     let mut tokens_iter = tokens.iter();
@@ -124,8 +144,11 @@ fn parse_v4(callsign: &str, dest: &str, comment: &[u8], raw: &[u8],
                     out["port"] = json!(v);
                 }
             }
-        } else if t.len() > 3 && t[0] == b'F' && t.ends_with(b"KM")
-            && t[1..t.len() - 2].iter().all(|b| b.is_ascii_digit()) {
+        } else if t.len() > 3
+            && t[0] == b'F'
+            && t.ends_with(b"KM")
+            && t[1..t.len() - 2].iter().all(|b| b.is_ascii_digit())
+        {
             if let Ok(v) = String::from_utf8_lossy(&t[1..t.len() - 2]).parse::<i64>() {
                 out["cover_km"] = json!(v);
             }
@@ -134,8 +157,10 @@ fn parse_v4(callsign: &str, dest: &str, comment: &[u8], raw: &[u8],
             if let Some(slash) = inner.iter().position(|&b| b == b'/') {
                 let a = &inner[..slash];
                 let b = &inner[slash + 1..];
-                if let (Ok(online), Ok(total)) = (String::from_utf8_lossy(a).parse::<i64>(),
-                                                 String::from_utf8_lossy(b).parse::<i64>()) {
+                if let (Ok(online), Ok(total)) = (
+                    String::from_utf8_lossy(a).parse::<i64>(),
+                    String::from_utf8_lossy(b).parse::<i64>(),
+                ) {
                     out["online"] = json!(online);
                     out["total"] = json!(total);
                 }
@@ -172,8 +197,14 @@ fn parse_v4(callsign: &str, dest: &str, comment: &[u8], raw: &[u8],
     out
 }
 
-fn parse_legacy(callsign: &str, dest: &str, marker: &[u8], comment: &[u8],
-                raw: &[u8], pos: &serde_json::Value) -> serde_json::Value {
+fn parse_legacy(
+    callsign: &str,
+    dest: &str,
+    marker: &[u8],
+    comment: &[u8],
+    raw: &[u8],
+    pos: &serde_json::Value,
+) -> serde_json::Value {
     let mut out = json!({
         "kind": "broadcast", "version": "legacy",
         "callsign": callsign, "dest": dest,
@@ -185,7 +216,11 @@ fn parse_legacy(callsign: &str, dest: &str, marker: &[u8], comment: &[u8],
             out[k] = v.clone();
         }
     }
-    let after_prefix = comment.iter().position(|&b| b == b',').unwrap_or(comment.len()) + 1;
+    let after_prefix = comment
+        .iter()
+        .position(|&b| b == b',')
+        .unwrap_or(comment.len())
+        + 1;
     let rest = &comment[after_prefix.min(comment.len())..];
     for tok in rest.split(|&b| b == b',') {
         if LEGACY_SUBTYPES.contains(&tok) {
@@ -288,7 +323,9 @@ fn parse_message(callsign: &str, dest: &str, body: &[u8], raw: &[u8]) -> Option<
 
 /// 解析一行 APRS 文本，是 FMO 相关报文则返回 dict。
 pub fn parse_fmo_line(line: &[u8]) -> Option<serde_json::Value> {
-    let data = line.iter().copied()
+    let data = line
+        .iter()
+        .copied()
         .take_while(|b| *b != b'\n')
         .filter(|b| *b != b'\r')
         .collect::<Vec<u8>>();
@@ -298,7 +335,10 @@ pub fn parse_fmo_line(line: &[u8]) -> Option<serde_json::Value> {
     let gt = data.iter().position(|&b| b == b'>')?;
     let colon = data.iter().position(|&b| b == b':')?;
     let callsign = String::from_utf8_lossy(&data[..gt]).into_owned();
-    let dest_end = data[gt + 1..].iter().position(|&b| b == b',').map(|i| gt + 1 + i)
+    let dest_end = data[gt + 1..]
+        .iter()
+        .position(|&b| b == b',')
+        .map(|i| gt + 1 + i)
         .unwrap_or(colon);
     let dest = String::from_utf8_lossy(&data[gt + 1..dest_end]).into_owned();
     let body = &data[colon + 1..];
@@ -398,7 +438,11 @@ impl ServerTable {
                     for s in list {
                         // 旧格式 key = "host|callsign"，迁移为 "host:port"；跳过 host 为空条目
                         let mut entry = s;
-                        let host = entry.get("host").and_then(|h| h.as_str()).unwrap_or("").to_string();
+                        let host = entry
+                            .get("host")
+                            .and_then(|h| h.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         if host.is_empty() {
                             continue;
                         }
@@ -430,16 +474,31 @@ impl ServerTable {
         }
     }
 
-    pub async fn upsert(&self, parsed: &serde_json::Value, source: &str)
-        -> Option<serde_json::Value> {
-        let host = parsed.get("host").and_then(|h| h.as_str()).unwrap_or("").to_string();
-        let callsign = parsed.get("callsign").and_then(|c| c.as_str()).unwrap_or("").to_string();
+    pub async fn upsert(
+        &self,
+        parsed: &serde_json::Value,
+        source: &str,
+    ) -> Option<serde_json::Value> {
+        let host = parsed
+            .get("host")
+            .and_then(|h| h.as_str())
+            .unwrap_or("")
+            .to_string();
+        let callsign = parsed
+            .get("callsign")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
         // 只记录可连接的服务器（host 非空），ONLINE/BEACON/VOCAL/status 等无 host 广播不建条目
         if host.is_empty() {
             return None;
         }
         let now = chrono::Utc::now().timestamp();
-        let raw = parsed.get("raw").and_then(|r| r.as_str()).unwrap_or("").to_string();
+        let raw = parsed
+            .get("raw")
+            .and_then(|r| r.as_str())
+            .unwrap_or("")
+            .to_string();
         // 以 host:port 为唯一键，避免同一服务器被多个中继重复广播产生多条
         let port = parsed.get("port").and_then(|p| p.as_u64()).unwrap_or(1883);
         let key = format!("{host}:{port}");
@@ -461,9 +520,26 @@ impl ServerTable {
                 "raw": raw,
             })
         };
-        for f in ["port", "online", "total", "cover_km", "freq", "height", "uid",
-                  "subtype", "version", "name", "s_code", "country", "status_text",
-                  "cert", "lat", "lon", "rig", "ant"] {
+        for f in [
+            "port",
+            "online",
+            "total",
+            "cover_km",
+            "freq",
+            "height",
+            "uid",
+            "subtype",
+            "version",
+            "name",
+            "s_code",
+            "country",
+            "status_text",
+            "cert",
+            "lat",
+            "lon",
+            "rig",
+            "ant",
+        ] {
             if let Some(v) = parsed.get(f) {
                 if !v.is_null() {
                     entry[f] = v.clone();
@@ -504,7 +580,11 @@ impl ServerTable {
     /// 记录 FMO 用户（客户端设备）信标：client_beacon / position / status 类，
     /// 以呼号（大写）为唯一键。返回更新后的条目；无呼号则忽略。
     pub async fn upsert_client(&self, parsed: &serde_json::Value) -> Option<serde_json::Value> {
-        let callsign = parsed.get("callsign").and_then(|c| c.as_str()).unwrap_or("").to_string();
+        let callsign = parsed
+            .get("callsign")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
         if callsign.is_empty() {
             return None;
         }
@@ -533,8 +613,19 @@ impl ServerTable {
                 }
             }
         }
-        for f in ["uid", "subtype", "status_text", "comment", "freq", "rig",
-                  "version", "lat", "lon", "height", "ant"] {
+        for f in [
+            "uid",
+            "subtype",
+            "status_text",
+            "comment",
+            "freq",
+            "rig",
+            "version",
+            "lat",
+            "lon",
+            "height",
+            "ant",
+        ] {
             if let Some(v) = parsed.get(f) {
                 if !v.is_null() {
                     entry[f] = v.clone();
@@ -557,7 +648,11 @@ impl ServerTable {
 
     /// 按呼号（忽略 SSID/大小写）在用户表/服务器表查 uid（QSO 呼叫解析目标 uid 用）
     pub async fn lookup_uid_by_callsign(&self, callsign: &str) -> Option<u32> {
-        let key = callsign.split('-').next().unwrap_or(callsign).to_uppercase();
+        let key = callsign
+            .split('-')
+            .next()
+            .unwrap_or(callsign)
+            .to_uppercase();
         {
             let clients = self.clients.lock().await;
             for (k, v) in clients.iter() {
@@ -690,8 +785,8 @@ impl AprsClient {
     pub async fn run(&self) {
         let mut backoff = 1.0f64;
         loop {
-            let want_connect = self.connect_req.lock().await.is_some()
-                && !*self.disconnect_signal.lock().await;
+            let want_connect =
+                self.connect_req.lock().await.is_some() && !*self.disconnect_signal.lock().await;
             if !want_connect {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 continue;
@@ -701,7 +796,8 @@ impl AprsClient {
                 None => continue,
             };
             if let Err(e) = self.session(params.clone()).await {
-                self.set_state("disconnected", &format!("{e}；{backoff:.0}s 后重连")).await;
+                self.set_state("disconnected", &format!("{e}；{backoff:.0}s 后重连"))
+                    .await;
             }
             if *self.disconnect_signal.lock().await {
                 self.set_state("disconnected", "用户断开").await;
@@ -713,17 +809,26 @@ impl AprsClient {
     }
 
     async fn session(&self, p: AprsParams) -> Result<(), String> {
-        self.set_state("connecting", &format!("{}:{}", p.host, p.port)).await;
+        self.set_state("connecting", &format!("{}:{}", p.host, p.port))
+            .await;
         let addr = format!("{}:{}", p.host, p.port);
         let mut stream = TcpStream::connect(&addr).await.map_err(|e| e.to_string())?;
         stream.set_nodelay(true).ok();
         let login = if p.port == 10152 {
-            format!("user {} pass {} vers FMO-SIM 1.0\r\n", p.callsign, p.passcode)
+            format!(
+                "user {} pass {} vers FMO-SIM 1.0\r\n",
+                p.callsign, p.passcode
+            )
         } else {
-            format!("user {} pass {} vers APFMO4 filter r/{}/{}/{}\r\n",
-                    p.callsign, p.passcode, p.lat, p.lon, p.dist)
+            format!(
+                "user {} pass {} vers APFMO4 filter r/{}/{}/{}\r\n",
+                p.callsign, p.passcode, p.lat, p.lon, p.dist
+            )
         };
-        stream.write_all(login.as_bytes()).await.map_err(|e| e.to_string())?;
+        stream
+            .write_all(login.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
         let (read_half, _write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
         let mut line: Vec<u8> = Vec::new();
@@ -735,19 +840,26 @@ impl AprsClient {
                 return Ok(());
             }
             line.clear();
-            let n = reader.read_until(b'\n', &mut line).await
+            let n = reader
+                .read_until(b'\n', &mut line)
+                .await
                 .map_err(|e| e.to_string())?;
             if n == 0 {
                 return Err("对端关闭连接".into());
             }
             n_lines += 1;
-            let bytes: Vec<u8> = line.iter().copied()
-                .filter(|b| *b != b'\r' && *b != b'\n').collect();
+            let bytes: Vec<u8> = line
+                .iter()
+                .copied()
+                .filter(|b| *b != b'\r' && *b != b'\n')
+                .collect();
             let raw = String::from_utf8_lossy(&bytes);
             let raw_bytes: Vec<u8> = bytes.clone();
             if raw.starts_with("# logresp") {
                 let detail = raw.to_string();
-                (self.emit)(json!({"type": "log", "level": "info", "msg": format!("APRS-IS: {detail}")}));
+                (self.emit)(
+                    json!({"type": "log", "level": "info", "msg": format!("APRS-IS: {detail}")}),
+                );
                 if raw.contains("unverified") {
                     self.set_state("listen-only", &detail).await;
                 } else if raw.contains("verified") {
@@ -763,7 +875,10 @@ impl AprsClient {
             let is_fmoish = raw.contains("FMO");
             if let Some(parsed) = parse_fmo_line(&raw_bytes) {
                 n_fmo += 1;
-                let source = parsed.get("callsign").and_then(|c| c.as_str()).unwrap_or("aprs");
+                let source = parsed
+                    .get("callsign")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("aprs");
                 let entry = self.table.upsert(&parsed, source).await;
                 let kind = parsed.get("kind").and_then(|k| k.as_str()).unwrap_or("");
                 // 信令/ACK 投递给 QSO 引擎（去重由引擎负责，上行连接也会收到同一消息）
@@ -793,10 +908,16 @@ impl AprsClient {
                     }
                     "message" => {
                         let verb = parsed.get("verb").and_then(|v| v.as_str()).unwrap_or("");
-                        let fields: Vec<String> = parsed.get("fields").map(|f| {
-                            f.as_array().unwrap_or(&vec![]).iter()
-                                .filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
-                        }).unwrap_or_default();
+                        let fields: Vec<String> = parsed
+                            .get("fields")
+                            .map(|f| {
+                                f.as_array()
+                                    .unwrap_or(&vec![])
+                                    .iter()
+                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
                         (self.emit)(json!({"type": "log", "level": "info",
                             "msg": format!("FMO 信令 {}→{}: {} {}",
                                            parsed.get("callsign").unwrap(),
@@ -819,11 +940,16 @@ impl AprsClient {
                 }
                 // 用户（客户端设备）信标：client_beacon / position / status 更新用户表；
                 // 另含无 host 的客户端广播（V4 BEACON、老版 FMO-CLIENT，携带 FREQ/HEIGHT/RIG/ANT）
-                let no_host = parsed.get("host").and_then(|h| h.as_str())
-                    .map(|h| h.is_empty()).unwrap_or(true);
-                let is_client_broadcast = kind == "broadcast" && no_host
+                let no_host = parsed
+                    .get("host")
+                    .and_then(|h| h.as_str())
+                    .map(|h| h.is_empty())
+                    .unwrap_or(true);
+                let is_client_broadcast = kind == "broadcast"
+                    && no_host
                     && (parsed.get("subtype").and_then(|s| s.as_str()) == Some("BEACON")
-                        || parsed.get("legacy_type").and_then(|s| s.as_str()) == Some("FMO-CLIENT"));
+                        || parsed.get("legacy_type").and_then(|s| s.as_str())
+                            == Some("FMO-CLIENT"));
                 if (matches!(kind, "client_beacon" | "position" | "status") || is_client_broadcast)
                     && self.table.upsert_client(&parsed).await.is_some()
                 {
@@ -930,7 +1056,10 @@ impl AprsTx {
         stream.set_nodelay(true).ok();
         let login = format!("user {callsign} pass {passcode} vers NRL-PULSE 1.0\r\n");
         let (read_half, mut write_half) = stream.into_split();
-        write_half.write_all(login.as_bytes()).await.map_err(|e| e.to_string())?;
+        write_half
+            .write_all(login.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
         *self.sender.lock().await = Some(tx);
         let mut reader = BufReader::new(read_half);
@@ -1093,7 +1222,12 @@ mod tests {
         table.upsert(&a, "aprs").await;
         table.upsert(&b, "aprs").await;
         let list = table.to_list().await;
-        assert_eq!(list.len(), 1, "同一 host:port 应去重，实际 {} 条", list.len());
+        assert_eq!(
+            list.len(),
+            1,
+            "同一 host:port 应去重，实际 {} 条",
+            list.len()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

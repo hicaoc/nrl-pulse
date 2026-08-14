@@ -10,14 +10,12 @@ fn canon(obj: &serde_json::Value) -> String {
     fn helper(v: &serde_json::Value) -> serde_json::Value {
         match v {
             serde_json::Value::Object(m) => {
-                let mut sorted: Vec<(String, serde_json::Value)> = m.iter()
-                    .map(|(k, val)| (k.clone(), helper(val))).collect();
+                let mut sorted: Vec<(String, serde_json::Value)> =
+                    m.iter().map(|(k, val)| (k.clone(), helper(val))).collect();
                 sorted.sort_by(|a, b| a.0.cmp(&b.0));
                 serde_json::Value::Object(sorted.into_iter().collect())
             }
-            serde_json::Value::Array(a) => {
-                serde_json::Value::Array(a.iter().map(helper).collect())
-            }
+            serde_json::Value::Array(a) => serde_json::Value::Array(a.iter().map(helper).collect()),
             other => other.clone(),
         }
     }
@@ -31,7 +29,9 @@ fn fingerprint(obj: &serde_json::Value) -> String {
 
 fn now_ts() -> f64 {
     std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 fn subject_info(obj: &serde_json::Value) -> String {
@@ -75,8 +75,13 @@ impl CertStore {
                 index = v;
             }
         }
-        let known: std::collections::HashSet<String> = index.iter()
-            .filter_map(|e| e.get("file").and_then(|f| f.as_str()).map(|s| s.to_string()))
+        let known: std::collections::HashSet<String> = index
+            .iter()
+            .filter_map(|e| {
+                e.get("file")
+                    .and_then(|f| f.as_str())
+                    .map(|s| s.to_string())
+            })
             .collect();
         let mut changed = false;
         if let Ok(entries) = std::fs::read_dir(&cert_dir) {
@@ -88,8 +93,12 @@ impl CertStore {
                     continue;
                 }
                 let path = e.path();
-                let Ok(text) = std::fs::read_to_string(&path) else { continue };
-                let Ok(obj) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let Ok(obj) = serde_json::from_str::<serde_json::Value>(&text) else {
+                    continue;
+                };
                 let fp = fingerprint(&obj);
                 if index.iter().any(|en| en["fingerprint"] == fp) {
                     continue;
@@ -107,7 +116,11 @@ impl CertStore {
         if changed {
             save_index(&index_path, &index);
         }
-        Self { dir: cert_dir, index_path, index: Arc::new(Mutex::new(index)) }
+        Self {
+            dir: cert_dir,
+            index_path,
+            index: Arc::new(Mutex::new(index)),
+        }
     }
 
     pub async fn list(&self) -> Vec<serde_json::Value> {
@@ -116,8 +129,12 @@ impl CertStore {
 
     /// 手动导入解密后的证书 JSON。name 为 cert_user/cert_int/cert_root/cert_devicekey 时
     /// 同时写固定文件名（供身份读取）。
-    pub async fn import_json(&self, name: &str, obj: serde_json::Value,
-                             source: &str) -> serde_json::Value {
+    pub async fn import_json(
+        &self,
+        name: &str,
+        obj: serde_json::Value,
+        source: &str,
+    ) -> serde_json::Value {
         let identity_names = ["cert_user", "cert_devicekey", "cert_int", "cert_root"];
         if identity_names.contains(&name) {
             let p = self.dir.join(format!("{name}.json"));
@@ -128,8 +145,12 @@ impl CertStore {
         self.store_async(name, obj, source).await
     }
 
-    async fn store_async(&self, name: &str, obj: serde_json::Value, source: &str)
-        -> serde_json::Value {
+    async fn store_async(
+        &self,
+        name: &str,
+        obj: serde_json::Value,
+        source: &str,
+    ) -> serde_json::Value {
         let fp = fingerprint(&obj);
         let entry = json!({
             "name": name, "fingerprint": fp, "source": source,

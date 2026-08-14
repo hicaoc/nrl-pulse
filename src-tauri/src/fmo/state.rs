@@ -127,7 +127,9 @@ impl FmoState {
         std::fs::create_dir_all(&data_dir).ok();
         let app: Arc<std::sync::Mutex<Option<AppHandle>>> = Arc::new(std::sync::Mutex::new(None));
         let emit_app = app.clone();
-        let bridge = Arc::new(std::sync::Mutex::new(None::<Arc<dyn Fn(serde_json::Value) + Send + Sync>>));
+        let bridge = Arc::new(std::sync::Mutex::new(
+            None::<Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
+        ));
         let emit_bridge = bridge.clone();
         let emit: EmitFn = Arc::new(move |ev| {
             if let Some(app) = emit_app.lock().unwrap().as_ref() {
@@ -270,7 +272,10 @@ impl FmoState {
         }
         let cert_info = srv.get("cert").cloned().unwrap_or(serde_json::Value::Null);
         if srv.get("uid").is_none() && cert_info.is_object() {
-            srv["uid"] = cert_info.get("uid").cloned().unwrap_or(serde_json::Value::Null);
+            srv["uid"] = cert_info
+                .get("uid")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
         }
         if cert_info.is_object() {
             srv["fingerprint"] = serde_json::Value::Array(
@@ -283,7 +288,11 @@ impl FmoState {
                 srv["callsign"] = cs.clone();
             }
         }
-        let ok_host = srv.get("host").and_then(|h| h.as_str()).map(|h| !h.is_empty()).unwrap_or(false);
+        let ok_host = srv
+            .get("host")
+            .and_then(|h| h.as_str())
+            .map(|h| !h.is_empty())
+            .unwrap_or(false);
         let ok_uid = srv.get("uid").is_some();
         let ok_fp = srv.get("fingerprint").is_some();
         if !(ok_host && ok_uid && ok_fp) {
@@ -318,7 +327,11 @@ impl FmoState {
         };
         // host/port 从选定服务器取；creds 只含 username/password
         let sel = self.selected_server.lock().await.clone();
-        let host = sel.get("host").and_then(|h| h.as_str()).unwrap_or("").to_string();
+        let host = sel
+            .get("host")
+            .and_then(|h| h.as_str())
+            .unwrap_or("")
+            .to_string();
         let port = sel.get("port").and_then(|p| p.as_u64()).unwrap_or(1883) as u16;
         if host.is_empty() {
             let msg: String = "选定服务器缺少 host 地址，请从服务器列表重新选择".into();
@@ -329,11 +342,15 @@ impl FmoState {
         // 安装凭据工厂：认证被拒时 MQTT 客户端从初始角色起按 ROLE_SEQ 往后换角色重试
         if let Ok(srv) = self.server_auth_json().await {
             // 诊断日志：SAS 凭据的实际目标与用户身份，便于排查「别的服务器能登、自己服务器被拒」
-            let fp_hex = srv["fingerprint"].as_array()
-                .map(|a| a.iter().take(8)
-                    .filter_map(|b| b.as_u64())
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<String>())
+            let fp_hex = srv["fingerprint"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .take(8)
+                        .filter_map(|b| b.as_u64())
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>()
+                })
                 .unwrap_or_default();
             (self.emit)(json!({"type": "log", "level": "info",
                 "msg": format!("SAS 凭据：用户 {} uid={} 角色={} → 服务器 {} uid={} {}:{} 证书fp={}…",
@@ -352,9 +369,19 @@ impl FmoState {
                     Ok((u, p))
                 }));
         }
-        let username = creds.get("username").and_then(|u| u.as_str()).map(|s| s.to_string());
-        let password = creds.get("password").and_then(|p| p.as_str()).map(|s| s.to_string());
-        let role = creds.get("role").and_then(|r| r.as_str()).unwrap_or("user").to_string();
+        let username = creds
+            .get("username")
+            .and_then(|u| u.as_str())
+            .map(|s| s.to_string());
+        let password = creds
+            .get("password")
+            .and_then(|p| p.as_str())
+            .map(|s| s.to_string());
+        let role = creds
+            .get("role")
+            .and_then(|r| r.as_str())
+            .unwrap_or("user")
+            .to_string();
         let callsign = username.clone();
         let uid = self.current_uid();
         eprintln!(
@@ -374,7 +401,10 @@ impl FmoState {
 
     /// 启动 APRS-IS 后台任务（常驻，内部自动重连）。
     pub fn ensure_aprs_task(&self) {
-        if self.aprs_task_running.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        if self
+            .aprs_task_running
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
             return;
         }
         let client = self.aprs_client.clone();
@@ -395,7 +425,10 @@ impl FmoState {
     /// 证书后来过期、私钥与证书不配套、临近 7 天到期都会以 warn 日志提醒
     /// （状态不变不重复提醒，修复后再次出现问题会重新提醒）。
     pub fn start_identity_watchdog(self: &Arc<Self>) {
-        if self.identity_watch_running.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        if self
+            .identity_watch_running
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
             return;
         }
         let this = self.clone();
@@ -510,13 +543,19 @@ impl FmoState {
             return;
         }
         let list = self.server_table.to_list().await;
-        let mut cands: Vec<serde_json::Value> = list.into_iter()
+        let mut cands: Vec<serde_json::Value> = list
+            .into_iter()
             .filter(|s| {
-                s.get("host").and_then(|h| h.as_str()).map(|h| !h.is_empty()).unwrap_or(false)
+                s.get("host")
+                    .and_then(|h| h.as_str())
+                    .map(|h| !h.is_empty())
+                    .unwrap_or(false)
                     && s.get("cert").and_then(|c| c.get("uid")).is_some()
             })
             .collect();
-        cands.sort_by_key(|s| std::cmp::Reverse(s.get("online").and_then(|o| o.as_i64()).unwrap_or(0)));
+        cands.sort_by_key(|s| {
+            std::cmp::Reverse(s.get("online").and_then(|o| o.as_i64()).unwrap_or(0))
+        });
         if let Some(s) = cands.into_iter().next() {
             let mut sel = self.selected_server.lock().await;
             *sel = json!({
@@ -569,13 +608,19 @@ impl FmoState {
     }
 
     pub async fn favorites_add(&self, body: serde_json::Value) -> serde_json::Value {
-        let host = body.get("host").and_then(|h| h.as_str()).unwrap_or("").to_string();
+        let host = body
+            .get("host")
+            .and_then(|h| h.as_str())
+            .unwrap_or("")
+            .to_string();
         let port = body.get("port").and_then(|p| p.as_u64()).unwrap_or(1883);
         let key = format!("{host}:{port}");
         let mut favs = self.favorites.lock().await;
         favs.retain(|f| f.get("key").and_then(|k| k.as_str()) != Some(&key));
         let mut fav = serde_json::Value::Object(serde_json::Map::new());
-        for f in ["host", "port", "callsign", "name", "uid", "cert", "online", "total"] {
+        for f in [
+            "host", "port", "callsign", "name", "uid", "cert", "online", "total",
+        ] {
             if let Some(v) = body.get(f) {
                 if !v.is_null() {
                     fav[f] = v.clone();
@@ -612,10 +657,15 @@ impl FmoState {
         out["uid"] = json!(self.current_uid());
         out["mqttState"] = json!(self.mqtt_client.state_str().await);
         out["mqttDetail"] = json!(self.mqtt_client.detail.lock().await.clone());
+        out["mqttClientId"] = json!(self.mqtt_client.client_id_str().await);
         out["aprsState"] = json!(self.aprs_client.state.lock().await.clone());
         out["aprsDetail"] = json!(self.aprs_client.detail.lock().await.clone());
         let sel = self.selected_server.lock().await.clone();
-        let host = sel.get("host").and_then(|h| h.as_str()).unwrap_or("").to_string();
+        let host = sel
+            .get("host")
+            .and_then(|h| h.as_str())
+            .unwrap_or("")
+            .to_string();
         let port = sel.get("port").and_then(|p| p.as_u64()).unwrap_or(0);
         out["serverHost"] = json!(host);
         out["serverPort"] = json!(port);
