@@ -44,6 +44,7 @@ jobs:
 
       - name: Build
         env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         # Windows updater 必须发布 NSIS installer，而不是 release 目录下的裸 exe。
