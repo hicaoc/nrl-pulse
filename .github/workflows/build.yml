@@ -14,7 +14,7 @@ env:
 jobs:
   build-windows:
     name: Windows (x86_64)
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4.2.2
 
@@ -39,40 +39,16 @@ jobs:
           key: windows-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: windows-cargo-
 
-      - name: Install LLVM
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y llvm clang nsis
-
-      - name: Generate icon.ico
-        run: |
-          pip install pillow --quiet
-          python3 - <<'EOF'
-          from PIL import Image
-          img = Image.open("src-tauri/icons/icon.png").convert("RGBA")
-          sizes = [16, 32, 48, 64, 128, 256]
-          imgs = [img.resize((s, s), Image.LANCZOS) for s in sizes]
-          imgs[0].save("src-tauri/icons/icon.ico", format="ICO", append_images=imgs[1:], sizes=[(s,s) for s in sizes])
-          print("icon.ico generated")
-          EOF
-
-      - name: Install cargo-xwin
-        run: cargo install cargo-xwin --locked
-
       - name: Install frontend deps
         run: pnpm install --no-frozen-lockfile
 
       - name: Build
         env:
-          # clang-cl 要求显式启用 SSE4.1 才能编译 opus 的 silk/x86/*_sse4_1.c
-          # （MSVC 不限制 intrinsics，clang-cl 限制）；成品要求 2008 年后的 x64 CPU
-          CFLAGS: "-Wno-declaration-after-statement -msse4.1"
-          CXXFLAGS: "-Wno-declaration-after-statement -msse4.1"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         # Windows updater 必须发布 NSIS installer，而不是 release 目录下的裸 exe。
         # createUpdaterArtifacts=true 会同时生成 setup.exe.sig。
-        run: pnpm build && ./node_modules/.bin/tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
+        run: pnpm build && ./node_modules/.bin/tauri build --target x86_64-pc-windows-msvc --bundles nsis
 
       - uses: actions/upload-artifact@v4.6.2
         with:
