@@ -171,17 +171,23 @@ impl UdpSession {
         let heartbeat_running = self.heartbeat_running.clone();
         let active_session_id = self.session_id.clone();
         tauri::async_runtime::spawn(async move {
+            let mut send_failure_reported = false;
             let packet = NrlPacket::heartbeat(&config.callsign, config.ssid);
             if socket.send(&packet.encode()).await.is_err() {
+                send_failure_reported = true;
                 runtime
-                    .push_runtime_event("心跳失败", "首次 UDP 心跳发送失败", "warn")
+                    .push_runtime_event(
+                        "心跳失败",
+                        "首次 UDP 心跳发送失败，连接保持打开并继续重试",
+                        "warn",
+                    )
                     .await;
-                return;
+            } else {
+                runtime.note_heartbeat_sent().await;
+                runtime
+                    .push_runtime_event("心跳已发送", "已发出首次 UDP 心跳", "info")
+                    .await;
             }
-            runtime.note_heartbeat_sent().await;
-            runtime
-                .push_runtime_event("心跳已发送", "已发出首次 UDP 心跳", "info")
-                .await;
             loop {
                 if !heartbeat_running.load(Ordering::Relaxed)
                     || active_session_id.load(Ordering::Relaxed) != session_id
@@ -196,11 +202,19 @@ impl UdpSession {
                 }
                 let packet = NrlPacket::heartbeat(&config.callsign, config.ssid);
                 if socket.send(&packet.encode()).await.is_err() {
-                    runtime
-                        .push_runtime_event("心跳失败", "UDP 心跳发送失败，等待上层恢复", "warn")
-                        .await;
-                    break;
+                    if !send_failure_reported {
+                        send_failure_reported = true;
+                        runtime
+                            .push_runtime_event(
+                                "心跳失败",
+                                "UDP 心跳发送失败，连接保持打开并继续重试",
+                                "warn",
+                            )
+                            .await;
+                    }
+                    continue;
                 }
+                send_failure_reported = false;
                 runtime.note_heartbeat_sent().await;
             }
         });

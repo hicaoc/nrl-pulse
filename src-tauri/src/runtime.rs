@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::audio::{AudioEngine, RxChannel};
 use crate::config::{RuntimeConfig, SerialTunnelConfig};
@@ -137,6 +137,11 @@ fn build_waveform_preview(audio_data: &[i16], samples: usize) -> Vec<f32> {
 #[derive(Clone)]
 pub struct RuntimeState {
     inner: Arc<RwLock<RuntimeData>>,
+    /// Serialize PTT start/stop transitions. The FMO start path temporarily
+    /// releases `inner` while creating its encoder session, so a quick
+    /// pointer-up could otherwise overtake pointer-down and leave the two
+    /// states out of sync.
+    tx_transition: Arc<Mutex<()>>,
     udp: UdpSession,
     serial_tunnel: SerialTunnel,
     audio: AudioEngine,
@@ -172,6 +177,8 @@ struct RuntimeData {
     tx_protocol: String,
     /// NRL 链路是否已连接（独立于 FMO，供 NRL box 状态显示）
     nrl_connected: bool,
+    /// 本轮 NRL UDP 连接开始时间。首次心跳还未返回时也据此判定超时。
+    nrl_connect_started_at: Option<Instant>,
     /// 接收录音会话按协议分槽：NRL/FMO 同时来语音时互不顶会话，
     /// 避免交替产生大量 0 秒语音消息
     voice_session_nrl: Option<VoiceSession>,
@@ -222,6 +229,7 @@ impl RuntimeState {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(RuntimeData::seed())),
+            tx_transition: Arc::new(Mutex::new(())),
             udp: UdpSession::new(),
             serial_tunnel: SerialTunnel::new(),
             audio: AudioEngine::new(),
@@ -556,6 +564,7 @@ impl RuntimeState {
             guard.last_heartbeat_at = None;
             guard.heartbeat_timeout_reported = false;
             guard.last_heartbeat_sent_at = None;
+            guard.nrl_connect_started_at = if is_fmo { None } else { Some(Instant::now()) };
             guard.latency_ewma_ms = None;
             guard.last_voice_arrival_at = None;
             guard.jitter_ewma_ms = None;
@@ -653,6 +662,7 @@ impl RuntimeState {
         guard.last_heartbeat_at = None;
         guard.heartbeat_timeout_reported = false;
         guard.last_heartbeat_sent_at = None;
+        guard.nrl_connect_started_at = None;
         guard.latency_ewma_ms = None;
         guard.last_voice_arrival_at = None;
         guard.jitter_ewma_ms = None;
@@ -673,6 +683,7 @@ impl RuntimeState {
 
     /// 按指定协议发射（NRL/FMO 各自独立 PTT）。
     pub async fn set_transmit_proto(&self, protocol: &str, enabled: bool) -> SessionSnapshot {
+        let _transition = self.tx_transition.lock().await;
         let mut guard = self.inner.write().await;
         let protocol = if protocol == "fmo" { "fmo" } else { "nrl" };
         if guard.snapshot.is_transmitting {
@@ -1137,17 +1148,17 @@ impl RuntimeState {
             guard.snapshot.last_text_message = format!("收到 {}-{} 心跳确认", callsign, ssid);
             guard.last_heartbeat_at = Some(now);
             guard.heartbeat_timeout_reported = false;
-            if first_confirm {
-                emitted.push(guard.push_event(
-                    "心跳已建立",
-                    &format!("收到 {}-{} 首次心跳确认", callsign, ssid),
-                    "info",
-                ));
-            } else if recovered {
+            if recovered {
                 emitted.push(guard.push_event(
                     "心跳恢复",
                     &format!("{}-{} 心跳恢复正常", callsign, ssid),
                     "accent",
+                ));
+            } else if first_confirm {
+                emitted.push(guard.push_event(
+                    "心跳已建立",
+                    &format!("收到 {}-{} 首次心跳确认", callsign, ssid),
+                    "info",
                 ));
             }
         }
@@ -1352,34 +1363,32 @@ impl RuntimeState {
                 {
                     let mut guard = runtime.inner.write().await;
                     if guard.snapshot.connection == "disconnected" {
-                        break;
+                        // Keep one lightweight watchdog alive for later manual
+                        // reconnects. The UDP heartbeat task itself is stopped
+                        // by UdpSession::disconnect().
+                        continue;
                     }
-                    let Some(last_heartbeat_at) = guard.last_heartbeat_at else {
+                    let Some(last_activity_at) =
+                        guard.last_heartbeat_at.or(guard.nrl_connect_started_at)
+                    else {
                         continue;
                     };
                     if guard.heartbeat_timeout_reported
-                        || last_heartbeat_at.elapsed() < Duration::from_secs(6)
+                        || last_activity_at.elapsed() < Duration::from_secs(6)
                     {
                         continue;
                     }
                     guard.heartbeat_timeout_reported = true;
-                    guard.nrl_connected = false;
-                    guard.snapshot.connection = "disconnected".into();
-                    guard.snapshot.is_transmitting = false;
-                    guard.snapshot.last_text_message = "服务器心跳超时，链路已断开".into();
+                    guard.snapshot.last_text_message =
+                        "服务器心跳超时，保持 Socket 与心跳等待恢复".into();
                     emitted.push(guard.push_event(
                         "心跳超时",
-                        "超过 6 秒未收到服务器心跳确认，已停止等待且不自动重连",
+                        "超过 6 秒未收到服务器心跳确认，连接保持打开并继续发送心跳",
                         "warn",
                     ));
                 }
-                runtime.udp.disconnect().await;
-                runtime.audio.set_transmitting(false);
                 runtime.emit_runtime_updates(emitted).await;
             }
-            runtime
-                .heartbeat_watchdog_running
-                .store(false, Ordering::Relaxed);
         });
     }
 
@@ -1647,6 +1656,7 @@ impl RuntimeData {
             config: RuntimeConfig::default(),
             tx_protocol: "nrl".into(),
             nrl_connected: false,
+            nrl_connect_started_at: None,
             snapshot: SessionSnapshot {
                 room_name: "NRL East Hub".into(),
                 callsign: "B1NRL".into(),

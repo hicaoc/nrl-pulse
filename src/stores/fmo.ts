@@ -100,7 +100,16 @@ export const useFmoStore = defineStore("fmo", () => {
 
   async function refreshStats() {
     try {
-      stats.value = await fmoStatsSnapshot();
+      const next = await fmoStatsSnapshot();
+      stats.value = next;
+      // MQTT 事件可能发生在窗口监听器安装之前（尤其是自动连接和
+      // PTT 悬浮窗启动时）。轮询快照是后端权威状态，用它修正事件态，
+      // 避免界面显示已连接但 PTT 仍被旧状态禁用。
+      state.value.mqttState = next.mqttState;
+      state.value.mqttDetail = next.mqttDetail;
+      if (next.mqttClientId) {
+        state.value.mqttClientId = next.mqttClientId;
+      }
     } catch (e) {
       flog("[fmo] stats error:", String(e));
     }
