@@ -2904,8 +2904,48 @@ input[type="range"] {
   font-size: 0.76rem;
 }
 
-.callsign-divider {
-  display: none;
+/* 两个呼号 box 之间的语音互转（桥接）按钮列 */
+.callsign-bridge {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.bridge-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(233, 244, 255, 0.6);
+  padding: 4px 10px;
+  min-width: 44px;
+  font-size: 1.15rem;
+  line-height: 1.4;
+  letter-spacing: 0;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.bridge-btn:hover:not(:disabled) {
+  border-color: rgba(91, 192, 255, 0.5);
+  color: #cfeaff;
+}
+
+.bridge-btn.active {
+  background: rgba(91, 192, 255, 0.18);
+  border-color: rgba(91, 192, 255, 0.65);
+  color: #9fdcff;
+  box-shadow: 0 0 12px rgba(91, 192, 255, 0.35);
+}
+
+.bridge-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .callsign-display-fmo {
@@ -3448,4 +3488,11 @@ input[type="range"] {
 
 .menu-bar {
   margin-top: 0;
+}
+
+/* 互转关闭态图标：双向箭头加斜杠 */
+.bridge-off-icon {
+  width: 1.15rem;
+  height: 1.15rem;
+  display: block;
 }

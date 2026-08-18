@@ -165,6 +165,10 @@ pub struct RuntimeState {
     rx_voice_seq: Arc<AtomicU64>,
     /// 最近一次收到 NRL UDP 报文的时间（epoch ms，0=从未收到）
     nrl_last_rx_ms: Arc<AtomicU64>,
+    /// 语音互转 NRL→FMO 方向：最近一次转发帧的时间（空闲看门狗据此关闭桥接发射会话）
+    fmo_bridge_last_frame: Arc<std::sync::Mutex<Option<Instant>>>,
+    /// FMO 桥接发射空闲看门狗是否已在运行
+    fmo_bridge_watch_running: Arc<AtomicBool>,
 }
 
 struct RuntimeData {
@@ -245,6 +249,8 @@ impl RuntimeState {
             rx_codec: Arc::new(std::sync::Mutex::new(String::new())),
             rx_voice_seq: Arc::new(AtomicU64::new(0)),
             nrl_last_rx_ms: Arc::new(AtomicU64::new(0)),
+            fmo_bridge_last_frame: Arc::new(std::sync::Mutex::new(None)),
+            fmo_bridge_watch_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -368,13 +374,15 @@ impl RuntimeState {
                 }
                 runtime
                     .note_fmo_voice_frame(
-                        callsign,
+                        callsign.clone(),
                         sample_count,
                         analysis.level,
                         &analysis.spectrum,
                         &samples,
                     )
                     .await;
+                // 语音互转：FMO 接收 → NRL 发射（内部按 bridge_mode 与防回环判定）
+                runtime.bridge_fmo_pcm_to_nrl(&samples, &callsign).await;
                 // 高频独立事件：驱动 FMO 顶栏 VU / 频谱实时刷新（与 NRL 分开）
                 if let Some(app) = runtime.app.read().await.clone() {
                     let _ = app.emit(
@@ -782,6 +790,111 @@ impl RuntimeState {
         };
         guard.push_event("监听切换", detail, "info");
         self.snapshot_locked(&guard)
+    }
+
+    /// 语音互转（桥接）模式循环：0=关闭 → 1=FMO→NRL → 2=NRL→FMO → 3=双向 → 0。
+    pub async fn cycle_bridge_mode(&self) -> SessionSnapshot {
+        let new_mode = {
+            let mut guard = self.inner.write().await;
+            guard.snapshot.bridge_mode = (guard.snapshot.bridge_mode + 1) % 4;
+            guard.snapshot.bridge_mode
+        };
+        // 新模式不含 NRL→FMO 位时，停掉 FMO 侧桥接发射会话
+        if new_mode & 2 == 0 {
+            if let Some(fmo) = self.fmo_state().await {
+                fmo.bridge_stop_tx().await;
+            }
+            *self.fmo_bridge_last_frame.lock().unwrap() = None;
+        }
+        let detail = match new_mode {
+            1 => "FMO→NRL",
+            2 => "NRL→FMO",
+            3 => "NRL⇄FMO",
+            _ => "已关闭",
+        };
+        self.push_runtime_event("语音互转", detail, "accent").await;
+        self.snapshot().await
+    }
+
+    /// 呼号 base 部分（去掉 -SSID 后缀），用于防回环比较。
+    fn callsign_base(callsign: &str) -> &str {
+        callsign.split('-').next().unwrap_or(callsign)
+    }
+
+    /// 桥接 FMO→NRL：FMO 解码出的 8k PCM 按 NRL 侧编码配置转发发射。
+    pub async fn bridge_fmo_pcm_to_nrl(&self, pcm: &[i16], speaker: &str) {
+        if self.inner.read().await.snapshot.bridge_mode & 1 == 0 {
+            return;
+        }
+        // 防回环：FMO raw handler 不过滤本机帧，broker 可能回显本机发射
+        if let Some(fmo) = self.fmo_state().await {
+            let own = fmo.current_callsign();
+            if !speaker.is_empty()
+                && Self::callsign_base(speaker).eq_ignore_ascii_case(Self::callsign_base(&own))
+            {
+                return;
+            }
+        }
+        let config = self.current_config().await;
+        if config.voice_codec == "opus" {
+            self.send_nrl_opus_voice(&config, pcm).await;
+        } else {
+            let _ = self.udp.send_voice_frame(&config, pcm).await;
+        }
+    }
+
+    /// 桥接 NRL→FMO：NRL 解码出的 8k PCM 按 FMO 侧语音模式转发发射。
+    pub async fn bridge_nrl_pcm_to_fmo(&self, pcm: &[i16], speaker: &str) {
+        if self.inner.read().await.snapshot.bridge_mode & 2 == 0 {
+            return;
+        }
+        let config = self.current_config().await;
+        // 防回环：本机 NRL 发射被服务器回显时不回灌 FMO
+        if !speaker.is_empty()
+            && Self::callsign_base(speaker)
+                .eq_ignore_ascii_case(Self::callsign_base(&config.callsign))
+        {
+            return;
+        }
+        let Some(fmo) = self.fmo_state().await else {
+            return;
+        };
+        let created = fmo.bridge_feed_pcm(pcm, &config.fmo_voice_mode).await;
+        *self.fmo_bridge_last_frame.lock().unwrap() = Some(Instant::now());
+        if created {
+            self.spawn_fmo_bridge_watchdog();
+        }
+    }
+
+    /// FMO 桥接发射空闲看门狗：800ms 无新帧则关闭桥接 TxSession（发 END 帧）。
+    fn spawn_fmo_bridge_watchdog(&self) {
+        if self.fmo_bridge_watch_running.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let runtime = self.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let Some(fmo) = runtime.fmo_state().await else {
+                    break;
+                };
+                if fmo.bridge_tx.lock().await.is_none() {
+                    break;
+                }
+                let idle = runtime
+                    .fmo_bridge_last_frame
+                    .lock()
+                    .unwrap()
+                    .map(|t| t.elapsed() > Duration::from_millis(800))
+                    .unwrap_or(true);
+                if idle {
+                    fmo.bridge_stop_tx().await;
+                    *runtime.fmo_bridge_last_frame.lock().unwrap() = None;
+                    break;
+                }
+            }
+            runtime.fmo_bridge_watch_running.store(false, Ordering::Relaxed);
+        });
     }
 
     pub async fn update_jitter_buffer(&self, value: u32) -> SessionSnapshot {
@@ -1676,6 +1789,7 @@ impl RuntimeData {
                 rx_spectrum: vec![0.0; SPECTRUM_BANDS],
                 tx_spectrum: vec![0.0; SPECTRUM_BANDS],
                 is_transmitting: false,
+                bridge_mode: 0,
                 tx_protocol: "nrl".into(),
                 is_monitoring: true,
                 queued_frames: 0,

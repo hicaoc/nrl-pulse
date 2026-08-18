@@ -117,6 +117,16 @@ async fn toggle_monitor(
 }
 
 #[tauri::command]
+async fn cycle_bridge_mode(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<SessionSnapshot, String> {
+    let snapshot = state.cycle_bridge_mode().await;
+    broadcast_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
 async fn update_jitter_buffer(
     state: tauri::State<'_, RuntimeState>,
     value: u32,
@@ -687,6 +697,7 @@ pub fn run() {
             set_transmit,
             set_transmit_proto,
             toggle_monitor,
+            cycle_bridge_mode,
             update_jitter_buffer,
             send_text_message,
             load_runtime_config,

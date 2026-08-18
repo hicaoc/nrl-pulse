@@ -292,6 +292,10 @@ async fn handle_packet(
                     &pcm,
                 )
                 .await;
+            // 语音互转：NRL 接收 → FMO 发射（内部按 bridge_mode 与防回环判定）
+            runtime
+                .bridge_nrl_pcm_to_fmo(&pcm, &packet.callsign_string())
+                .await;
             runtime.throttled_emit_audio_state(app).await;
             // 限速 emit：每 80ms 最多推一次 snapshot，防止高频 UDP 包导致前端事件积压
             runtime.throttled_emit_snapshot(app).await;
@@ -311,6 +315,10 @@ async fn handle_packet(
                         &analysis.spectrum,
                         &pcm,
                     )
+                    .await;
+                // 语音互转：NRL 接收 → FMO 发射（内部按 bridge_mode 与防回环判定）
+                runtime
+                    .bridge_nrl_pcm_to_fmo(&pcm, &packet.callsign_string())
                     .await;
                 runtime.throttled_emit_audio_state(app).await;
                 runtime.throttled_emit_snapshot(app).await;

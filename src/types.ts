@@ -91,6 +91,8 @@ export interface SessionSnapshot {
   rxSpectrum: number[];
   txSpectrum: number[];
   isTransmitting: boolean;
+  // 语音互转（桥接）模式：0=关闭, 1=FMO→NRL, 2=NRL→FMO, 3=双向
+  bridgeMode: number;
   txProtocol: "nrl" | "fmo";
   isMonitoring: boolean;
   queuedFrames: number;

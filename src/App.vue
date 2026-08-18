@@ -797,6 +797,8 @@ const messages = {
     disconnect: "断开",
     enableMute: "开启静音",
     disableMute: "取消静音",
+    bridgeOff: "互转关闭",
+    bridgeTitle: "语音互转：点击循环 关闭 → FMO→NRL → NRL→FMO → 双向",
     pttWindow: "PTT",
     currentTalker: "当前发言",
     regionUnknown: "区域未识别",
@@ -954,6 +956,8 @@ const messages = {
     disconnect: "Disconnect",
     enableMute: "Mute",
     disableMute: "Unmute",
+    bridgeOff: "Bridge Off",
+    bridgeTitle: "Voice bridge: click to cycle Off → FMO→NRL → NRL→FMO → Both",
     stopRecording: "Stop Recording",
     startRecording: "Start Recording",
     pttWindow: "PTT Window",
@@ -1113,6 +1117,33 @@ const fmoStatusText = computed(() => {
   return zh ? "离线" : "Offline";
 });
 const pttLinksLabel = computed(() => `NRL ${nrlStatusText.value} · FMO ${fmoStatusText.value}`);
+
+// 语音互转（桥接）按钮：左 NRL 右 FMO，箭头方向即转发方向；关闭态为 SVG 双向箭头加斜杠图标
+const bridgeModeLabel = computed(() => {
+  switch (runtime.snapshot.bridgeMode) {
+    case 1:
+      return "←"; // FMO→NRL：箭头朝左
+    case 2:
+      return "→"; // NRL→FMO：箭头朝右
+    case 3:
+      return "↔"; // 双向
+    default:
+      return ""; // 关闭态由 SVG 图标显示
+  }
+});
+// 文字版状态（aria-label / 读屏用）
+const bridgeModeText = computed(() => {
+  switch (runtime.snapshot.bridgeMode) {
+    case 1:
+      return "FMO→NRL";
+    case 2:
+      return "NRL→FMO";
+    case 3:
+      return "NRL↔FMO";
+    default:
+      return t.value.bridgeOff;
+  }
+});
 
 // 悬浮窗各协议的当前说话人呼号（本机发射时显示本机呼号）
 const nrlTalkerLabel = computed(() => {
@@ -2656,7 +2687,34 @@ watch(
                 ></canvas>
               </div>
             </div>
-            <div class="callsign-divider"></div>
+            <div class="callsign-bridge">
+              <button
+                class="bridge-btn"
+                :class="{ active: runtime.snapshot.bridgeMode !== 0 }"
+                :disabled="runtime.busy"
+                :aria-label="bridgeModeText"
+                :title="`${bridgeModeText} · ${t.bridgeTitle}`"
+                @click="runtime.cycleBridge()"
+              >
+                <svg
+                    v-if="runtime.snapshot.bridgeMode === 0"
+                    class="bridge-off-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M2.5 12h19" />
+                    <path d="M7 7l-4.5 5L7 17" />
+                    <path d="M17 7l4.5 5L17 17" />
+                    <path d="M4.5 19.5 19.5 4.5" />
+                  </svg>
+                  <template v-else>{{ bridgeModeLabel }}</template>
+              </button>
+            </div>
             <div class="callsign-block callsign-fmo">
               <div class="callsign-block-tags">
                 <button
@@ -3769,10 +3827,11 @@ watch(
       </div>
     </transition>
 
-    <!-- FMO 用户详情弹窗 -->
+    <!-- QSO 呼叫弹窗 -->
     <transition name="drawer-fade">
-      <!-- QSO 呼叫弹窗 -->
       <div v-if="qsoDialogOpen" class="drawer-backdrop" @click="qsoDialogOpen = false"></div>
+    </transition>
+    <transition name="drawer-fade">
       <div v-if="qsoDialogOpen" class="device-popup">
         <div class="drawer-head">
           <div><h2>FMO QSO</h2></div>
@@ -3836,9 +3895,13 @@ watch(
           </div>
         </div>
       </div>
+    </transition>
 
-      <!-- QSO 来电弹窗（未开自动接受时；必须做出选择，点空白不关闭） -->
+    <!-- QSO 来电弹窗（未开自动接受时；必须做出选择，点空白不关闭） -->
+    <transition name="drawer-fade">
       <div v-if="fmo.qso.phase === 'incoming'" class="drawer-backdrop"></div>
+    </transition>
+    <transition name="drawer-fade">
       <div v-if="fmo.qso.phase === 'incoming'" class="device-popup qso-incoming">
         <div class="drawer-head">
           <div>
@@ -3860,7 +3923,10 @@ watch(
           </div>
         </div>
       </div>
+    </transition>
 
+    <!-- FMO 用户详情弹窗 -->
+    <transition name="drawer-fade">
       <div v-if="fmoUserPopup" class="drawer-backdrop" @click="fmoUserPopup = null"></div>
     </transition>
     <transition name="drawer-fade">

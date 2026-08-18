@@ -52,6 +52,8 @@ pub struct SessionSnapshot {
     pub rx_spectrum: Vec<f32>,
     pub tx_spectrum: Vec<f32>,
     pub is_transmitting: bool,
+    /// 语音互转（桥接）模式：0=关闭, 1=FMO→NRL, 2=NRL→FMO, 3=双向。
+    pub bridge_mode: u8,
     /// 当前发射使用的协议（"nrl" | "fmo"），用于双 PTT 独立显示。
     pub tx_protocol: String,
     pub is_monitoring: bool,

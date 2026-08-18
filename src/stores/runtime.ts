@@ -5,6 +5,7 @@ import { flog } from "@/lib/tauri";
 import {
   bootstrapRuntime,
   connectSession,
+  cycleBridgeMode,
   disconnectSession,
   getSerialTunnelStatus,
   listSerialPorts,
@@ -54,6 +55,7 @@ const initialSnapshot: SessionSnapshot = {
   rxSpectrum: Array.from({ length: 28 }, () => 0),
   txSpectrum: Array.from({ length: 28 }, () => 0),
   isTransmitting: false,
+  bridgeMode: 0,
   txProtocol: "nrl",
   isMonitoring: true,
   queuedFrames: 4,
@@ -268,6 +270,10 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await runAction(toggleMonitor);
   }
 
+  async function cycleBridge() {
+    await runAction(cycleBridgeMode);
+  }
+
   async function setJitter(value: number) {
     await runAction(() => updateJitterBuffer(value));
   }
@@ -335,6 +341,7 @@ export const useRuntimeStore = defineStore("runtime", () => {
     setTx,
     setTxProto,
     toggleRx,
+    cycleBridge,
     setJitter,
     sendMessage,
     saveConfig,

@@ -58,6 +58,10 @@ export async function toggleMonitor(): Promise<SessionSnapshot> {
   return invoke<SessionSnapshot>("toggle_monitor");
 }
 
+export async function cycleBridgeMode(): Promise<SessionSnapshot> {
+  return invoke<SessionSnapshot>("cycle_bridge_mode");
+}
+
 export async function updateJitterBuffer(value: number): Promise<SessionSnapshot> {
   return invoke<SessionSnapshot>("update_jitter_buffer", { value });
 }

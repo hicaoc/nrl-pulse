@@ -55,6 +55,9 @@ pub struct FmoState {
     pub mqtt_client: Arc<FmoMqttClient>,
     pub rx_audio: Arc<RxAudio>,
     pub tx_session: Arc<Mutex<Option<Arc<TxSession>>>>,
+    /// 语音互转（桥接）发射会话：独立于 PTT 的 tx_session，避免互相干扰。
+    /// 由 runtime 的空闲看门狗在 800ms 无帧后关闭。
+    pub bridge_tx: Arc<Mutex<Option<Arc<TxSession>>>>,
     /// QSO 呼叫信令引擎（APRS APFMO0）
     pub qso: Arc<QsoEngine>,
     /// 服务器广播引擎（APRS APFMO4 STATION）
@@ -200,6 +203,7 @@ impl FmoState {
             mqtt_client,
             rx_audio,
             tx_session: Arc::new(Mutex::new(None)),
+            bridge_tx: Arc::new(Mutex::new(None)),
             qso,
             broadcast,
             rx_play_enabled: Arc::new(std::sync::Mutex::new(true)),
@@ -586,6 +590,40 @@ impl FmoState {
             ts.stop().await;
         }
         *self.tx_session.lock().await = None;
+    }
+
+    /// 桥接喂 PCM（8k s16le）。返回 true 表示本次新建了发射会话，
+    /// 调用方需启动空闲看门狗在无帧时调 bridge_stop_tx 关闭会话。
+    pub async fn bridge_feed_pcm(&self, pcm: &[i16], mode: &str) -> bool {
+        if self.mqtt_client.state_str().await != "connected" {
+            return false;
+        }
+        if let Some(ts) = self.bridge_tx.lock().await.clone() {
+            ts.feed_pcm(pcm).await;
+            return false;
+        }
+        let callsign = self.current_callsign();
+        let Ok(ts) = TxSession::new(
+            self.mqtt_client.clone(),
+            &callsign,
+            mode,
+            Some(self.stats.tx_frames.clone()),
+        ) else {
+            return false;
+        };
+        let ts = Arc::new(ts);
+        ts.feed_pcm(pcm).await;
+        *self.bridge_tx.lock().await = Some(ts);
+        true
+    }
+
+    /// 桥接发射会话结束（空闲看门狗或模式切换时调用）。
+    pub async fn bridge_stop_tx(&self) {
+        let tx = self.bridge_tx.lock().await.clone();
+        if let Some(ts) = tx {
+            ts.stop().await;
+        }
+        *self.bridge_tx.lock().await = None;
     }
 
     // ---------------------------------------------------------------- 收藏
