@@ -147,7 +147,7 @@ pub fn mqtt_credentials(
 }
 
 /// 初始角色选择：登录服务器呼号与证书呼号一致（自己的服务器）默认 super，
-/// 否则默认 user；被拒后 MQTT 客户端按 ROLE_SEQ 从该角色起继续往后重试。
+/// 否则默认 user；被拒后 MQTT 客户端从该角色起把其余角色各重试一遍。
 pub fn initial_role(certs_dir: &Path, server: &serde_json::Value) -> String {
     let cert_cs = load_identity(certs_dir)
         .ok()

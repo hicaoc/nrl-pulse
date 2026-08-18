@@ -254,7 +254,8 @@ pub struct FmoMqttClient {
     pub on_raw_payload: std::sync::Mutex<Option<Arc<dyn Fn(Vec<u8>) + Send + Sync>>>,
     /// 凭据工厂：role → (username, password)。
     /// SAS ACL 要求 claimed role 与证书登记角色一致（如登记 super 却声称 user 会被拒），
-    /// 认证被拒时按 ROLE_SEQ 换角色重建凭据重试（参照 sim 的 _role_seq 机制）。
+    /// 认证被拒时换角色重建凭据重试，把 ROLE_SEQ 里的角色从初始角色起各试一遍
+    /// （参照 sim 的 _role_seq 机制）。
     pub cred_factory: std::sync::Mutex<
         Option<Arc<dyn Fn(&str) -> Result<(String, String), String> + Send + Sync>>,
     >,
@@ -275,7 +276,8 @@ pub struct FmoMqttClient {
     pub cnt_text: Arc<std::sync::atomic::AtomicU64>,
 }
 
-/// 认证被拒时按序重试的角色（与 sim-rust / sim 一致）
+/// 认证被拒时依次重试的候选角色（与 sim-rust / sim 一致）：
+/// 从初始角色开始，被拒后把剩余角色各试一遍
 const ROLE_SEQ: [&str; 3] = ["user", "super", "admin"];
 
 impl FmoMqttClient {
@@ -418,11 +420,17 @@ impl FmoMqttClient {
             let mut client = client;
             let mut subscribed = false;
             // 初始角色由调用方按「服务器呼号 == 证书呼号 → super，否则 user」选定；
-            // 被拒后从该角色起按 ROLE_SEQ 往后重试
-            let mut role_idx = ROLE_SEQ
+            // 被拒后把 ROLE_SEQ 里其余角色各试一遍（不限于排在初始角色之后的）
+            let mut cur_role: String = if ROLE_SEQ.contains(&initial_role.as_str()) {
+                initial_role.clone()
+            } else {
+                ROLE_SEQ[0].to_string()
+            };
+            let mut remaining_roles: Vec<&'static str> = ROLE_SEQ
                 .iter()
-                .position(|r| *r == initial_role)
-                .unwrap_or(0);
+                .copied()
+                .filter(|r| *r != cur_role)
+                .collect();
             loop {
                 if generation.load(std::sync::atomic::Ordering::SeqCst) != gen {
                     return;
@@ -433,18 +441,17 @@ impl FmoMqttClient {
                         eprintln!("[FMO-MQTT] ConnAck code={code:?} host={host}:{port}");
                         if code != ConnectReturnCode::Success {
                             // 认证被拒：SAS 可能要求 claimed role 与证书登记角色一致，
-                            // 按 ROLE_SEQ（user→super→admin）换角色重建凭据重试
-                            if matches!(code, ConnectReturnCode::BadUserNamePassword | ConnectReturnCode::NotAuthorized) && role_idx + 1 < ROLE_SEQ.len() {
-                                let cur = ROLE_SEQ[role_idx];
-                                let next = ROLE_SEQ[role_idx + 1];
+                            // 换角色重建凭据重试，把剩余角色各试一遍
+                            if matches!(code, ConnectReturnCode::BadUserNamePassword | ConnectReturnCode::NotAuthorized) && !remaining_roles.is_empty() {
+                                let next = remaining_roles.remove(0);
                                 let retry = match &cred_factory {
                                     Some(factory) => factory(next).ok(),
                                     None => None,
                                 };
                                 if let Some((u, p)) = retry {
                                     (emit)(json!({"type": "log", "level": "warn",
-                                        "msg": format!("MQTT 角色 {cur} 被拒（code={code:?}），换 {next} 重试…")}));
-                                    role_idx += 1;
+                                        "msg": format!("MQTT 角色 {cur_role} 被拒（code={code:?}），换 {next} 重试…")}));
+                                    cur_role = next.to_string();
                                     let mut opts2 =
                                         MqttOptions::new(cid.clone(), host.clone(), port);
                                     opts2.set_keep_alive(std::time::Duration::from_secs(60));
@@ -491,8 +498,8 @@ impl FmoMqttClient {
                         (emit)(json!({"type": "log", "level": "info",
                         "msg": format!("MQTT 已连接 {host}:{port}，client id={cid}，订阅 {} 个 topic{}",
                                        SUBSCRIBE_TOPICS.len(),
-                                       if role_idx > 0 {
-                                           format!("（角色 {}）", ROLE_SEQ[role_idx])
+                                       if cur_role != ROLE_SEQ[0] {
+                                           format!("（角色 {cur_role}）")
                                        } else {
                                            String::new()
                                        })}));

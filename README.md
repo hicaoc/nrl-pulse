@@ -107,7 +107,10 @@
 基于 **NRL2** 语音调度协议，UDP 传输，20ms 帧长。
 - type 1：G.711 A-law 语音（8kHz）
 - type 8：**Opus** 语音（16kHz / 20ms / VOIP / complexity 10）
-- type 2：心跳 · type 5：文本 · type 11：AT · type 12：串口透传
+- type 2：心跳
+- type 5：文本
+- type 11：AT
+- type 12：串口透传
 
 ### FMO
 
