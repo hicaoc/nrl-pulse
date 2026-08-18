@@ -1094,9 +1094,14 @@ const t = computed(() => messages[language.value]);
 // 悬浮窗双 PTT：各自独立的禁用条件与状态文案。
 // 注意不含 busy：发射动作本身会短暂置 busy，含进去会让按钮在发射时闪禁止态（误导）。
 const nrlPttDisabled = computed(() => nrlLinkState.value !== "online");
-const fmoPttDisabled = computed(() => fmo.busy || fmo.state.mqttState !== "connected");
+const fmoMqttConnected = computed(
+  () => fmo.state.mqttState === "connected" || fmo.stats.mqttState === "connected",
+);
+const fmoPttDisabled = computed(() => !fmoMqttConnected.value);
 const nrlStatusText = computed(() => {
   const zh = language.value === "zh";
+  if (runtime.snapshot.connection === "recovering") return zh ? "重连中" : "Recovering";
+  if (runtime.snapshot.connection === "connecting") return zh ? "连接中" : "Connecting";
   if (nrlLinkState.value === "online") return zh ? "在线" : "Online";
   if (nrlLinkState.value === "stale") return zh ? "断续" : "Weak";
   return zh ? "离线" : "Offline";
@@ -1412,14 +1417,16 @@ async function releaseNrlPtt() {
 }
 
 async function pressFmoPtt(event?: PointerEvent) {
-  if (fmo.busy || fmoPttPressed.value || runtime.snapshot.isTransmitting || fmo.state.mqttState !== "connected") {
+  if (fmoPttPressed.value || runtime.snapshot.isTransmitting || !fmoMqttConnected.value) {
     return;
   }
   if (event?.currentTarget instanceof Element) {
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* ok */ }
   }
   fmoPttPressed.value = true;
-  await runtime.setTxProto("fmo", true);
+  if (!await runtime.setTxProto("fmo", true)) {
+    fmoPttPressed.value = false;
+  }
 }
 
 async function releaseFmoPtt() {
@@ -2108,6 +2115,8 @@ watch(
 // NRL 链路状态：10s 内收到过 UDP 报文（语音/心跳等）为在线点亮，超过则闪烁告警
 const nrlLinkState = computed<"off" | "online" | "stale">(() => {
   void animationTick.value; // 跟随 rAF 渲染循环周期性重估
+  if (runtime.snapshot.connection === "disconnected") return "off";
+  if (["connecting", "recovering"].includes(runtime.snapshot.connection)) return "stale";
   const last = runtime.snapshot.nrlLastRxMs ?? 0;
   if (!last) return "off";
   return Date.now() - last < 10_000 ? "online" : "stale";
@@ -2677,7 +2686,7 @@ watch(
                 <button
                   class="ghost-btn tool-pill fmo-ptt"
                   :class="{ 'ptt-active': fmoPttActive }"
-                  :disabled="fmo.busy || fmo.state.mqttState !== 'connected'"
+                  :disabled="fmoPttDisabled"
                   @pointerdown.prevent="pressFmoPtt($event)"
                   @pointerup.prevent="releaseFmoPtt($event)"
                   @pointercancel.prevent="releaseFmoPtt($event)"

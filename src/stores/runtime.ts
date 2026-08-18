@@ -249,14 +249,18 @@ export const useRuntimeStore = defineStore("runtime", () => {
     await runAction(() => setTransmit(enabled));
   }
 
-  async function setTxProto(protocol: "nrl" | "fmo", enabled: boolean) {
+  async function setTxProto(protocol: "nrl" | "fmo", enabled: boolean): Promise<boolean> {
     // PTT 是实时控制：不走 runAction 的 busy 门控。
     // 走 busy 会在发射期间把 PTT 按钮闪成禁止态，且 busy 窗口内的松开动作会被丢弃，
     // 可能卡在发射态。直接调用并合并快照，多个调用由后端顺序处理。
     try {
-      mergeSnapshot(await setTransmitProto(protocol, enabled));
+      const next = await setTransmitProto(protocol, enabled);
+      mergeSnapshot(next);
+      return next.isTransmitting === enabled
+        && (!enabled || next.txProtocol === protocol);
     } catch (e) {
       flog("[runtime] setTxProto error:", String(e));
+      return false;
     }
   }
 
