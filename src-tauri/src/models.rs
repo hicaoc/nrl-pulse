@@ -54,6 +54,10 @@ pub struct SessionSnapshot {
     pub is_transmitting: bool,
     /// 语音互转（桥接）模式：0=关闭, 1=FMO→NRL, 2=NRL→FMO, 3=双向。
     pub bridge_mode: u8,
+    /// 桥接发射状态（按协议独立）：true 表示对应方向 800ms 内有转发帧，
+    /// 用于点亮对应协议的 PTT 按钮（桥接不走 is_transmitting，避免与手动 PTT 冲突）。
+    pub bridge_tx_nrl: bool,
+    pub bridge_tx_fmo: bool,
     /// 当前发射使用的协议（"nrl" | "fmo"），用于双 PTT 独立显示。
     pub tx_protocol: String,
     pub is_monitoring: bool,

@@ -169,6 +169,12 @@ pub struct RuntimeState {
     fmo_bridge_last_frame: Arc<std::sync::Mutex<Option<Instant>>>,
     /// FMO 桥接发射空闲看门狗是否已在运行
     fmo_bridge_watch_running: Arc<AtomicBool>,
+    /// 语音互转 FMO→NRL 方向：最近一次转发帧的时间（据此识别新转发突发并记时间线）
+    fmo2nrl_bridge_last_frame: Arc<std::sync::Mutex<Option<Instant>>>,
+    /// FMO→NRL 桥接空闲看门狗是否已在运行（转发停止时推送 snapshot 熄灭 PTT 按钮）
+    fmo2nrl_bridge_watch_running: Arc<AtomicBool>,
+    /// 桥接丢弃/发送失败日志限速（每 2s 最多一条，避免按帧刷屏）
+    bridge_warn_last_log: Arc<std::sync::Mutex<Option<Instant>>>,
 }
 
 struct RuntimeData {
@@ -251,6 +257,9 @@ impl RuntimeState {
             nrl_last_rx_ms: Arc::new(AtomicU64::new(0)),
             fmo_bridge_last_frame: Arc::new(std::sync::Mutex::new(None)),
             fmo_bridge_watch_running: Arc::new(AtomicBool::new(false)),
+            fmo2nrl_bridge_last_frame: Arc::new(std::sync::Mutex::new(None)),
+            fmo2nrl_bridge_watch_running: Arc::new(AtomicBool::new(false)),
+            bridge_warn_last_log: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -469,6 +478,7 @@ impl RuntimeState {
         let mut snap = self.inner.read().await.snapshot.clone();
         // 链路活跃时间存在原子里（避免每报文抢写锁），emit 时注入
         snap.nrl_last_rx_ms = self.nrl_last_rx_ms.load(Ordering::Relaxed);
+        self.inject_bridge_tx(&mut snap);
         snap
     }
 
@@ -478,7 +488,27 @@ impl RuntimeState {
     fn snapshot_locked(&self, guard: &RuntimeData) -> SessionSnapshot {
         let mut snap = guard.snapshot.clone();
         snap.nrl_last_rx_ms = self.nrl_last_rx_ms.load(Ordering::Relaxed);
+        self.inject_bridge_tx(&mut snap);
         snap
+    }
+
+    /// 注入桥接发射状态：桥接绕过 is_transmitting（避免与手动 PTT 冲突），
+    /// 按对应方向 800ms 内是否有转发帧计算，用于点亮对应协议的 PTT 按钮。
+    fn inject_bridge_tx(&self, snap: &mut SessionSnapshot) {
+        let nrl_active = self
+            .fmo2nrl_bridge_last_frame
+            .lock()
+            .unwrap()
+            .map(|t| t.elapsed() < Duration::from_millis(800))
+            .unwrap_or(false);
+        let fmo_active = self
+            .fmo_bridge_last_frame
+            .lock()
+            .unwrap()
+            .map(|t| t.elapsed() < Duration::from_millis(800))
+            .unwrap_or(false);
+        snap.bridge_tx_nrl = snap.bridge_mode & 1 != 0 && nrl_active;
+        snap.bridge_tx_fmo = snap.bridge_mode & 2 != 0 && fmo_active;
     }
 
     pub async fn apply_config(&self, config: RuntimeConfig) {
@@ -816,52 +846,84 @@ impl RuntimeState {
         self.snapshot().await
     }
 
-    /// 呼号 base 部分（去掉 -SSID 后缀），用于防回环比较。
-    fn callsign_base(callsign: &str) -> &str {
-        callsign.split('-').next().unwrap_or(callsign)
+    /// 桥接发送失败日志限速：返回 true 表示本次应记录（2s 内最多一条）。
+    fn bridge_warn_allowed(&self) -> bool {
+        let mut last = self.bridge_warn_last_log.lock().unwrap();
+        if last
+            .map(|t| t.elapsed() < Duration::from_secs(2))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        *last = Some(Instant::now());
+        true
     }
 
     /// 桥接 FMO→NRL：FMO 解码出的 8k PCM 按 NRL 侧编码配置转发发射。
+    /// 不做呼号回环判断：MQTT no_local（默认开启）已保证 broker 不回显本机发布的帧，
+    /// 同呼号帧可能是同一台呼从网关/另一台设备真实发言，必须照常转发。
     pub async fn bridge_fmo_pcm_to_nrl(&self, pcm: &[i16], speaker: &str) {
         if self.inner.read().await.snapshot.bridge_mode & 1 == 0 {
             return;
         }
-        // 防回环：FMO raw handler 不过滤本机帧，broker 可能回显本机发射
-        if let Some(fmo) = self.fmo_state().await {
-            let own = fmo.current_callsign();
-            if !speaker.is_empty()
-                && Self::callsign_base(speaker).eq_ignore_ascii_case(Self::callsign_base(&own))
-            {
-                return;
-            }
-        }
         let config = self.current_config().await;
-        if config.voice_codec == "opus" {
-            self.send_nrl_opus_voice(&config, pcm).await;
-        } else {
-            let _ = self.udp.send_voice_frame(&config, pcm).await;
+        // 新转发突发（空闲 800ms 后首帧）记一条时间线，便于确认桥接确实在发
+        let new_burst = {
+            let mut last = self.fmo2nrl_bridge_last_frame.lock().unwrap();
+            let burst = last
+                .map(|t| t.elapsed() > Duration::from_millis(800))
+                .unwrap_or(true);
+            *last = Some(Instant::now());
+            burst
+        };
+        if new_burst {
+            self.push_runtime_event(
+                "语音互转",
+                &format!("FMO→NRL 开始转发：{speaker}"),
+                "accent",
+            )
+            .await;
+            self.spawn_fmo2nrl_bridge_watchdog();
+        }
+        // NRL 语音帧约定为 20ms（160 样本 @8k）。FMO 解码块是 40ms(320)/80ms(640)，
+        // 统一切成 160 样本再发，使桥接流量与 PTT 流量形态一致
+        // （FMO 两种解码块均为 160 的整数倍，无残帧）。
+        for frame in pcm.chunks_exact(160) {
+            if config.voice_codec == "opus" {
+                self.send_nrl_opus_voice(&config, frame).await;
+            } else if let Err(err) = self.udp.send_voice_frame(&config, frame).await {
+                if self.bridge_warn_allowed() {
+                    self.push_runtime_event(
+                        "语音互转",
+                        &format!("FMO→NRL 发送失败：{err}"),
+                        "warn",
+                    )
+                    .await;
+                }
+                break;
+            }
         }
     }
 
     /// 桥接 NRL→FMO：NRL 解码出的 8k PCM 按 FMO 侧语音模式转发发射。
+    /// 不做呼号回环判断（同 FMO→NRL 方向）。
     pub async fn bridge_nrl_pcm_to_fmo(&self, pcm: &[i16], speaker: &str) {
         if self.inner.read().await.snapshot.bridge_mode & 2 == 0 {
             return;
         }
         let config = self.current_config().await;
-        // 防回环：本机 NRL 发射被服务器回显时不回灌 FMO
-        if !speaker.is_empty()
-            && Self::callsign_base(speaker)
-                .eq_ignore_ascii_case(Self::callsign_base(&config.callsign))
-        {
-            return;
-        }
         let Some(fmo) = self.fmo_state().await else {
             return;
         };
         let created = fmo.bridge_feed_pcm(pcm, &config.fmo_voice_mode).await;
         *self.fmo_bridge_last_frame.lock().unwrap() = Some(Instant::now());
         if created {
+            self.push_runtime_event(
+                "语音互转",
+                &format!("NRL→FMO 开始转发：{speaker}"),
+                "accent",
+            )
+            .await;
             self.spawn_fmo_bridge_watchdog();
         }
     }
@@ -894,7 +956,45 @@ impl RuntimeState {
                 }
             }
             runtime.fmo_bridge_watch_running.store(false, Ordering::Relaxed);
+            // 桥接发射结束，推送 snapshot 熄灭 FMO 侧 PTT 按钮
+            runtime.emit_snapshot().await;
         });
+    }
+
+    /// FMO→NRL 桥接空闲看门狗：800ms 无新帧则推送 snapshot 熄灭 NRL 侧 PTT 按钮。
+    fn spawn_fmo2nrl_bridge_watchdog(&self) {
+        if self
+            .fmo2nrl_bridge_watch_running
+            .swap(true, Ordering::Relaxed)
+        {
+            return;
+        }
+        let runtime = self.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let idle = runtime
+                    .fmo2nrl_bridge_last_frame
+                    .lock()
+                    .unwrap()
+                    .map(|t| t.elapsed() > Duration::from_millis(800))
+                    .unwrap_or(true);
+                if idle {
+                    break;
+                }
+            }
+            runtime
+                .fmo2nrl_bridge_watch_running
+                .store(false, Ordering::Relaxed);
+            runtime.emit_snapshot().await;
+        });
+    }
+
+    /// 向前端推送一次当前 snapshot（桥接发射状态变化后调用）。
+    async fn emit_snapshot(&self) {
+        if let Some(app) = self.app.read().await.clone() {
+            let _ = app.emit("runtime://snapshot", self.snapshot().await);
+        }
     }
 
     pub async fn update_jitter_buffer(&self, value: u32) -> SessionSnapshot {
@@ -1790,6 +1890,8 @@ impl RuntimeData {
                 tx_spectrum: vec![0.0; SPECTRUM_BANDS],
                 is_transmitting: false,
                 bridge_mode: 0,
+                bridge_tx_nrl: false,
+                bridge_tx_fmo: false,
                 tx_protocol: "nrl".into(),
                 is_monitoring: true,
                 queued_frames: 0,

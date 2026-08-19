@@ -56,6 +56,8 @@ const initialSnapshot: SessionSnapshot = {
   txSpectrum: Array.from({ length: 28 }, () => 0),
   isTransmitting: false,
   bridgeMode: 0,
+  bridgeTxNrl: false,
+  bridgeTxFmo: false,
   txProtocol: "nrl",
   isMonitoring: true,
   queuedFrames: 4,

@@ -1423,11 +1423,13 @@ const nrlPttPressed = ref(false);
 const fmoPttPressed = ref(false);
 const nrlPttActive = computed(
   () => nrlPttPressed.value
-    || (runtime.snapshot.isTransmitting && runtime.snapshot.txProtocol === "nrl"),
+    || (runtime.snapshot.isTransmitting && runtime.snapshot.txProtocol === "nrl")
+    || runtime.snapshot.bridgeTxNrl,
 );
 const fmoPttActive = computed(
   () => fmoPttPressed.value
-    || (runtime.snapshot.isTransmitting && runtime.snapshot.txProtocol === "fmo"),
+    || (runtime.snapshot.isTransmitting && runtime.snapshot.txProtocol === "fmo")
+    || runtime.snapshot.bridgeTxFmo,
 );
 
 async function pressNrlPtt(event?: PointerEvent) {

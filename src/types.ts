@@ -93,6 +93,9 @@ export interface SessionSnapshot {
   isTransmitting: boolean;
   // 语音互转（桥接）模式：0=关闭, 1=FMO→NRL, 2=NRL→FMO, 3=双向
   bridgeMode: number;
+  // 桥接发射状态：对应方向正在向外转发语音时点亮对应协议的 PTT 按钮
+  bridgeTxNrl: boolean;
+  bridgeTxFmo: boolean;
   txProtocol: "nrl" | "fmo";
   isMonitoring: boolean;
   queuedFrames: number;
