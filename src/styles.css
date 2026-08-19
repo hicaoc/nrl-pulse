@@ -2948,6 +2948,21 @@ input[type="range"] {
   cursor: not-allowed;
 }
 
+/* 桥接方向箭头：对应方向有语音转发时闪烁（bridgeTxNrl/bridgeTxFmo 驱动） */
+.bridge-arrow.bridge-flash {
+  animation: bridge-arrow-flash 0.9s ease-in-out infinite;
+}
+
+@keyframes bridge-arrow-flash {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+
 .callsign-display-fmo {
   font-size: 0.85em;
 }

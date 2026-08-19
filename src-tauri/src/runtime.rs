@@ -346,70 +346,82 @@ impl RuntimeState {
         *fmo.bridge.lock().unwrap() = Some(bridge);
 
         // FMO 解码 PCM → 本地回放 + FMO 独立指标 + 独立频谱推送
+        //
+        // 解码回调是同步上下文。本地回放同步入队即可；但录音（note_fmo_voice_frame）
+        // 与桥接（bridge_fmo_pcm_to_nrl）都是异步操作——若每个 40ms 块各 spawn 一个
+        // 任务，多线程 runtime 并行调度会让 PCM 块乱序，转发与录音回放都是破音。
+        // 因此走有序通道：回调只负责同步投递，单一消费任务严格按到达顺序处理。
+        let (fmo_pcm_tx, mut fmo_pcm_rx) =
+            tokio::sync::mpsc::unbounded_channel::<(Vec<i16>, String)>();
+        {
+            let runtime = self.clone();
+            let fmo_stats = fmo.stats.clone();
+            let fmo_last_arrival = std::sync::Arc::new(std::sync::Mutex::new(None::<Instant>));
+            tauri::async_runtime::spawn(async move {
+                while let Some((samples, callsign)) = fmo_pcm_rx.recv().await {
+                    let analysis = analyze_pcm_frame(&samples);
+                    let sample_count = samples.len();
+                    // FMO 独立显示电平/频谱 + 抖动/队列/码率（不覆盖 NRL）
+                    {
+                        let now = Instant::now();
+                        let expected_ms = (sample_count as f32 / 8.0).max(1.0);
+                        let mut jitter = *fmo_stats.jitter_ms.lock().unwrap();
+                        if let Some(prev) = *fmo_last_arrival.lock().unwrap() {
+                            let delta_ms =
+                                now.saturating_duration_since(prev).as_secs_f32() * 1000.0;
+                            let dev = (delta_ms - expected_ms).abs();
+                            let next = jitter as f32 + (dev - jitter as f32) / 16.0;
+                            jitter = next.round().max(0.0) as u32;
+                        }
+                        *fmo_last_arrival.lock().unwrap() = Some(now);
+                        *fmo_stats.jitter_ms.lock().unwrap() = jitter;
+                        *fmo_stats.queued_frames.lock().unwrap() =
+                            (sample_count / 160).max(1) as u32;
+                        *fmo_stats.downlink_kbps.lock().unwrap() =
+                            ((sample_count / 2 * 8) as f32) / 1000.0;
+                        *fmo_stats.rx_level.lock().unwrap() = analysis.level;
+                        *fmo_stats.rx_spectrum.lock().unwrap() = analysis.spectrum.to_vec();
+                    }
+                    runtime
+                        .note_fmo_voice_frame(
+                            callsign.clone(),
+                            sample_count,
+                            analysis.level,
+                            &analysis.spectrum,
+                            &samples,
+                        )
+                        .await;
+                    // 语音互转：FMO 接收 → NRL 发射（内部按 bridge_mode 判定）
+                    runtime.bridge_fmo_pcm_to_nrl(&samples, &callsign).await;
+                    // 高频独立事件：驱动 FMO 顶栏 VU / 频谱实时刷新（与 NRL 分开）
+                    if let Some(app) = runtime.app.read().await.clone() {
+                        let _ = app.emit(
+                            "fmo://audio-state",
+                            serde_json::json!({
+                                "rxLevel": *fmo_stats.rx_level.lock().unwrap(),
+                                "rxSpectrum": fmo_stats.rx_spectrum.lock().unwrap().clone(),
+                                "txLevel": *fmo_stats.tx_level.lock().unwrap(),
+                                "txSpectrum": fmo_stats.tx_spectrum.lock().unwrap().clone(),
+                                "jitterMs": *fmo_stats.jitter_ms.lock().unwrap(),
+                                "queuedFrames": *fmo_stats.queued_frames.lock().unwrap(),
+                                "downlinkKbps": *fmo_stats.downlink_kbps.lock().unwrap(),
+                                "rxCodec": fmo_stats.rx_codec.lock().unwrap().clone(),
+                                "rxFrames": fmo_stats.rx_frames.load(std::sync::atomic::Ordering::Relaxed),
+                            }),
+                        );
+                    }
+                }
+            });
+        }
         let runtime = self.clone();
         let speaker = fmo.current_speaker.clone();
-        let fmo_stats = fmo.stats.clone();
-        let fmo_last_arrival = std::sync::Arc::new(std::sync::Mutex::new(None::<Instant>));
         *fmo.rx_audio.on_pcm.lock().unwrap() = Some(Box::new(move |pcm: &[i16]| {
             let samples = pcm.to_vec();
             let callsign = speaker.lock().unwrap().clone();
-            let runtime = runtime.clone();
-            let fmo_stats = fmo_stats.clone();
-            let fmo_last_arrival = fmo_last_arrival.clone();
             // 同步入队：保证 40ms 音频块严格按到达顺序进播放缓冲。
-            // 之前放在下方 spawn 的异步任务里，多线程 runtime 并行调度会乱序，听感为破音。
             runtime.enqueue_received_pcm(&samples, RxChannel::Fmo);
-            tauri::async_runtime::spawn(async move {
-                let analysis = analyze_pcm_frame(&samples);
-                let sample_count = samples.len();
-                // FMO 独立显示电平/频谱 + 抖动/队列/码率（不覆盖 NRL）
-                {
-                    let now = Instant::now();
-                    let expected_ms = (sample_count as f32 / 8.0).max(1.0);
-                    let mut jitter = *fmo_stats.jitter_ms.lock().unwrap();
-                    if let Some(prev) = *fmo_last_arrival.lock().unwrap() {
-                        let delta_ms = now.saturating_duration_since(prev).as_secs_f32() * 1000.0;
-                        let dev = (delta_ms - expected_ms).abs();
-                        let next = jitter as f32 + (dev - jitter as f32) / 16.0;
-                        jitter = next.round().max(0.0) as u32;
-                    }
-                    *fmo_last_arrival.lock().unwrap() = Some(now);
-                    *fmo_stats.jitter_ms.lock().unwrap() = jitter;
-                    *fmo_stats.queued_frames.lock().unwrap() = (sample_count / 160).max(1) as u32;
-                    *fmo_stats.downlink_kbps.lock().unwrap() =
-                        ((sample_count / 2 * 8) as f32) / 1000.0;
-                    *fmo_stats.rx_level.lock().unwrap() = analysis.level;
-                    *fmo_stats.rx_spectrum.lock().unwrap() = analysis.spectrum.to_vec();
-                }
-                runtime
-                    .note_fmo_voice_frame(
-                        callsign.clone(),
-                        sample_count,
-                        analysis.level,
-                        &analysis.spectrum,
-                        &samples,
-                    )
-                    .await;
-                // 语音互转：FMO 接收 → NRL 发射（内部按 bridge_mode 与防回环判定）
-                runtime.bridge_fmo_pcm_to_nrl(&samples, &callsign).await;
-                // 高频独立事件：驱动 FMO 顶栏 VU / 频谱实时刷新（与 NRL 分开）
-                if let Some(app) = runtime.app.read().await.clone() {
-                    let _ = app.emit(
-                        "fmo://audio-state",
-                        serde_json::json!({
-                            "rxLevel": *fmo_stats.rx_level.lock().unwrap(),
-                            "rxSpectrum": fmo_stats.rx_spectrum.lock().unwrap().clone(),
-                            "txLevel": *fmo_stats.tx_level.lock().unwrap(),
-                            "txSpectrum": fmo_stats.tx_spectrum.lock().unwrap().clone(),
-                            "jitterMs": *fmo_stats.jitter_ms.lock().unwrap(),
-                            "queuedFrames": *fmo_stats.queued_frames.lock().unwrap(),
-                            "downlinkKbps": *fmo_stats.downlink_kbps.lock().unwrap(),
-                            "rxCodec": fmo_stats.rx_codec.lock().unwrap().clone(),
-                            "rxFrames": fmo_stats.rx_frames.load(std::sync::atomic::Ordering::Relaxed),
-                        }),
-                    );
-                }
-            });
+            // 录音/桥接等异步处理走有序通道，由单一消费任务按序执行
+            let _ = fmo_pcm_tx.send((samples, callsign));
         }));
 
         fmo.install_raw_handler();

@@ -1118,19 +1118,9 @@ const fmoStatusText = computed(() => {
 });
 const pttLinksLabel = computed(() => `NRL ${nrlStatusText.value} · FMO ${fmoStatusText.value}`);
 
-// 语音互转（桥接）按钮：左 NRL 右 FMO，箭头方向即转发方向；关闭态为 SVG 双向箭头加斜杠图标
-const bridgeModeLabel = computed(() => {
-  switch (runtime.snapshot.bridgeMode) {
-    case 1:
-      return "←"; // FMO→NRL：箭头朝左
-    case 2:
-      return "→"; // NRL→FMO：箭头朝右
-    case 3:
-      return "↔"; // 双向
-    default:
-      return ""; // 关闭态由 SVG 图标显示
-  }
-});
+// 语音互转（桥接）按钮：左 NRL 右 FMO，箭头方向即转发方向；关闭态为 SVG 双向箭头加斜杠图标。
+// 模板按位渲染 ←（bit1：FMO→NRL）/ →（bit2：NRL→FMO）两个箭头，
+// 对应方向有语音转发时（bridgeTxNrl/bridgeTxFmo）箭头闪烁。
 // 文字版状态（aria-label / 读屏用）
 const bridgeModeText = computed(() => {
   switch (runtime.snapshot.bridgeMode) {
@@ -2714,7 +2704,17 @@ watch(
                     <path d="M17 7l4.5 5L17 17" />
                     <path d="M4.5 19.5 19.5 4.5" />
                   </svg>
-                  <template v-else>{{ bridgeModeLabel }}</template>
+                  <template v-else><span
+                    v-if="runtime.snapshot.bridgeMode & 1"
+                    class="bridge-arrow"
+                    :class="{ 'bridge-flash': runtime.snapshot.bridgeTxNrl }"
+                    >←</span
+                  ><span
+                    v-if="runtime.snapshot.bridgeMode & 2"
+                    class="bridge-arrow"
+                    :class="{ 'bridge-flash': runtime.snapshot.bridgeTxFmo }"
+                    >→</span
+                  ></template>
               </button>
             </div>
             <div class="callsign-block callsign-fmo">
