@@ -908,30 +908,103 @@ impl AprsClient {
                     }
                     "message" => {
                         let verb = parsed.get("verb").and_then(|v| v.as_str()).unwrap_or("");
-                        let fields: Vec<String> = parsed
-                            .get("fields")
-                            .map(|f| {
-                                f.as_array()
-                                    .unwrap_or(&vec![])
-                                    .iter()
-                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
+                        if verb.is_empty() {
+                            // 自由文本消息（无 verb）：打 text，按字符截断 60 避免截断 UTF-8
+                            let text: String = parsed
+                                .get("text")
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("")
+                                .chars()
+                                .take(60)
+                                .collect();
+                            (self.emit)(json!({"type": "log", "level": "info",
+                                "msg": format!("客户端消息 {}→{}: {}",
+                                               parsed.get("callsign").unwrap(),
+                                               parsed.get("to").unwrap_or(&json!("")),
+                                               text)}));
+                        } else {
+                            let fields: Vec<String> = parsed
+                                .get("fields")
+                                .map(|f| {
+                                    f.as_array()
+                                        .unwrap_or(&vec![])
+                                        .iter()
+                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            (self.emit)(json!({"type": "log", "level": "info",
+                                "msg": format!("FMO 信令 {}→{}: {} {}",
+                                               parsed.get("callsign").unwrap(),
+                                               parsed.get("to").unwrap_or(&json!("")),
+                                               verb, fields.join(" "))}));
+                        }
+                    }
+                    "ack" => {
                         (self.emit)(json!({"type": "log", "level": "info",
-                            "msg": format!("FMO 信令 {}→{}: {} {}",
+                            "msg": format!("FMO ACK {}→{} #{}",
                                            parsed.get("callsign").unwrap(),
                                            parsed.get("to").unwrap_or(&json!("")),
-                                           verb, fields.join(" "))}));
+                                           parsed.get("msg_id").unwrap_or(&json!("")))}));
+                    }
+                    "client_beacon" => {
+                        let comment: String = parsed
+                            .get("comment")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("")
+                            .chars()
+                            .take(60)
+                            .collect();
+                        (self.emit)(json!({"type": "log", "level": "info",
+                            "msg": format!("客户端备注 {}: {}",
+                                           parsed.get("callsign").unwrap(),
+                                           comment)}));
+                    }
+                    "broadcast" => {
+                        // 客户端信标（V4 BEACON/ONLINE/VOCAL、legacy FMO-CLIENT 等）：
+                        // 此类报文本就不含 host/port/U 字段，按信标格式打
+                        let mut info: Vec<String> = Vec::new();
+                        if let Some(uid) = parsed.get("uid").filter(|v| !v.is_null()) {
+                            info.push(format!("uid={uid}"));
+                        } else if let Some(s) = parsed.get("s_code").filter(|v| !v.is_null()) {
+                            info.push(format!("S{s}"));
+                        }
+                        if let Some(f) = parsed.get("freq").filter(|v| !v.is_null()) {
+                            info.push(format!("{f}MHz"));
+                        }
+                        if let Some(h) = parsed.get("height").filter(|v| !v.is_null()) {
+                            info.push(format!("高度{h}m"));
+                        }
+                        if let Some(rig) = parsed.get("rig").and_then(|r| r.as_str()) {
+                            if !rig.is_empty() {
+                                info.push(rig.to_string());
+                            }
+                        }
+                        let label = parsed
+                            .get("subtype")
+                            .and_then(|s| s.as_str())
+                            .or_else(|| parsed.get("version").and_then(|v| v.as_str()))
+                            .unwrap_or("");
+                        let mut msg = format!(
+                            "客户端信标 {} [{}]",
+                            parsed.get("callsign").unwrap(),
+                            label
+                        );
+                        if !info.is_empty() {
+                            msg.push(' ');
+                            msg.push_str(&info.join(" "));
+                        }
+                        (self.emit)(json!({"type": "log", "level": "info", "msg": msg}));
                     }
                     _ => {
+                        // position（.FMO <uid>）等其余类型：按实际字段打，不假装有 host/port/U
                         (self.emit)(json!({"type": "log", "level": "info",
-                            "msg": format!("FMO 广播 {}: host={} port={} U={}/{}",
+                            "msg": format!("FMO {} {}: uid={} {} {}",
+                                           kind,
                                            parsed.get("callsign").unwrap(),
-                                           parsed.get("host").unwrap_or(&json!("")),
-                                           parsed.get("port").unwrap_or(&json!("")),
-                                           parsed.get("online").unwrap_or(&json!("?")),
-                                           parsed.get("total").unwrap_or(&json!("?")))}));
+                                           parsed.get("uid").unwrap_or(&json!("")),
+                                           parsed.get("lat").unwrap_or(&json!("")),
+                                           parsed.get("lon").unwrap_or(&json!("")))}));
                     }
                 }
                 if entry.is_some() {
