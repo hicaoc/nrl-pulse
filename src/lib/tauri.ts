@@ -8,6 +8,7 @@ export function flog(...args: unknown[]): void {
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ChatMessageEvent,
+  FmoBeaconConfig,
   FmoBroadcastConfig,
   FmoEvent,
   FmoQsoRecord,
@@ -228,6 +229,24 @@ export async function fmoMqttNoLocal(enabled: boolean): Promise<void> {
   return invoke("fmo_mqtt_no_local", { enabled });
 }
 
+// FMO 设备激活（绑定 MAC 自动获取证书）：server 为证书服务器地址，mac 为本机 MAC
+export interface FmoActivateConfig {
+  server: string;
+  mac: string;
+}
+
+export async function fmoActivateGetConfig(): Promise<FmoActivateConfig> {
+  return invoke<FmoActivateConfig>("fmo_activate_get_config");
+}
+
+export async function fmoActivateSetConfig(server: string): Promise<void> {
+  return invoke("fmo_activate_set_config", { server });
+}
+
+export async function fmoActivateRun(): Promise<string> {
+  return invoke<string>("fmo_activate_run");
+}
+
 export async function fmoQsoCall(target: string, uid?: number): Promise<void> {
   return invoke("fmo_qso_call", { target, uid: uid ?? null });
 }
@@ -262,6 +281,29 @@ export async function fmoBroadcastSetConfig(cfg: FmoBroadcastConfig): Promise<vo
 
 export async function fmoBroadcastNow(): Promise<void> {
   return invoke("fmo_broadcast_now");
+}
+
+export async function fmoBeaconConfig(): Promise<FmoBeaconConfig> {
+  return invoke<FmoBeaconConfig>("fmo_beacon_config");
+}
+
+export async function fmoBeaconSetConfig(cfg: FmoBeaconConfig): Promise<void> {
+  return invoke("fmo_beacon_set_config", { config: cfg });
+}
+
+export async function fmoBeaconNow(): Promise<void> {
+  return invoke("fmo_beacon_now");
+}
+
+// 广播 super 门控查询（后端权威判定）：eligible=false 时 reason 为中文原因
+export interface FmoBroadcastEligibility {
+  eligible: boolean;
+  reason: string;
+  role: string;
+}
+
+export async function fmoBroadcastEligible(): Promise<FmoBroadcastEligibility> {
+  return invoke<FmoBroadcastEligibility>("fmo_broadcast_eligible");
 }
 
 export async function onFmoEvent(handler: (event: FmoEvent) => void): Promise<UnlistenFn> {

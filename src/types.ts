@@ -321,12 +321,19 @@ export interface FmoStatsSnapshot {
   mqttState: string;
   mqttDetail: string;
   mqttClientId: string;
+  mqttRole: string;
   aprsState: string;
   aprsDetail: string;
   serverHost: string;
   serverPort: number;
   serverName: string;
   activeSpeaker: string;
+  presenceOnline: number;
+  presencePeak: number;
+  broadcastOnline: number;
+  broadcastPeak: number;
+  beaconEnabled: boolean;
+  beaconLastSent: number;
   rxFrames: number;
   txFrames: number;
   rxText: number;
@@ -360,6 +367,12 @@ export interface FmoQsoRecord {
   peer: string;
   peer_uid: number;
   result: string;
+  /** 祝福/备注（收到的完整通联记录的 toComment；本地信令记录无此字段） */
+  comment?: string;
+  /** 对方梅登黑德网格（收到的完整通联记录） */
+  grid?: string;
+  /** 中继/服务器名（收到的完整通联记录） */
+  relay?: string;
 }
 
 export interface FmoBroadcastConfig {
@@ -373,6 +386,30 @@ export interface FmoBroadcastConfig {
   country: string;
   lat: number;
   lon: number;
+  /** 广播呼号的 APRS SSID（0-15，0=不带；包头和 TBS 签同一个值） */
+  ssid: number;
+}
+
+/** 个人信标（BEACON）配置（beacon.json，后端 serde(default) 全字段兜底） */
+export interface FmoBeaconConfig {
+  /** 周期信标开关（固定 10 分钟周期 + 60s 限速） */
+  enabled: boolean;
+  /** 信标呼号的 APRS SSID（0-15，0=不带） */
+  ssid: number;
+  /** 电台名称（≤16 字符，线上 UTF-8 / TBS 内同字节） */
+  rig: string;
+  /** 直频频率 MHz（>0 才发送；合法范围 20-500） */
+  freq_mhz: number;
+  /** 天线型号（≤16 字符） */
+  ant: string;
+  /** 天线高度 m（0=报文中省略 HEIGHT 段） */
+  height_m: number;
+  /** APRS 个性化消息（≤64 字符，BEACON 成功后以 APFMO2 跟发） */
+  aprs_msg: string;
+  /** 登录公告（≤128 字符，STATION 广播成功后以 APFMO1 跟发） */
+  notice: string;
+  /** QSO 祝福语（≤128 字符）：QSO 建立时随完整通联记录 JSON 发到对方 FMO/QSO/UID/<uid>（toComment 字段） */
+  qso_msg: string;
 }
 
 export interface FmoEvent {
@@ -386,6 +423,7 @@ export interface FmoEvent {
     | "server_traffic"
     | "qso_state"
     | "qso_log_changed"
-    | "broadcast_state";
+    | "broadcast_state"
+    | "beacon_state";
   [key: string]: unknown;
 }

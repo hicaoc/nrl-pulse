@@ -426,6 +426,8 @@ impl RuntimeState {
 
         fmo.install_raw_handler();
         fmo.install_qso_jump_hook();
+        fmo.install_qso_wish_hooks();
+        fmo.install_server_refresh_hook();
         fmo.ensure_aprs_task();
         fmo.start_identity_watchdog();
         fmo.auto_connect_aprs().await;

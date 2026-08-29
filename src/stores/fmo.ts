@@ -3,9 +3,16 @@ import { defineStore } from "pinia";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { flog } from "@/lib/tauri";
 import type { FmoAudioState } from "@/lib/tauri";
+import type { FmoActivateConfig } from "@/lib/tauri";
 import {
+  fmoActivateGetConfig,
+  fmoActivateRun,
+  fmoActivateSetConfig,
   fmoAprsConnect,
   fmoAprsDisconnect,
+  fmoBeaconConfig,
+  fmoBeaconNow,
+  fmoBeaconSetConfig,
   fmoBroadcastConfig,
   fmoBroadcastNow,
   fmoBroadcastSetConfig,
@@ -29,7 +36,7 @@ import {
   onFmoAudioState,
   onFmoEvent,
 } from "@/lib/tauri";
-import type { FmoBroadcastConfig, FmoEvent, FmoQsoRecord, FmoQsoState, FmoServer, FmoServerTraffic, FmoStateSnapshot, FmoStatsSnapshot } from "@/types";
+import type { FmoBeaconConfig, FmoBroadcastConfig, FmoEvent, FmoQsoRecord, FmoQsoState, FmoServer, FmoServerTraffic, FmoStateSnapshot, FmoStatsSnapshot } from "@/types";
 
 const initial: FmoStateSnapshot = {
   identity: { callsign: "", uid: 0 },
@@ -55,12 +62,19 @@ const initialStats: FmoStatsSnapshot = {
   mqttState: "disconnected",
   mqttDetail: "",
   mqttClientId: "",
+  mqttRole: "",
   aprsState: "disconnected",
   aprsDetail: "",
   serverHost: "",
   serverPort: 0,
   serverName: "",
   activeSpeaker: "",
+  presenceOnline: 0,
+  presencePeak: 0,
+  broadcastOnline: 0,
+  broadcastPeak: 0,
+  beaconEnabled: false,
+  beaconLastSent: 0,
   rxFrames: 0,
   txFrames: 0,
   rxText: 0,
@@ -88,7 +102,11 @@ export const useFmoStore = defineStore("fmo", () => {
   const qsoLog = ref<FmoQsoRecord[]>([]);
   const broadcast = ref<FmoBroadcastConfig>({
     mode_min: 0, name: "", host: "", port: 1883, cover_km: 100,
-    online: 0, peak: 0, country: "CN", lat: 39.9, lon: 116.4,
+    online: 0, peak: 0, country: "CN", lat: 39.9, lon: 116.4, ssid: 0,
+  });
+  const beacon = ref<FmoBeaconConfig>({
+    enabled: false, ssid: 0, rig: "", freq_mhz: 0, ant: "",
+    height_m: 0, aprs_msg: "", notice: "", qso_msg: "",
   });
   const bootstrapped = ref(false);
   const busy = ref(false);
@@ -97,6 +115,18 @@ export const useFmoStore = defineStore("fmo", () => {
 
   const mqttConnected = () => state.value.mqttState === "connected";
   const selectedServer = () => state.value.selectedServer as Partial<FmoServer> | null;
+
+  // 服务器广播 super 门控（与后端 gate_decide 同条件，用于 UI 禁用；后端仍是权威判定）：
+  // MQTT 已连接 + 最终认证角色 super + 登录的是自己服务器（选定服务器呼号 == 本机证书呼号）
+  const canBroadcast = () => {
+    if (state.value.mqttState !== "connected") return false;
+    if (stats.value.mqttRole !== "super") return false;
+    // 呼号比较剥离 SSID（"BG9JYT-14" == "BG9JYT"），与后端 gate_decide 一致
+    const base = (cs: string) => cs.split("-")[0].trim().toUpperCase();
+    const srvCs = base(selectedServer()?.callsign ?? "");
+    const ownCs = base(stats.value.callsign || "");
+    return srvCs !== "" && ownCs !== "" && srvCs === ownCs;
+  };
 
   async function refreshStats() {
     try {
@@ -145,6 +175,8 @@ export const useFmoStore = defineStore("fmo", () => {
         if (typeof ev.client_id === "string" && ev.client_id) {
           state.value.mqttClientId = ev.client_id;
         }
+        // 后端在 mqtt_state 事件里携带最终认证角色（断开/失败时为空串）
+        stats.value.mqttRole = (ev.role as string) ?? "";
         break;
       case "aprs_state":
         state.value.aprsState = (ev.state as string) ?? "disconnected";
@@ -243,6 +275,7 @@ export const useFmoStore = defineStore("fmo", () => {
       qso.value = await fmoQsoState();
       qsoLog.value = await fmoQsoLog();
       broadcast.value = await fmoBroadcastConfig();
+      beacon.value = await fmoBeaconConfig();
     } catch (e) {
       flog("[fmo] qso/broadcast init error:", String(e));
     }
@@ -305,6 +338,25 @@ export const useFmoStore = defineStore("fmo", () => {
     await runAction(() => fmoCertImportFile(filePath, name));
   }
 
+  // FMO 设备激活（绑定 MAC 自动获取证书）
+  async function activateGetConfig(): Promise<FmoActivateConfig> {
+    return fmoActivateGetConfig();
+  }
+
+  async function activateSetConfig(server: string) {
+    await runAction(() => fmoActivateSetConfig(server));
+  }
+
+  async function activateRun(): Promise<string> {
+    let msg = "";
+    await runAction(async () => {
+      msg = await fmoActivateRun();
+    });
+    // 证书已写入：刷新身份/呼号/UID/passcode/证书列表
+    await refresh();
+    return msg;
+  }
+
   async function addFavorite(server: FmoServer) {
     await runAction(() =>
       fmoFavoritesAdd(server as unknown as Record<string, unknown>),
@@ -359,6 +411,15 @@ export const useFmoStore = defineStore("fmo", () => {
     await runAction(fmoBroadcastNow);
   }
 
+  async function saveBeacon(cfg: FmoBeaconConfig) {
+    beacon.value = { ...cfg };
+    await runAction(() => fmoBeaconSetConfig(cfg));
+  }
+
+  async function beaconNow() {
+    await runAction(fmoBeaconNow);
+  }
+
   return {
     state,
     stats,
@@ -366,10 +427,12 @@ export const useFmoStore = defineStore("fmo", () => {
     qso,
     qsoLog,
     broadcast,
+    beacon,
     bootstrapped,
     busy,
     mqttConnected,
     selectedServer,
+    canBroadcast,
     bootstrap,
     refresh,
     refreshStats,
@@ -380,6 +443,9 @@ export const useFmoStore = defineStore("fmo", () => {
     disconnectMqtt,
     importCert,
     importCertFile,
+    activateGetConfig,
+    activateSetConfig,
+    activateRun,
     addFavorite,
     removeFavorite,
     setRxPlay,
@@ -391,5 +457,7 @@ export const useFmoStore = defineStore("fmo", () => {
     setQsoAutoAccept,
     saveBroadcast,
     broadcastNow,
+    saveBeacon,
+    beaconNow,
   };
 });

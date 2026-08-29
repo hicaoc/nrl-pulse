@@ -5,6 +5,7 @@
 //!   role, targetUrl, targetPort, serverFingerprint, timestamp, proof:{signature}}
 
 use crate::fmo::protocol;
+use crate::fmo::qso::base_call;
 use sha2::Digest;
 use std::path::Path;
 
@@ -148,16 +149,17 @@ pub fn mqtt_credentials(
 
 /// 初始角色选择：登录服务器呼号与证书呼号一致（自己的服务器）默认 super，
 /// 否则默认 user；被拒后 MQTT 客户端从该角色起把其余角色各重试一遍。
+/// 呼号比较剥离 SSID（"BG9JYT-14" == "BG9JYT"）。
 pub fn initial_role(certs_dir: &Path, server: &serde_json::Value) -> String {
     let cert_cs = load_identity(certs_dir)
         .ok()
         .and_then(|i| {
             i["user_cert"]["subject"]["callsign"]
                 .as_str()
-                .map(|s| s.to_uppercase())
+                .map(base_call)
         })
         .unwrap_or_default();
-    let srv_cs = server["callsign"].as_str().unwrap_or("").to_uppercase();
+    let srv_cs = base_call(server["callsign"].as_str().unwrap_or(""));
     if !cert_cs.is_empty() && !srv_cs.is_empty() && cert_cs == srv_cs {
         "super".to_string()
     } else {

@@ -78,6 +78,10 @@ pub struct QsoEngine {
     seen: Arc<std::sync::Mutex<VecDeque<String>>>,
     /// 跳服务器钩子（FmoState 安装）：参数 = 目标服务器 uid
     jump_hook: Arc<std::sync::Mutex<Option<Arc<dyn Fn(u32) + Send + Sync>>>>,
+    /// QSO 建立钩子（FmoState 安装，用于 QSO 祝福发布）：参数 = (对方呼号, 对方uid)。
+    /// 单一挂点：仅 set_phase 进入 Established 时触发（接听/自动接受/对方 ACCEPT），
+    /// 取消/拒接/超时不会触发，保证每次通联只发一次。
+    established_hook: Arc<std::sync::Mutex<Option<Arc<dyn Fn(String, u32) + Send + Sync>>>>,
     cfg_path: PathBuf,
     log_path: PathBuf,
 }
@@ -87,8 +91,60 @@ fn now() -> i64 {
 }
 
 /// 去掉 SSID 的大写基呼号
-fn base_call(cs: &str) -> String {
+pub(crate) fn base_call(cs: &str) -> String {
     cs.split('-').next().unwrap_or(cs).trim().to_uppercase()
+}
+
+/// 经纬度 → 6 位梅登黑德网格（如 39.9,116.4 → OM89ev）。
+/// 非法输入（NaN/无穷）返回空串；经纬度越界时收敛到合法范围。
+pub fn maidenhead_grid(lat: f64, lon: f64) -> String {
+    if !lat.is_finite() || !lon.is_finite() {
+        return String::new();
+    }
+    // 经度归一到 [-180,180)，纬度收敛到 [-90,90]；再各留一点余量防浮点上溢
+    let lo = ((lon + 180.0).rem_euclid(360.0) - 180.0 + 180.0).min(359.999999);
+    let la = (lat.clamp(-90.0, 90.0) + 90.0).min(179.999999);
+    let ch = |i: u32, base: u8| (base + i as u8) as char;
+    let mut s = String::with_capacity(6);
+    s.push(ch((lo / 20.0) as u32, b'A'));
+    s.push(ch((la / 10.0) as u32, b'A'));
+    s.push(ch(((lo % 20.0) / 2.0) as u32, b'0'));
+    s.push(ch((la % 10.0) as u32, b'0'));
+    s.push(ch((((lo % 2.0) / 2.0) * 24.0) as u32, b'a'));
+    s.push(ch(((la % 1.0) * 24.0) as u32, b'a'));
+    s
+}
+
+/// 固件完整 QSO 记录 JSON（FMO/QSO/UID/<对方uid> 载荷，QSO 祝福在 toComment 字段）。
+/// 字段名与固件模板一致：{"logId":..,"timestamp":..,"freqHz":..,"fromCallsign":..,
+/// "fromGrid":..,"toCallsign":..,"toGrid":..,"toComment":..,"mode":..,"relayName":..,"relayAdmin":..}
+#[allow(clippy::too_many_arguments)]
+pub fn build_qso_record(
+    log_id: u32,
+    timestamp: u64,
+    freq_hz: u64,
+    from_callsign: &str,
+    from_grid: &str,
+    to_callsign: &str,
+    to_grid: &str,
+    to_comment: &str,
+    mode: &str,
+    relay_name: &str,
+    relay_admin: &str,
+) -> serde_json::Value {
+    json!({
+        "logId": log_id,
+        "timestamp": timestamp,
+        "freqHz": freq_hz,
+        "fromCallsign": from_callsign,
+        "fromGrid": from_grid,
+        "toCallsign": to_callsign,
+        "toGrid": to_grid,
+        "toComment": to_comment,
+        "mode": mode,
+        "relayName": relay_name,
+        "relayAdmin": relay_admin,
+    })
 }
 
 fn gbk_bytes(s: &str) -> Vec<u8> {
@@ -123,6 +179,7 @@ impl QsoEngine {
             seq: Arc::new(AtomicU32::new(1)),
             seen: Arc::new(std::sync::Mutex::new(VecDeque::new())),
             jump_hook: Arc::new(std::sync::Mutex::new(None)),
+            established_hook: Arc::new(std::sync::Mutex::new(None)),
             cfg_path,
             log_path: data_dir.join("qso_log.json"),
         }
@@ -139,6 +196,10 @@ impl QsoEngine {
 
     pub fn install_jump_hook(&self, hook: Arc<dyn Fn(u32) + Send + Sync>) {
         *self.jump_hook.lock().unwrap() = Some(hook);
+    }
+
+    pub fn install_established_hook(&self, hook: Arc<dyn Fn(String, u32) + Send + Sync>) {
+        *self.established_hook.lock().unwrap() = Some(hook);
     }
 
     pub fn auto_accept(&self) -> bool {
@@ -182,6 +243,13 @@ impl QsoEngine {
     // ------------------------------------------------------------ 状态与事件
 
     async fn set_phase(&self, phase: QsoPhase, detail: &str) {
+        // 进入 Established 是 QSO 祝福发布的单一挂点（先取出，phase 随后被 move 进锁）
+        let established = match &phase {
+            QsoPhase::Established {
+                peer, peer_uid, ..
+            } => Some((peer.clone(), *peer_uid)),
+            _ => None,
+        };
         let (name, peer, peer_uid, outgoing) = match &phase {
             QsoPhase::Idle => ("idle", String::new(), 0u32, false),
             QsoPhase::OutQuery { peer, peer_uid, .. } => {
@@ -214,6 +282,11 @@ impl QsoEngine {
             "type": "qso_state", "phase": name, "peer": peer,
             "peerUid": peer_uid, "outgoing": outgoing, "detail": detail,
         }));
+        if let Some((peer, peer_uid)) = established {
+            if let Some(hook) = self.established_hook.lock().unwrap().clone() {
+                hook(peer, peer_uid);
+            }
+        }
     }
 
     pub async fn snapshot(&self) -> serde_json::Value {
@@ -261,6 +334,11 @@ impl QsoEngine {
             "peer_uid": peer_uid,
             "result": result,
         });
+        self.push_entry(entry);
+    }
+
+    /// 追加一条 qso_log 条目（上限 500 条，溢出丢弃最旧）并通知前端刷新。
+    fn push_entry(&self, entry: serde_json::Value) {
         let mut list: Vec<serde_json::Value> = std::fs::read_to_string(&self.log_path)
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
@@ -274,6 +352,33 @@ impl QsoEngine {
             std::fs::write(&self.log_path, text).ok();
         }
         (self.emit)(json!({"type": "qso_log_changed"}));
+    }
+
+    /// 收到的完整通联记录（MQTT FMO/QSO/UID/<本机uid>，含 QSO 祝福 toComment）
+    /// 写入本地 qso_log —— 固件语义："展示在对方的 QSO 记录中"。
+    /// 空祝福（toComment=""）同样写入，不破坏记录。
+    pub fn record_remote(&self, rec: &serde_json::Value) {
+        let str_field = |key: &str| {
+            rec.get(key)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        let ts = rec
+            .get("timestamp")
+            .and_then(|t| t.as_u64())
+            .unwrap_or_else(|| now() as u64);
+        let entry = json!({
+            "ts": ts,
+            "dir": "in",
+            "peer": str_field("fromCallsign"),
+            "peer_uid": 0,
+            "result": "通联记录",
+            "comment": str_field("toComment"),
+            "grid": str_field("fromGrid"),
+            "relay": str_field("relayName"),
+        });
+        self.push_entry(entry);
     }
 
     pub fn qso_log(&self) -> Vec<serde_json::Value> {
@@ -576,7 +681,9 @@ impl QsoEngine {
 
     /// 收到 CALL（我是被叫）
     async fn on_call(&self, from: &str, fields: &[String]) {
-        let (_, peer_uid, srv_uid, _name) = Self::parse_fields(fields);
+        // Q=主叫 uid（对方），U=被叫 uid（本机）；对方 uid 取 Q 不是 U
+        // （取 U 会把 QSO 记录发到自己的 topic）
+        let (peer_uid, _, srv_uid, _name) = Self::parse_fields(fields);
         let peer_uid = peer_uid.unwrap_or(0);
         let srv_uid = srv_uid.unwrap_or(0);
         let busy = !matches!(&*self.phase.lock().await, QsoPhase::Idle);
@@ -835,5 +942,50 @@ mod tests {
     fn base_call_strips_ssid() {
         assert_eq!(base_call("bd4xgt-15"), "BD4XGT");
         assert_eq!(base_call("BG9JYT"), "BG9JYT");
+    }
+
+    #[test]
+    fn maidenhead_grid_known_points() {
+        // 标准 6 位换算（与实捕样本 OM89av 同格式：字段大写/数字/子方小写）
+        assert_eq!(maidenhead_grid(39.9, 116.4), "OM89ev");
+        assert_eq!(maidenhead_grid(32.3932, 119.3706), "OM92qj");
+        // 南半球/西经（手算向量：-33.865,-74.006 → FF26xd）
+        assert_eq!(maidenhead_grid(-33.865, -74.006), "FF26xd");
+        // 非法输入返回空串
+        assert_eq!(maidenhead_grid(f64::NAN, 116.4), "");
+    }
+
+    #[test]
+    fn qso_record_json_layout() {
+        // 固件模板字段全集；空祝福不破坏记录
+        let rec = build_qso_record(
+            7,
+            1786318787,
+            438_500_000,
+            "BD4XGT",
+            "OM89ev",
+            "BG8LLD",
+            "",
+            "73 通联愉快",
+            "FMO",
+            "测试台",
+            "BG9JYT",
+        );
+        assert_eq!(rec["logId"], 7);
+        assert_eq!(rec["timestamp"], 1786318787u64);
+        assert_eq!(rec["freqHz"], 438_500_000u64);
+        assert_eq!(rec["fromCallsign"], "BD4XGT");
+        assert_eq!(rec["fromGrid"], "OM89ev");
+        assert_eq!(rec["toCallsign"], "BG8LLD");
+        assert_eq!(rec["toComment"], "73 通联愉快");
+        assert_eq!(rec["mode"], "FMO");
+        assert_eq!(rec["relayName"], "测试台");
+        assert_eq!(rec["relayAdmin"], "BG9JYT");
+        let empty = build_qso_record(1, 0, 0, "A", "", "B", "", "", "FMO", "", "");
+        assert_eq!(empty["toComment"], "");
+        assert_eq!(empty["freqHz"], 0);
+        // 可序列化为单行 JSON（MQTT 载荷）
+        let text = serde_json::to_string(&rec).unwrap();
+        assert!(text.contains("\"toComment\":\"73 通联愉快\""));
     }
 }

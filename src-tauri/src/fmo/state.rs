@@ -5,12 +5,14 @@
 
 use crate::fmo::aprs::{AprsClient, AprsParams, EmitFn, ServerTable};
 use crate::fmo::audio::{RxAudio, TxSession};
-use crate::fmo::broadcast::BroadcastEngine;
+use crate::fmo::broadcast::{BeaconEngine, BroadcastEngine};
 use crate::fmo::certstore::CertStore;
 use crate::fmo::fmo_auth;
 use crate::fmo::fmo_frame;
 use crate::fmo::mqtt_client::FmoMqttClient;
+use crate::fmo::presence::PresenceTracker;
 use crate::fmo::qso::QsoEngine;
+use crate::fmo::{mqtt_client as fmo_mqtt, qso as fmo_qso};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -62,6 +64,10 @@ pub struct FmoState {
     pub qso: Arc<QsoEngine>,
     /// 服务器广播引擎（APRS APFMO4 STATION）
     pub broadcast: Arc<BroadcastEngine>,
+    /// 个人信标引擎（APRS APFMO4 BEACON + APFMO2/APFMO1 跟发）
+    pub beacon: Arc<BeaconEngine>,
+    /// 在线数/峰值自动统计花名册（LATE 心跳，持久化 presence.json）
+    pub presence: Arc<PresenceTracker>,
     pub rx_play_enabled: Arc<std::sync::Mutex<bool>>,
     pub selected_server: Arc<Mutex<serde_json::Value>>,
     pub favorites: Arc<Mutex<Vec<serde_json::Value>>>,
@@ -148,6 +154,9 @@ impl FmoState {
         let mut mqtt_client_inner = FmoMqttClient::new(emit.clone());
         mqtt_client_inner.cnt_tele = stats.server_info.clone();
         mqtt_client_inner.cnt_text = stats.rx_text.clone();
+        // 在线数/峰值花名册：注入 MQTT 客户端（LATE 心跳维护、断线清空）与广播引擎（自动值）
+        let presence = Arc::new(PresenceTracker::new(data_dir.join("presence.json")));
+        mqtt_client_inner.set_presence(presence.clone());
         let mqtt_client = Arc::new(mqtt_client_inner);
         let cert_store = Arc::new(CertStore::new(data_dir.join("certs")));
         let aprs_client = Arc::new(AprsClient::new(emit.clone(), server_table.clone()));
@@ -181,7 +190,19 @@ impl FmoState {
             emit.clone(),
             aprs_client.tx.clone(),
             data_dir.clone(),
+            mqtt_client.state.clone(),
+            mqtt_client.current_role.clone(),
+            selected_server.clone(),
+            presence.clone(),
         ));
+        // 个人信标引擎（位置复用广播配置的经纬度）；回注广播引擎用于 APFMO1 公告跟发
+        let beacon = Arc::new(BeaconEngine::new(
+            emit.clone(),
+            aprs_client.tx.clone(),
+            data_dir.clone(),
+            broadcast.cfg_handle(),
+        ));
+        broadcast.set_beacon(beacon.clone());
         // APRS 信令消息 → QSO 引擎（主全馈连接与上行连接都会投递，引擎内去重）
         {
             let qso_handler = qso.clone();
@@ -206,6 +227,8 @@ impl FmoState {
             bridge_tx: Arc::new(Mutex::new(None)),
             qso,
             broadcast,
+            beacon,
+            presence,
             rx_play_enabled: Arc::new(std::sync::Mutex::new(true)),
             selected_server,
             favorites: Arc::new(Mutex::new(favorites)),
@@ -245,19 +268,141 @@ impl FmoState {
                     return;
                 };
                 let host = entry.get("host").and_then(|h| h.as_str()).unwrap_or("").to_string();
-                let was_connected = this.mqtt_client.state_str().await == "connected";
+                // select_server now reconnects MQTT itself when connected/connecting,
+                // so the hook only selects and logs.
                 this.select_server(entry).await;
                 (this.emit)(json!({"type": "log", "level": "info",
                     "msg": format!("QSO 跳台：已选定对方服务器 {host}")}));
-                if was_connected {
-                    this.disconnect_mqtt().await;
-                    if let Err(e) = this.connect_mqtt(false).await {
-                        (this.emit)(json!({"type": "log", "level": "error",
-                            "msg": format!("QSO 跳台重连 MQTT 失败：{e}")}));
-                    }
-                }
             });
         }));
+    }
+
+    /// QSO 祝福（qso_best_wish）钩子：
+    /// - 发送：QSO 建立（qso 引擎 Established 单一挂点）时，把完整通联记录 JSON
+    ///   （祝福在 toComment）发布到对方 `FMO/QSO/UID/<对方uid>`；
+    /// - 接收：MQTT 收到 `FMO/QSO/UID/<本机uid>` 的完整记录 JSON 时写入本地 qso_log，
+    ///   前端 QSO 记录展示祝福（toComment）。
+    pub fn install_qso_wish_hooks(self: &Arc<Self>) {
+        let this = self.clone();
+        self.qso
+            .install_established_hook(Arc::new(move |peer: String, peer_uid: u32| {
+                let this = this.clone();
+                tauri::async_runtime::spawn(async move {
+                    this.publish_qso_record(&peer, peer_uid).await;
+                });
+            }));
+        let this = self.clone();
+        *self.mqtt_client.on_qso_record.lock().unwrap() = Some(Arc::new(
+            move |topic: String, payload: Vec<u8>| {
+                let this = this.clone();
+                tauri::async_runtime::spawn(async move {
+                    this.handle_qso_record(&topic, &payload).await;
+                });
+            },
+        ));
+    }
+
+    /// QSO 建立后向 `FMO/QSO/UID/<对方uid>` 发布完整通联记录 JSON。
+    /// 发送失败（MQTT 未连接等）只记 warn 日志，不影响通联本身。
+    async fn publish_qso_record(&self, peer: &str, peer_uid: u32) {
+        if peer_uid == 0 {
+            (self.emit)(json!({"type": "log", "level": "warn",
+                "msg": format!("QSO 祝福未发送：不知道 {peer} 的 UID")}));
+            return;
+        }
+        let beacon = self.beacon.config().await;
+        let bc = self.broadcast.config().await;
+        let grid = fmo_qso::maidenhead_grid(bc.lat, bc.lon);
+        // 无射频：频率用 beacon 配置的直频（未配置为 0）
+        let freq_hz = if beacon.freq_mhz > 0.0 {
+            (beacon.freq_mhz * 1e6) as u64
+        } else {
+            0
+        };
+        let sel = self.selected_server.lock().await.clone();
+        let relay_name = sel
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .to_string();
+        let relay_admin = sel
+            .get("callsign")
+            .and_then(|c| c.as_str())
+            .or_else(|| {
+                sel.get("cert")
+                    .and_then(|c| c.get("callsign"))
+                    .and_then(|c| c.as_str())
+            })
+            .unwrap_or("")
+            .to_string();
+        let my_call = self.current_callsign();
+        // logId = 刚写入的本地 qso_log 条目序号（Established 前 record() 已追加）
+        let log_id = self.qso.qso_log().len() as u32;
+        let rec = fmo_qso::build_qso_record(
+            log_id,
+            chrono::Utc::now().timestamp() as u64,
+            freq_hz,
+            &my_call,
+            &grid,
+            peer,
+            "",
+            &beacon.qso_msg,
+            "FMO",
+            &relay_name,
+            &relay_admin,
+        );
+        let topic = format!("FMO/QSO/UID/{peer_uid}");
+        let payload = rec.to_string().into_bytes();
+        match self.mqtt_client.publish(&topic, payload, 0).await {
+            Ok(()) => {
+                let wish = if beacon.qso_msg.is_empty() {
+                    String::new()
+                } else {
+                    format!("，祝福：{}", beacon.qso_msg)
+                };
+                (self.emit)(json!({"type": "log", "level": "info",
+                    "msg": format!("QSO 通联记录已发送给 {peer}（{topic}）{wish}")}));
+            }
+            Err(e) => {
+                (self.emit)(json!({"type": "log", "level": "warn",
+                    "msg": format!("QSO 通联记录发送失败（{topic}）：{e}")}));
+            }
+        }
+    }
+
+    /// 收到 `FMO/QSO/UID/<uid>` 的完整通联记录 JSON：只收发给自己的（topic 尾段 ==
+    /// 本机 uid），写入本地 qso_log（"展示在对方的 QSO 记录中"）。
+    async fn handle_qso_record(&self, topic: &str, payload: &[u8]) {
+        let Some(rec) = fmo_mqtt::parse_qso_record_json(payload) else {
+            return;
+        };
+        let my_uid = self.current_uid();
+        let topic_uid: u32 = topic
+            .rsplit('/')
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        if my_uid == 0 || topic_uid != my_uid {
+            return;
+        }
+        let from = rec
+            .get("fromCallsign")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
+        let comment = rec
+            .get("toComment")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
+        self.qso.record_remote(&rec);
+        let wish = if comment.is_empty() {
+            String::new()
+        } else {
+            format!("，祝福：{comment}")
+        };
+        (self.emit)(json!({"type": "log", "level": "info",
+            "msg": format!("收到 {from} 的 QSO 通联记录{wish}")}));
     }
 
     /// 选定服务器的认证信息（host/uid/证书指纹），供构建 SAS 凭据。
@@ -315,6 +460,9 @@ impl FmoState {
 
     /// 连接 MQTT（使用选定服务器 + 证书自动构建凭据）。
     pub async fn connect_mqtt(&self, tls: bool) -> Result<(), String> {
+        // Self-heal: refresh the selection from server_table first, so a server
+        // cert rotation seen via STATION broadcast reaches the SAS credentials.
+        self.refresh_selected_from_table().await;
         let creds = match self.mqtt_credentials().await {
             Ok(c) => c,
             Err(e) => {
@@ -418,9 +566,10 @@ impl FmoState {
         tauri::async_runtime::spawn(async move {
             tx.run().await;
         });
-        // QSO 超时 tick + 服务器自动广播
+        // QSO 超时 tick + 服务器自动广播 + 个人信标周期循环
         self.qso.start_tick_task();
         self.broadcast.start();
+        self.beacon.start();
     }
 
     /// 证书身份巡检：启动即查一次，之后每 10 分钟复查。
@@ -517,8 +666,8 @@ impl FmoState {
         );
     }
 
-    /// 选定服务器并持久化（下次启动恢复，用于自动连接）。
-    pub async fn select_server(&self, server: serde_json::Value) {
+    /// 更新选定服务器并持久化（下次启动恢复，用于自动连接）。
+    async fn update_selected(&self, server: serde_json::Value) {
         {
             let mut sel = self.selected_server.lock().await;
             *sel = server.clone();
@@ -526,6 +675,105 @@ impl FmoState {
         if let Ok(text) = serde_json::to_string_pretty(&server) {
             std::fs::write(self.data_dir.join("selected_server.json"), text).ok();
         }
+    }
+
+    /// 选定服务器并持久化（下次启动恢复，用于自动连接）。
+    /// 若当前 MQTT 已连接或正在连接，断开并按新选定项重连，
+    /// 使所有 UI 入口（服务器列表 / 收藏行 / QSO 跳台）行为一致。
+    pub async fn select_server(&self, server: serde_json::Value) {
+        self.update_selected(server).await;
+        // Reconnect outside any lock: connect_mqtt re-locks selected_server internally.
+        let st = self.mqtt_client.state_str().await;
+        if st == "connected" || st == "connecting" {
+            self.disconnect_mqtt().await;
+            if let Err(e) = self.connect_mqtt(false).await {
+                (self.emit)(json!({"type": "log", "level": "error",
+                    "msg": format!("切换服务器后重连 MQTT 失败：{e}")}));
+            }
+        }
+    }
+
+    /// 在 server_table 里查选定服务器对应的最新条目（uid 优先，其次 host:port）。
+    async fn table_entry_for_selected(
+        &self,
+        sel: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        if let Some(uid) = server_uid_of(sel) {
+            if let Some(e) = self.server_table.find_server_by_uid(uid).await {
+                return Some(e);
+            }
+        }
+        let host = sel.get("host").and_then(|h| h.as_str()).unwrap_or("");
+        if host.is_empty() {
+            return None;
+        }
+        let port = sel.get("port").and_then(|p| p.as_u64()).unwrap_or(1883);
+        self.server_table
+            .to_list()
+            .await
+            .into_iter()
+            .find(|e| {
+                e.get("host").and_then(|h| h.as_str()) == Some(host)
+                    && e.get("port").and_then(|p| p.as_u64()).unwrap_or(1883) == port
+            })
+    }
+
+    /// 自愈刷新：server_table 里同一台服务器的证书指纹若与选定项不一致（服务器
+    /// 已换新证而本地缓存还是旧证），用表里的最新 cert 更新 selected_server 并
+    /// 持久化。返回是否刷新。
+    async fn refresh_selected_from_table(&self) -> bool {
+        let sel = self.selected_server.lock().await.clone();
+        if sel.is_null() {
+            return false;
+        }
+        let Some(entry) = self.table_entry_for_selected(&sel).await else {
+            return false;
+        };
+        let Some(new_sel) = refreshed_selection(&sel, &entry) else {
+            return false;
+        };
+        (self.emit)(json!({"type": "log", "level": "info",
+            "msg": "选定服务器证书已更新（STATION 广播），已用新指纹刷新选定项"}));
+        self.update_selected(new_sel).await;
+        true
+    }
+
+    /// STATION 广播 upsert 回调：广播的是当前选定服务器且证书指纹变了时刷新选定项；
+    /// MQTT 正连着这台服务器（connected/connecting 且 current_host 匹配）则断开重连。
+    async fn maybe_refresh_selected(&self, entry: serde_json::Value) {
+        let sel = self.selected_server.lock().await.clone();
+        if sel.is_null() {
+            return;
+        }
+        let Some(new_sel) = refreshed_selection(&sel, &entry) else {
+            return;
+        };
+        let st = self.mqtt_client.state_str().await;
+        let cur_host = self.mqtt_client.current_host.lock().await.clone();
+        let host = new_sel
+            .get("host")
+            .and_then(|h| h.as_str())
+            .unwrap_or("")
+            .to_string();
+        (self.emit)(json!({"type": "log", "level": "info",
+            "msg": format!("选定服务器 {host} 证书已更新（STATION 广播），已刷新选定项")}));
+        if (st == "connected" || st == "connecting") && !host.is_empty() && cur_host == host {
+            // select_server persists and reconnects when connected/connecting.
+            self.select_server(new_sel).await;
+        } else {
+            self.update_selected(new_sel).await;
+        }
+    }
+
+    /// 安装 server_table upsert 钩子（STATION 广播在线自愈刷新）。
+    pub fn install_server_refresh_hook(self: &Arc<Self>) {
+        let this = self.clone();
+        *self.server_table.on_upsert.lock().unwrap() = Some(Arc::new(move |entry| {
+            let this = this.clone();
+            tauri::async_runtime::spawn(async move {
+                this.maybe_refresh_selected(entry).await;
+            });
+        }));
     }
 
     /// 默认选定一台带证书信息的在线服务器（已有选定项时不覆盖）。
@@ -683,6 +931,7 @@ impl FmoState {
         out["mqttState"] = json!(self.mqtt_client.state_str().await);
         out["mqttDetail"] = json!(self.mqtt_client.detail.lock().await.clone());
         out["mqttClientId"] = json!(self.mqtt_client.client_id_str().await);
+        out["mqttRole"] = json!(self.mqtt_client.current_role.lock().await.clone());
         out["aprsState"] = json!(self.aprs_client.state.lock().await.clone());
         out["aprsDetail"] = json!(self.aprs_client.detail.lock().await.clone());
         let sel = self.selected_server.lock().await.clone();
@@ -714,6 +963,143 @@ impl FmoState {
         }
         out["serverName"] = json!(server_name);
         out["activeSpeaker"] = json!(self.current_speaker.lock().unwrap().clone());
+        // 在线数/峰值自动统计（LATE 心跳花名册）+ 广播 online/peak 生效值（0=自动，>0=手动覆盖）
+        out["presenceOnline"] = json!(self.presence.online());
+        out["presencePeak"] = json!(self.presence.peak());
+        let bc_cfg = self.broadcast.config().await;
+        let (eff_online, eff_peak) = self.broadcast.effective_online_peak(&bc_cfg);
+        out["broadcastOnline"] = json!(eff_online);
+        out["broadcastPeak"] = json!(eff_peak);
+        // 个人信标（BEACON）状态
+        out["beaconEnabled"] = json!(self.beacon.config().await.enabled);
+        out["beaconLastSent"] = json!(self.beacon.last_sent().await);
         out
+    }
+}
+
+/// 取服务器条目的 uid（顶层 uid 缺失时回落到 cert.uid）。
+fn server_uid_of(v: &serde_json::Value) -> Option<u32> {
+    v.get("uid")
+        .and_then(|u| u.as_u64())
+        .or_else(|| {
+            v.get("cert")
+                .and_then(|c| c.get("uid"))
+                .and_then(|u| u.as_u64())
+        })
+        .map(|u| u as u32)
+}
+
+/// 若 entry 与 sel 是同一台服务器（uid 匹配优先，其次 host:port）且 cert 指纹
+/// 不同（服务器换了新证，本地选定项还是旧证），返回用 entry 重建的选定项 JSON；
+/// 否则 None。指纹含 iat，指纹不同即覆盖「iat 更新」的情形。
+fn refreshed_selection(
+    sel: &serde_json::Value,
+    entry: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let same_server = match (server_uid_of(sel), server_uid_of(entry)) {
+        (Some(a), Some(b)) => a == b,
+        _ => {
+            let h1 = sel.get("host").and_then(|h| h.as_str()).unwrap_or("");
+            let h2 = entry.get("host").and_then(|h| h.as_str()).unwrap_or("");
+            !h1.is_empty()
+                && h1 == h2
+                && sel.get("port").and_then(|p| p.as_u64()).unwrap_or(1883)
+                    == entry.get("port").and_then(|p| p.as_u64()).unwrap_or(1883)
+        }
+    };
+    if !same_server {
+        return None;
+    }
+    let new_cert = entry.get("cert").filter(|c| c.is_object())?;
+    let fp_new = fmo_auth::beacon_cert_fingerprint(new_cert);
+    if let Some(old_cert) = sel.get("cert").filter(|c| c.is_object()) {
+        if fmo_auth::beacon_cert_fingerprint(old_cert) == fp_new {
+            return None;
+        }
+    }
+    Some(json!({
+        "host": entry.get("host").cloned().unwrap_or(json!("")),
+        "port": entry.get("port").cloned().unwrap_or(json!(1883)),
+        "callsign": new_cert.get("callsign").cloned().unwrap_or(json!("")),
+        "uid": new_cert.get("uid").cloned().unwrap_or(serde_json::Value::Null),
+        "cert": new_cert.clone(),
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cert_json(pubkey_byte: u8, iat: u64) -> serde_json::Value {
+        cert_with_uid(pubkey_byte, iat, Some(26658))
+    }
+
+    fn cert_with_uid(pubkey_byte: u8, iat: u64, uid: Option<u64>) -> serde_json::Value {
+        let mut c = json!({
+            "alg": 1,
+            "callsign": "BD4RFG",
+            "pubkey_hex": hex::encode([pubkey_byte; 32]),
+            "iat": iat,
+            "exp": iat + 86400,
+        });
+        if let Some(u) = uid {
+            c["uid"] = json!(u);
+        }
+        c
+    }
+
+    #[test]
+    fn refresh_selection_picks_new_fingerprint() {
+        // 选定项存旧证、表里是新证：应刷新为新指纹
+        let sel = json!({
+            "host": "china.fmocq.com", "port": 8883,
+            "callsign": "BD4RFG", "uid": 26658, "cert": cert_json(0x11, 1000),
+        });
+        let entry = json!({
+            "host": "china.fmocq.com", "port": 8883,
+            "uid": 26658, "cert": cert_json(0x22, 2000),
+        });
+        let new_sel = refreshed_selection(&sel, &entry).expect("证书指纹变了应刷新");
+        assert_eq!(
+            fmo_auth::beacon_cert_fingerprint(&new_sel["cert"]),
+            fmo_auth::beacon_cert_fingerprint(&entry["cert"]),
+        );
+        assert_eq!(new_sel["cert"]["iat"].as_u64(), Some(2000));
+        assert_eq!(new_sel["host"].as_str(), Some("china.fmocq.com"));
+    }
+
+    #[test]
+    fn refresh_selection_skips_same_fingerprint() {
+        let cert = cert_json(0x11, 1000);
+        let sel = json!({"host": "h", "port": 1883, "uid": 26658, "cert": cert});
+        let entry = json!({"host": "h", "port": 1883, "uid": 26658, "cert": cert});
+        assert!(refreshed_selection(&sel, &entry).is_none());
+    }
+
+    #[test]
+    fn refresh_selection_skips_other_server() {
+        // uid 不同的服务器不刷新（cert 里的 uid 也不同）
+        let sel = json!({"host": "a", "port": 1883, "uid": 1, "cert": cert_with_uid(0x11, 1000, Some(1))});
+        let entry = json!({"host": "a", "port": 1883, "uid": 2, "cert": cert_with_uid(0x22, 2000, Some(2))});
+        assert!(refreshed_selection(&sel, &entry).is_none());
+        // 无 uid 时按 host:port 匹配，host 不同不刷新
+        let sel = json!({"host": "a", "port": 1883, "cert": cert_with_uid(0x11, 1000, None)});
+        let entry = json!({"host": "b", "port": 1883, "cert": cert_with_uid(0x22, 2000, None)});
+        assert!(refreshed_selection(&sel, &entry).is_none());
+    }
+
+    #[test]
+    fn refresh_selection_matches_by_host_port_without_uid() {
+        // 双方都没有 uid（顶层与 cert 都没有）时按 host:port 判定同一台服务器
+        let sel = json!({"host": "h", "port": 1883, "cert": cert_with_uid(0x11, 1000, None)});
+        let entry = json!({"host": "h", "port": 1883, "cert": cert_with_uid(0x22, 2000, None)});
+        assert!(refreshed_selection(&sel, &entry).is_some());
+    }
+
+    #[test]
+    fn refresh_selection_skips_entry_without_cert() {
+        let sel = json!({"host": "h", "port": 1883, "uid": 26658, "cert": cert_json(0x11, 1000)});
+        let entry = json!({"host": "h", "port": 1883, "uid": 26658});
+        assert!(refreshed_selection(&sel, &entry).is_none());
     }
 }

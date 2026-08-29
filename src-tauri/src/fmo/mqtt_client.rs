@@ -9,13 +9,14 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::fmo::aprs::EmitFn;
+use crate::fmo::presence::{self, PresenceTracker};
 
 pub const SUBSCRIBE_TOPICS: &[&str] = &[
     "FMO/RAW",
     "FMO/TELE",
     "FMO/SERVER_INFO",
     "FMO/PROFILE",
-    "FMO/LATE/UID_V1/",
+    "FMO/LATE/UID_V1/#",
     "FMO/QSO/UID/#",
 ];
 
@@ -206,10 +207,68 @@ pub fn parse_profile(payload: &[u8]) -> String {
     out
 }
 
+/// FMO/QSO/UID/{uid} 上的 JSON 载荷解析（UTF-8/GBK 容错后以 `{` 开头才尝试）。
+fn parse_qso_json(payload: &[u8]) -> Option<serde_json::Value> {
+    let text = decode_text(payload);
+    let text = text.trim();
+    if !text.starts_with('{') {
+        return None;
+    }
+    serde_json::from_str(text).ok()
+}
+
+/// 完整通联记录 JSON（固件模板：logId/timestamp/freqHz/fromCallsign/…/toComment/mode/
+/// relayName/relayAdmin，QSO 祝福在 toComment）。成员 JSON 与 264B 二进制记录返回 None。
+pub fn parse_qso_record_json(payload: &[u8]) -> Option<serde_json::Value> {
+    let v = parse_qso_json(payload)?;
+    if v.get("logId").is_some() && v.get("fromCallsign").and_then(|c| c.as_str()).is_some() {
+        return Some(v);
+    }
+    None
+}
+
+/// 成员 JSON（{callsign,isSpeaking,isHost,grid}）兼容识别。
+fn parse_qso_member_json(payload: &[u8]) -> Option<serde_json::Value> {
+    let v = parse_qso_json(payload)?;
+    if v.get("callsign").and_then(|c| c.as_str()).is_some() {
+        return Some(v);
+    }
+    None
+}
+
 /// 解析 FMO/QSO/UID/{uid} 通联记录（264B）：
 /// [0:4]u32 类型(1) [12:16]u32 uid [16:20]u32 Unix时间戳
 /// [24:36]对方呼号12B [40:52]Maidenhead网格12B [48:60]中继/服务器名UTF-8
 pub fn parse_qso(payload: &[u8]) -> String {
+    // JSON 载荷：完整通联记录（含 QSO 祝福 toComment）或成员 JSON 两种格式
+    if let Some(rec) = parse_qso_record_json(payload) {
+        let s = |key: &str| rec.get(key).and_then(|v| v.as_str()).unwrap_or("");
+        let mut out = format!("通联记录 {} → {}", s("fromCallsign"), s("toCallsign"));
+        if !s("fromGrid").is_empty() {
+            out.push_str(&format!(" 网格[{}]", s("fromGrid")));
+        }
+        if !s("toComment").is_empty() {
+            out.push_str(&format!(" 祝福[{}]", s("toComment")));
+        }
+        if !s("relayName").is_empty() {
+            out.push_str(&format!(" 中继[{}]", s("relayName")));
+        }
+        return out;
+    }
+    if let Some(member) = parse_qso_member_json(payload) {
+        let s = |key: &str| member.get(key).and_then(|v| v.as_str()).unwrap_or("");
+        let mut out = format!("成员 {}", s("callsign"));
+        if !s("grid").is_empty() {
+            out.push_str(&format!(" 网格[{}]", s("grid")));
+        }
+        if member.get("isSpeaking").and_then(|v| v.as_bool()) == Some(true) {
+            out.push_str(" 发言中");
+        }
+        if member.get("isHost").and_then(|v| v.as_bool()) == Some(true) {
+            out.push_str(" 主持");
+        }
+        return out;
+    }
     if payload.len() < 60 {
         return format!(
             "{}B {}",
@@ -252,6 +311,9 @@ pub struct ServerTraffic {
 pub struct FmoMqttClient {
     pub emit: EmitFn,
     pub on_raw_payload: std::sync::Mutex<Option<Arc<dyn Fn(Vec<u8>) + Send + Sync>>>,
+    /// FMO/QSO/UID/{uid} 载荷回调（state 注入，用于接收完整通联记录/QSO 祝福）：
+    /// 参数 = (topic, payload)
+    pub on_qso_record: std::sync::Mutex<Option<Arc<dyn Fn(String, Vec<u8>) + Send + Sync>>>,
     /// 凭据工厂：role → (username, password)。
     /// SAS ACL 要求 claimed role 与证书登记角色一致（如登记 super 却声称 user 会被拒），
     /// 认证被拒时换角色重建凭据重试，把 ROLE_SEQ 里的角色从初始角色起各试一遍
@@ -261,6 +323,9 @@ pub struct FmoMqttClient {
     >,
     pub state: Arc<Mutex<String>>,
     pub detail: Arc<Mutex<String>>,
+    /// 最终认证成功的 SAS 角色（ROLE_SEQ 轮换后的结果，仅在 connected 时有值），
+    /// 供服务器广播 super 门控使用；断开/认证失败时清空。
+    pub current_role: Arc<Mutex<String>>,
     pub client: Arc<Mutex<Option<AsyncClient>>>,
     pub generation: Arc<std::sync::atomic::AtomicU64>,
     pub current_host: Arc<Mutex<String>>,
@@ -274,6 +339,8 @@ pub struct FmoMqttClient {
     /// FMO 顶栏全局计数：遥测（TELE+SERVER_INFO 消息数）/ 文本（RAW 以外的其它消息数）
     pub cnt_tele: Arc<std::sync::atomic::AtomicU64>,
     pub cnt_text: Arc<std::sync::atomic::AtomicU64>,
+    /// 在线数/峰值花名册（LATE 心跳统计），由 state 注入；断线时清空在线、峰值保留
+    pub presence: std::sync::Mutex<Option<Arc<PresenceTracker>>>,
 }
 
 /// 认证被拒时依次重试的候选角色（与 sim-rust / sim 一致）：
@@ -285,9 +352,11 @@ impl FmoMqttClient {
         Self {
             emit,
             on_raw_payload: std::sync::Mutex::new(None),
+            on_qso_record: std::sync::Mutex::new(None),
             cred_factory: std::sync::Mutex::new(None),
             state: Arc::new(Mutex::new("disconnected".into())),
             detail: Arc::new(Mutex::new(String::new())),
+            current_role: Arc::new(Mutex::new(String::new())),
             client: Arc::new(Mutex::new(None)),
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             current_host: Arc::new(Mutex::new(String::new())),
@@ -297,16 +366,23 @@ impl FmoMqttClient {
             traffic: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             cnt_tele: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             cnt_text: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            presence: std::sync::Mutex::new(None),
         }
+    }
+
+    /// 注入在线数/峰值花名册（state 启动时调用一次）。
+    pub fn set_presence(&self, tracker: Arc<PresenceTracker>) {
+        *self.presence.lock().unwrap() = Some(tracker);
     }
 
     async fn set_state(&self, state: &str, detail: &str) {
         *self.state.lock().await = state.to_string();
         *self.detail.lock().await = detail.to_string();
         let client_id = self.current_client_id.lock().await.clone();
+        let role = self.current_role.lock().await.clone();
         (self.emit)(
             json!({"type": "mqtt_state", "state": state, "detail": detail,
-                           "client_id": client_id}),
+                           "client_id": client_id, "role": role}),
         );
     }
 
@@ -402,7 +478,9 @@ impl FmoMqttClient {
         let emit = self.emit.clone();
         let state = self.state.clone();
         let detail = self.detail.clone();
+        let role_holder = self.current_role.clone();
         let on_raw = self.on_raw_payload.lock().unwrap().clone();
+        let on_qso = self.on_qso_record.lock().unwrap().clone();
         let cred_factory = self.cred_factory.lock().unwrap().clone();
         let client_holder = self.client.clone();
         let generation = self.generation.clone();
@@ -410,6 +488,7 @@ impl FmoMqttClient {
         let cnt_tele = self.cnt_tele.clone();
         let cnt_text = self.cnt_text.clone();
         let no_local = self.no_local.clone();
+        let presence = self.presence.lock().unwrap().clone();
         *self.current_host.lock().await = host.clone();
 
         *self.client.lock().await = Some(client.clone());
@@ -437,6 +516,10 @@ impl FmoMqttClient {
                 }
                 match eventloop.poll().await {
                     Ok(Event::Incoming(Packet::ConnAck(ack))) => {
+                        // Stale task guard: a superseded connection must not touch state.
+                        if generation.load(std::sync::atomic::Ordering::SeqCst) != gen {
+                            return;
+                        }
                         let code = ack.code;
                         eprintln!("[FMO-MQTT] ConnAck code={code:?} host={host}:{port}");
                         if code != ConnectReturnCode::Success {
@@ -485,16 +568,23 @@ impl FmoMqttClient {
                             );
                             *state.lock().await = "error".to_string();
                             *detail.lock().await = msg.clone();
+                            role_holder.lock().await.clear();
+                            if let Some(p) = &presence {
+                                p.clear_online();
+                            }
                             (emit)(json!({"type": "log", "level": "error", "msg": msg}));
                             (emit)(
                                 json!({"type": "mqtt_state", "state": "error", "detail": msg,
-                                         "client_id": cid}),
+                                         "client_id": cid, "role": ""}),
                             );
                             return;
                         }
                         *state.lock().await = "connected".to_string();
+                        // 记录最终认证成功的角色（ROLE_SEQ 轮换后的结果），供广播 super 门控
+                        *role_holder.lock().await = cur_role.clone();
                         (emit)(json!({"type": "mqtt_state", "state": "connected",
-                                      "detail": format!("{host}:{port}"), "client_id": cid}));
+                                      "detail": format!("{host}:{port}"), "client_id": cid,
+                                      "role": cur_role}));
                         (emit)(json!({"type": "log", "level": "info",
                         "msg": format!("MQTT 已连接 {host}:{port}，client id={cid}，订阅 {} 个 topic{}",
                                        SUBSCRIBE_TOPICS.len(),
@@ -512,8 +602,18 @@ impl FmoMqttClient {
                         }
                     }
                     Ok(Event::Incoming(Packet::Publish(pub_msg))) => {
+                        // Stale task guard: drop traffic from the old server silently.
+                        if generation.load(std::sync::atomic::Ordering::SeqCst) != gen {
+                            return;
+                        }
                         let topic = String::from_utf8_lossy(&pub_msg.topic).into_owned();
                         let payload = pub_msg.payload.to_vec();
+                        // LATE 心跳 → 在线数花名册（仅连接时才会收到，天然只在已连接时维护）
+                        if let Some(p) = &presence {
+                            if let Some(uid) = presence::parse_late_uid(&topic) {
+                                p.note_uid(uid);
+                            }
+                        }
                         {
                             let mut t = traffic.lock().await;
                             let st = t.entry(host.clone()).or_default();
@@ -545,6 +645,13 @@ impl FmoMqttClient {
                             if let Some(cb) = &on_raw {
                                 let _ = cb(payload);
                             }
+                        } else if topic.starts_with("FMO/QSO/UID/") {
+                            // 完整通联记录/QSO 祝福回调（readable 日志仍走下方 else 分支）
+                            if let Some(cb) = &on_qso {
+                                cb(topic.clone(), payload.clone());
+                            }
+                            (emit)(json!({"type": "log", "level": "info",
+                                "msg": format!("MQTT {}", readable_msg(&topic, &payload))}));
                         } else if topic == "FMO/TELE" {
                             (emit)(json!({"type": "log", "level": "info",
                                 "msg": format!("MQTT FMO/TELE: {}", parse_tele(&payload))}));
@@ -558,9 +665,17 @@ impl FmoMqttClient {
                         }
                     }
                     Ok(Event::Incoming(Packet::Disconnect(_))) => {
+                        // Stale task guard: the old task must not overwrite the new state.
+                        if generation.load(std::sync::atomic::Ordering::SeqCst) != gen {
+                            return;
+                        }
                         *state.lock().await = "disconnected".to_string();
+                        role_holder.lock().await.clear();
+                        if let Some(p) = &presence {
+                            p.clear_online();
+                        }
                         (emit)(json!({"type": "mqtt_state", "state": "disconnected",
-                                      "detail": "对端断开", "client_id": cid}));
+                                      "detail": "对端断开", "client_id": cid, "role": ""}));
                     }
                     Ok(Event::Incoming(_)) => {}
                     Ok(Event::Outgoing(_)) => {}
@@ -585,10 +700,14 @@ impl FmoMqttClient {
                         }
                         *state.lock().await = "error".to_string();
                         *detail.lock().await = msg.clone();
+                        role_holder.lock().await.clear();
+                        if let Some(p) = &presence {
+                            p.clear_online();
+                        }
                         (emit)(json!({"type": "log", "level": "error", "msg": msg}));
                         (emit)(
                             json!({"type": "mqtt_state", "state": "error", "detail": msg,
-                                     "client_id": cid}),
+                                     "client_id": cid, "role": ""}),
                         );
                         // 超时/认证失败不做无限重连，避免反复等待；用户可手动重新连接
                         return;
@@ -599,9 +718,18 @@ impl FmoMqttClient {
     }
 
     pub async fn disconnect(&self) {
+        // Send a clean DISCONNECT to the broker first so the old eventloop
+        // task exits promptly instead of lingering until the keepalive timeout.
+        if let Some(client) = self.client.lock().await.take() {
+            let _ = client.disconnect().await;
+        }
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        *self.client.lock().await = None;
+        self.current_role.lock().await.clear();
+        // 断线清空在线（峰值保留）
+        if let Some(p) = self.presence.lock().unwrap().as_ref() {
+            p.clear_online();
+        }
         self.set_state("disconnected", "用户断开").await;
     }
 
@@ -663,6 +791,25 @@ mod tests {
             client_id_for("bg8lld", 42, &suffix),
             format!("FMO-BG8LLD-42-{suffix}")
         );
+    }
+
+    #[tokio::test]
+    async fn mqtt_state_event_carries_role_and_disconnect_clears_it() {
+        // mqtt_state 事件应携带当前角色；disconnect 后角色清空
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let emit: EmitFn = Arc::new(move |ev| captured.lock().unwrap().push(ev));
+        let client = FmoMqttClient::new(emit);
+        *client.current_role.lock().await = "super".to_string();
+        client.set_state("connected", "test").await;
+        let last = events.lock().unwrap().last().unwrap().clone();
+        assert_eq!(last["type"], "mqtt_state");
+        assert_eq!(last["role"], "super", "事件应携带当前角色: {last}");
+        client.disconnect().await;
+        let last = events.lock().unwrap().last().unwrap().clone();
+        assert_eq!(last["state"], "disconnected");
+        assert_eq!(last["role"], "", "断开后角色应清空: {last}");
+        assert!(client.current_role.lock().await.is_empty());
     }
 
     #[test]
@@ -729,5 +876,42 @@ mod tests {
         assert!(out.contains("BI1FRI"), "应含对方呼号: {out}");
         assert!(out.contains("OM89av"), "应含网格: {out}");
         assert!(out.contains("时间 08-"), "应含人类可读时间: {out}");
+    }
+
+    /// 固定向量：固件完整通联记录 JSON（QSO 祝福在 toComment）
+    const QSO_RECORD_JSON: &str = r#"{"logId":7,"timestamp":1786318787,"freqHz":438500000,"fromCallsign":"BD4XGT","fromGrid":"OM89ev","toCallsign":"BG8LLD","toGrid":"","toComment":"73 通联愉快","mode":"FMO","relayName":"测试台","relayAdmin":"BG9JYT"}"#;
+
+    #[test]
+    fn qso_record_json_parse() {
+        let rec = parse_qso_record_json(QSO_RECORD_JSON.as_bytes()).expect("应识别完整记录 JSON");
+        assert_eq!(rec["fromCallsign"], "BD4XGT");
+        assert_eq!(rec["toComment"], "73 通联愉快");
+        let out = parse_qso(QSO_RECORD_JSON.as_bytes());
+        assert!(out.contains("BD4XGT"), "应含主叫: {out}");
+        assert!(out.contains("BG8LLD"), "应含被叫: {out}");
+        assert!(out.contains("OM89ev"), "应含网格: {out}");
+        assert!(out.contains("73 通联愉快"), "应含祝福: {out}");
+    }
+
+    #[test]
+    fn qso_record_json_empty_comment_ok() {
+        // 空祝福不破坏记录：仍识别为完整记录
+        let text = r#"{"logId":1,"timestamp":0,"freqHz":0,"fromCallsign":"A","fromGrid":"","toCallsign":"B","toGrid":"","toComment":"","mode":"FMO","relayName":"","relayAdmin":""}"#;
+        let rec = parse_qso_record_json(text.as_bytes()).expect("空祝福也应识别");
+        assert_eq!(rec["toComment"], "");
+        let out = parse_qso(text.as_bytes());
+        assert!(out.contains("A → B"), "应含双方呼号: {out}");
+        assert!(!out.contains("祝福"), "空祝福不应出祝福段: {out}");
+    }
+
+    #[test]
+    fn qso_member_json_compat() {
+        // 原有成员 JSON：不识别为完整记录，但可读解析兼容
+        let text = r#"{"callsign":"BG8LLD","isSpeaking":true,"isHost":false,"grid":"OM89av"}"#;
+        assert!(parse_qso_record_json(text.as_bytes()).is_none());
+        let out = parse_qso(text.as_bytes());
+        assert!(out.contains("BG8LLD"), "应含呼号: {out}");
+        assert!(out.contains("OM89av"), "应含网格: {out}");
+        assert!(out.contains("发言中"), "应含发言标记: {out}");
     }
 }

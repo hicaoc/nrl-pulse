@@ -3430,6 +3430,13 @@ input[type="range"] {
   gap: 10px;
 }
 
+/* 广播表单"带入当前服务器地址"小按钮：不撑满整行 */
+.fmo-bc-fill {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
 /* 数字输入框去掉步进按钮（窄列里会挤掉数字） */
 .fmo-bc-form input[type="number"]::-webkit-outer-spin-button,
 .fmo-bc-form input[type="number"]::-webkit-inner-spin-button {

@@ -19,7 +19,7 @@ import {
 import type { UpdateInfo } from "@/lib/tauri";
 import { usePlatformStore } from "@/stores/platform";
 import { useRuntimeStore } from "@/stores/runtime";
-import type { ChatMessageEvent, FmoBroadcastConfig, FmoClient, FmoServer, PlatformDevice, PlatformGroup, PlatformRegisterPayload, SerialTunnelConfig, TimelineEvent } from "@/types";
+import type { ChatMessageEvent, FmoBeaconConfig, FmoBroadcastConfig, FmoClient, FmoServer, PlatformDevice, PlatformGroup, PlatformRegisterPayload, SerialTunnelConfig, TimelineEvent } from "@/types";
 
 type Lang = "zh" | "en";
 
@@ -132,6 +132,12 @@ const registerLicense = ref<{
 const fmoAprsCallsign = ref("");
 const fmoCertMsg = ref("");
 const fmoMuted = ref(false);
+
+// FMO 设备激活（绑定 MAC 自动获取证书）
+const fmoActivateServer = ref("");
+const fmoActivateMac = ref("");
+const fmoActivateMsg = ref("");
+const fmoActivating = ref(false);
 
 // FMO 证书：需要完整 4 个
 const fmoCertSlots = [
@@ -1745,6 +1751,38 @@ async function onFmoCertSlotChange(name: string) {
   }
 }
 
+async function loadFmoActivateConfig() {
+  try {
+    const cfg = await fmo.activateGetConfig();
+    fmoActivateServer.value = cfg.server;
+    fmoActivateMac.value = cfg.mac;
+  } catch (e) {
+    flog("[fmo] activate config error:", String(e));
+  }
+}
+
+async function saveFmoActivateServer() {
+  try {
+    await fmo.activateSetConfig(fmoActivateServer.value.trim());
+    fmoActivateMsg.value = language.value === "zh" ? "✓ 证书服务器地址已保存" : "✓ Server saved";
+  } catch (e) {
+    fmoActivateMsg.value = String(e);
+  }
+}
+
+async function runFmoActivate() {
+  fmoActivateMsg.value = "";
+  fmoActivating.value = true;
+  try {
+    const msg = await fmo.activateRun();
+    fmoActivateMsg.value = `✓ ${msg}`;
+  } catch (e) {
+    fmoActivateMsg.value = String(e);
+  } finally {
+    fmoActivating.value = false;
+  }
+}
+
 async function connectFmoAprs() {
   const cs = (fmo.state.identity.callsign || fmo.state.certCallsign || fmoAprsCallsign.value || "").trim();
   if (!cs) {
@@ -1758,14 +1796,15 @@ async function connectFmoAprs() {
   }
 }
 
-async function selectFmoServer(s: FmoServer) {
-  await fmo.selectServer(s);
-}
-
 async function selectFmoServerAndConnect(s: FmoServer) {
+  // 已连接时后端 select_server 内部会自动断开重连；未连接时这里补一次显式连接，
+  // 保证「点列表 = 登录该服务器」。
   try {
     await fmo.selectServer(s);
-    await connectFmoMqtt();
+    const st = fmo.state.mqttState;
+    if (st !== "connected" && st !== "connecting") {
+      await connectFmoMqtt();
+    }
   } catch (e) {
     alert(String(e));
   }
@@ -2046,10 +2085,10 @@ async function cancelQso() {
 // QSO 记录（设置页展示最近 10 条，新的在前）
 const qsoLogRecent = computed(() => [...fmo.qsoLog].reverse().slice(0, 10));
 
-// 成功接通的 QSO 列表（右侧 QSO 栏，新的在前）
+// 成功接通的 QSO 列表（右侧 QSO 栏，新的在前；含收到的完整通联记录/祝福）
 const qsoSuccessList = computed(() =>
   [...fmo.qsoLog]
-    .filter((r) => r.result === "接通" || r.result.startsWith("已接听"))
+    .filter((r) => r.result === "接通" || r.result.startsWith("已接听") || r.result === "通联记录")
     .reverse(),
 );
 
@@ -2080,13 +2119,49 @@ async function saveBroadcastConfig() {
     await fmo.saveBroadcast({ ...broadcastDraft.value });
     alert(language.value === "zh" ? "广播配置已保存" : "Broadcast config saved");
   } catch (e) {
+    // 后端拒绝时（如 super 门控不满足）把中文原因直接展示给用户
     alert(String(e));
   }
+}
+
+// 把当前选定服务器的 host/port 带入广播草稿（广播的正是自己服务器的地址）
+function fillBroadcastFromServer() {
+  const srv = fmo.selectedServer();
+  if (!srv) return;
+  if (srv.host) broadcastDraft.value.host = String(srv.host);
+  if (srv.port) broadcastDraft.value.port = Number(srv.port);
 }
 
 async function manualBroadcast() {
   try {
     await fmo.broadcastNow();
+  } catch (e) {
+    alert(String(e));
+  }
+}
+
+// 个人信标（BEACON）配置草稿（设置页编辑，保存才下发后端）
+const beaconDraft = ref<FmoBeaconConfig>({ ...fmo.beacon });
+watch(
+  () => fmo.beacon,
+  (v) => {
+    beaconDraft.value = { ...v };
+  },
+);
+
+async function saveBeaconConfig() {
+  try {
+    await fmo.saveBeacon({ ...beaconDraft.value });
+    alert(language.value === "zh" ? "信标配置已保存" : "Beacon config saved");
+  } catch (e) {
+    // 后端拒绝时（字段校验失败）把中文原因直接展示给用户
+    alert(String(e));
+  }
+}
+
+async function manualBeacon() {
+  try {
+    await fmo.beaconNow();
   } catch (e) {
     alert(String(e));
   }
@@ -2167,6 +2242,7 @@ onMounted(async () => {
   }
   await runtime.bootstrap();
   await fmo.bootstrap();
+  await loadFmoActivateConfig();
   defaultAudioPath.value = await getDefaultAudioDir();
   if (!isPttWindow) {
     await platform.bootstrap();
@@ -3088,7 +3164,7 @@ watch(
               :key="s.key"
               class="fmo-server-row"
               :class="{ selected: fmo.selectedServer()?.key === s.key }"
-              @click="selectFmoServer(s)"
+              @click="selectFmoServerAndConnect(s)"
             >
               <div class="fmo-server-main">
                 <strong>{{ s.name || s.callsign }}</strong>
@@ -3133,7 +3209,7 @@ watch(
               :key="fav.key"
               class="fmo-server-row"
               :class="{ selected: fmo.selectedServer()?.key === fav.key }"
-              @click="selectFmoServer(fav as unknown as FmoServer)"
+              @click="selectFmoServerAndConnect(fav as unknown as FmoServer)"
             >
               <div class="fmo-server-main">
                 <strong>{{ fav.name || fav.callsign || fav.host }}</strong>
@@ -3224,7 +3300,11 @@ watch(
               <strong>{{ r.dir === "out" ? "→" : "←" }} {{ r.peer }}</strong>
               <span>{{ r.result }}</span>
             </div>
+            <div v-if="r.comment" class="fmo-user-recent">
+              <span>{{ language === "zh" ? "祝福" : "Wish" }}: {{ r.comment }}</span>
+            </div>
             <div class="fmo-server-actions">
+              <span v-if="r.grid" class="fmo-server-meta">{{ r.grid }}</span>
               <span v-if="r.peer_uid" class="fmo-server-meta">uid {{ r.peer_uid }}</span>
               <span class="fmo-server-meta">{{ fmtClientDateTime(r.ts) }}</span>
             </div>
@@ -3474,10 +3554,55 @@ watch(
             <small v-if="fmoCertMsg" class="fmo-cert-msg">{{ fmoCertMsg }}</small>
           </div>
 
-          <!-- ③ 连接 -->
+          <!-- ③ 自动获取证书（绑定 MAC 激活） -->
           <div class="fmo-section">
             <div class="fmo-section-head">
               <span class="fmo-section-tag">③</span>
+              <span>{{ language === "zh" ? "自动获取证书" : "Auto Activate" }}</span>
+            </div>
+            <div class="fmo-conn-row">
+              <span class="fmo-conn-label">{{ language === "zh" ? "本机 MAC" : "Device MAC" }}</span>
+              <span class="fmo-conn-value">{{ fmoActivateMac || "-" }}</span>
+            </div>
+            <div class="fmo-conn-row">
+              <span class="fmo-conn-label">{{ language === "zh" ? "证书服务器" : "Cert Server" }}</span>
+              <input
+                v-model="fmoActivateServer"
+                type="text"
+                class="text-input"
+                placeholder="www.hamptt.com"
+              />
+              <button class="ghost-btn compact" :disabled="fmo.busy" @click="saveFmoActivateServer">
+                {{ language === "zh" ? "保存" : "Save" }}
+              </button>
+            </div>
+            <div class="fmo-conn-row">
+              <button
+                class="ghost-btn compact"
+                :disabled="fmo.busy || fmoActivating"
+                @click="runFmoActivate"
+              >
+                {{
+                  fmoActivating
+                    ? language === "zh" ? "获取中…" : "Activating…"
+                    : language === "zh" ? "自动获取证书" : "Fetch Certificate"
+                }}
+              </button>
+            </div>
+            <small v-if="fmoActivateMsg" class="fmo-cert-msg">{{ fmoActivateMsg }}</small>
+            <small class="fmo-cert-msg">
+              {{
+                language === "zh"
+                  ? "前提：本机 MAC 需已在 hamptt.com 登记并绑定用户，否则返回未登记/未绑定"
+                  : "Requires this MAC registered & bound on hamptt.com first"
+              }}
+            </small>
+          </div>
+
+          <!-- ④ 连接 -->
+          <div class="fmo-section">
+            <div class="fmo-section-head">
+              <span class="fmo-section-tag">④</span>
               <span>{{ language === "zh" ? "连接" : "Connection" }}</span>
             </div>
             <div class="fmo-conn-row">
@@ -3526,10 +3651,10 @@ watch(
             </div>
           </div>
 
-          <!-- ④ QSO（自动接受 + 记录） -->
+          <!-- ⑤ QSO（自动接受 + 记录） -->
           <div class="fmo-section">
             <div class="fmo-section-head">
-              <span class="fmo-section-tag">④</span>
+              <span class="fmo-section-tag">⑤</span>
               <span>QSO</span>
             </div>
             <div class="fmo-conn-row">
@@ -3556,6 +3681,7 @@ watch(
                 <span>{{ fmtQsoTime(r.ts) }}</span>
                 <span>{{ r.dir === "out" ? "→" : "←" }} {{ r.peer }}</span>
                 <span>{{ r.result }}</span>
+                <span v-if="r.comment">{{ r.comment }}</span>
               </div>
             </div>
             <small v-else class="fmo-cert-msg">
@@ -3563,25 +3689,36 @@ watch(
             </small>
           </div>
 
-          <!-- ⑤ 服务器广播 -->
+          <!-- ⑥ 服务器广播 -->
           <div class="fmo-section">
             <div class="fmo-section-head">
-              <span class="fmo-section-tag">⑤</span>
+              <span class="fmo-section-tag">⑥</span>
               <span>{{ language === "zh" ? "服务器广播" : "Server Broadcast" }}</span>
             </div>
             <div class="fmo-bc-form">
               <label>
                 <span>{{ language === "zh" ? "服务器名称" : "Name" }}</span>
-                <input v-model="broadcastDraft.name" type="text" class="text-input" :placeholder="language === 'zh' ? '我的 FMO 服务器' : 'My FMO server'" />
+                <input v-model="broadcastDraft.name" type="text" class="text-input" maxlength="32" :placeholder="language === 'zh' ? '我的 FMO 服务器（最大 32 字符）' : 'My FMO server (max 32 chars)'" />
               </label>
               <label>
                 <span>{{ language === "zh" ? "地址" : "Host" }}</span>
                 <input v-model="broadcastDraft.host" type="text" class="text-input" placeholder="fmo.example.com" />
               </label>
+              <button class="ghost-btn fmo-bc-fill" :disabled="!fmo.selectedServer()" @click="fillBroadcastFromServer">
+                {{ language === "zh" ? "带入当前服务器地址" : "Use selected server" }}
+              </button>
               <div class="fmo-bc-grid">
                 <label>
                   <span>{{ language === "zh" ? "端口" : "Port" }}</span>
                   <input v-model.number="broadcastDraft.port" type="number" class="text-input" placeholder="1883" />
+                </label>
+                <label>
+                  <span>{{ language === "zh" ? "国家码" : "Country" }}</span>
+                  <input v-model="broadcastDraft.country" type="text" class="text-input" placeholder="CN" />
+                </label>
+                <label>
+                  <span>{{ language === "zh" ? "SSID (0-15)" : "SSID (0-15)" }}</span>
+                  <input v-model.number="broadcastDraft.ssid" type="number" min="0" max="15" class="text-input" placeholder="0" />
                 </label>
                 <label>
                   <span>{{ language === "zh" ? "覆盖 (km)" : "Coverage (km)" }}</span>
@@ -3604,6 +3741,11 @@ watch(
                   <input v-model.number="broadcastDraft.lon" type="number" step="0.0001" class="text-input" placeholder="116.4" />
                 </label>
               </div>
+              <small class="fmo-cert-msg">
+                {{ language === "zh"
+                  ? `当前自动值：在线 ${fmo.stats.presenceOnline} / 峰值 ${fmo.stats.presencePeak}（填 0 使用自动）`
+                  : `Auto: online ${fmo.stats.presenceOnline} / peak ${fmo.stats.presencePeak} (set 0 to use auto)` }}
+              </small>
             </div>
             <div class="fmo-conn-row">
               <span class="fmo-conn-label">{{ language === "zh" ? "自动广播" : "Auto" }}</span>
@@ -3611,16 +3753,92 @@ watch(
                 <button class="mode-chip" :data-active="broadcastDraft.mode_min === 0" @click="broadcastDraft.mode_min = 0">
                   {{ language === "zh" ? "关闭" : "Off" }}
                 </button>
-                <button class="mode-chip" :data-active="broadcastDraft.mode_min === 5" @click="broadcastDraft.mode_min = 5">5min</button>
-                <button class="mode-chip" :data-active="broadcastDraft.mode_min === 10" @click="broadcastDraft.mode_min = 10">10min</button>
-                <button class="mode-chip" :data-active="broadcastDraft.mode_min === 60" @click="broadcastDraft.mode_min = 60">60min</button>
+                <button class="mode-chip" :data-active="broadcastDraft.mode_min === 5" :disabled="!fmo.canBroadcast()" @click="broadcastDraft.mode_min = 5">5min</button>
+                <button class="mode-chip" :data-active="broadcastDraft.mode_min === 10" :disabled="!fmo.canBroadcast()" @click="broadcastDraft.mode_min = 10">10min</button>
+                <button class="mode-chip" :data-active="broadcastDraft.mode_min === 60" :disabled="!fmo.canBroadcast()" @click="broadcastDraft.mode_min = 60">60min</button>
               </div>
             </div>
+            <small v-if="!fmo.canBroadcast()" class="fmo-cert-msg">
+              {{ language === "zh" ? "需以 super 身份连接自己的服务器才能开启/执行广播" : "Broadcast requires connecting to your own server as super" }}
+            </small>
             <div class="auth-actions">
-              <button class="ghost-btn" :disabled="fmo.busy" @click="manualBroadcast">
+              <button class="ghost-btn" :disabled="fmo.busy || !fmo.canBroadcast()" @click="manualBroadcast">
                 {{ language === "zh" ? "立即广播" : "Broadcast now" }}
               </button>
               <button class="primary-btn" :disabled="fmo.busy" @click="saveBroadcastConfig">
+                {{ language === "zh" ? "保存" : "Save" }}
+              </button>
+            </div>
+          </div>
+
+          <!-- ⑦ 个人信标（BEACON） -->
+          <div class="fmo-section">
+            <div class="fmo-section-head">
+              <span class="fmo-section-tag">⑦</span>
+              <span>{{ language === "zh" ? "个人信标（BEACON）" : "Personal Beacon (BEACON)" }}</span>
+            </div>
+            <div class="fmo-bc-form">
+              <div class="fmo-bc-grid">
+                <label>
+                  <span>{{ language === "zh" ? "SSID (0-15)" : "SSID (0-15)" }}</span>
+                  <input v-model.number="beaconDraft.ssid" type="number" min="0" max="15" class="text-input" placeholder="0" />
+                </label>
+                <label>
+                  <span>{{ language === "zh" ? "直频频率 (MHz)" : "Freq (MHz)" }}</span>
+                  <input v-model.number="beaconDraft.freq_mhz" type="number" step="0.0001" class="text-input" placeholder="431.0000" />
+                </label>
+                <label>
+                  <span>{{ language === "zh" ? "天线高度 (m)" : "Height (m)" }}</span>
+                  <input v-model.number="beaconDraft.height_m" type="number" min="0" class="text-input" placeholder="0" />
+                </label>
+                <label>
+                  <span>{{ language === "zh" ? "电台名称" : "Rig" }}</span>
+                  <input v-model="beaconDraft.rig" type="text" class="text-input" maxlength="16" :placeholder="language === 'zh' ? '海能达PDC580（≤16 字符）' : 'Rig model (max 16 chars)'" />
+                </label>
+                <label>
+                  <span>{{ language === "zh" ? "天线型号" : "Antenna" }}</span>
+                  <input v-model="beaconDraft.ant" type="text" class="text-input" maxlength="16" :placeholder="language === 'zh' ? 'QTH江苏靖江（≤16 字符）' : 'Antenna (max 16 chars)'" />
+                </label>
+              </div>
+              <label>
+                <span>{{ language === "zh" ? "APRS 个性化消息" : "APRS message" }}</span>
+                <input v-model="beaconDraft.aprs_msg" type="text" class="text-input" maxlength="64" :placeholder="language === 'zh' ? '信标成功后以 APFMO2 跟发（≤64 字符，留空不发）' : 'Sent as APFMO2 after beacon (max 64 chars, empty = off)'" />
+              </label>
+              <label>
+                <span>{{ language === "zh" ? "登录公告" : "Login notice" }}</span>
+                <input v-model="beaconDraft.notice" type="text" class="text-input" maxlength="128" :placeholder="language === 'zh' ? '服务器广播成功后以 APFMO1 跟发（≤128 字符，留空不发）' : 'Sent as APFMO1 after station broadcast (max 128 chars, empty = off)'" />
+              </label>
+              <label>
+                <span>{{ language === "zh" ? "QSO 祝福" : "QSO greeting" }}</span>
+                <input v-model="beaconDraft.qso_msg" type="text" class="text-input" maxlength="128" :placeholder="language === 'zh' ? '仅存储暂不发送（传输机制待实网研究）' : 'Stored only, not sent yet (mechanism TBD)'" />
+              </label>
+              <small class="fmo-cert-msg">
+                {{ language === "zh"
+                  ? "信标位置使用上方广播配置的经纬度；发送需 APRS 已验证登录且频率 > 0（无需 super）。高度填 0 则报文省略 HEIGHT 段。"
+                  : "Position reuses broadcast lat/lon above; sending needs verified APRS login and freq > 0 (no super required). Height 0 omits HEIGHT." }}
+              </small>
+            </div>
+            <div class="fmo-conn-row">
+              <span class="fmo-conn-label">{{ language === "zh" ? "周期信标" : "Auto" }}</span>
+              <div class="auth-server-mode fmo-bc-modes">
+                <button class="mode-chip" :data-active="!beaconDraft.enabled" @click="beaconDraft.enabled = false">
+                  {{ language === "zh" ? "关闭" : "Off" }}
+                </button>
+                <button class="mode-chip" :data-active="beaconDraft.enabled" @click="beaconDraft.enabled = true">
+                  {{ language === "zh" ? "开启（10 分钟）" : "On (10 min)" }}
+                </button>
+              </div>
+            </div>
+            <small class="fmo-cert-msg">
+              {{ language === "zh"
+                ? `当前：${fmo.stats.beaconEnabled ? "已开启" : "未开启"}${fmo.stats.beaconLastSent ? "，上次发送 " + new Date(fmo.stats.beaconLastSent * 1000).toLocaleTimeString() : ""}`
+                : `Status: ${fmo.stats.beaconEnabled ? "enabled" : "disabled"}${fmo.stats.beaconLastSent ? ", last sent " + new Date(fmo.stats.beaconLastSent * 1000).toLocaleTimeString() : ""}` }}
+            </small>
+            <div class="auth-actions">
+              <button class="ghost-btn" :disabled="fmo.busy" @click="manualBeacon">
+                {{ language === "zh" ? "立即发送" : "Send now" }}
+              </button>
+              <button class="primary-btn" :disabled="fmo.busy" @click="saveBeaconConfig">
                 {{ language === "zh" ? "保存" : "Save" }}
               </button>
             </div>

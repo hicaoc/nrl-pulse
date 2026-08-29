@@ -364,7 +364,7 @@ async fn fetch_group_list_with_client(
     data.iter().map(parse_platform_group).collect()
 }
 
-fn http_client() -> Result<Client, String> {
+pub(crate) fn http_client() -> Result<Client, String> {
     Client::builder()
         .user_agent("NRL Pulse/0.1.0")
         .timeout(std::time::Duration::from_secs(10))
@@ -429,7 +429,7 @@ async fn post_json_candidates<T: DeserializeOwned>(
     Err(last_error)
 }
 
-async fn post_json_exact<T: DeserializeOwned>(
+pub(crate) async fn post_json_exact<T: DeserializeOwned>(
     client: &Client,
     api_base: &str,
     path: &str,

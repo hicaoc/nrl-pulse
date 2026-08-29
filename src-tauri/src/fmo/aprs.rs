@@ -427,6 +427,8 @@ pub struct ServerTable {
     /// FMO 用户（客户端设备）表：key = 呼号大写，仅内存，随信标实时更新
     pub clients: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     pub persist_path: Option<PathBuf>,
+    /// STATION 广播 upsert 后的回调（FmoState 安装，用于选定服务器证书自愈刷新）
+    pub on_upsert: Arc<std::sync::Mutex<Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>>>,
 }
 
 impl ServerTable {
@@ -459,6 +461,7 @@ impl ServerTable {
             servers: Arc::new(Mutex::new(servers)),
             clients: Arc::new(Mutex::new(HashMap::new())),
             persist_path,
+            on_upsert: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -554,6 +557,12 @@ impl ServerTable {
         }
         servers.insert(key.clone(), entry.clone());
         self.save_locked(&servers);
+        drop(servers);
+        // Notify after releasing the table lock: the callback may lock
+        // selected_server / reconnect MQTT and must not run under this lock.
+        if let Some(cb) = self.on_upsert.lock().unwrap().clone() {
+            cb(entry.clone());
+        }
         Some(entry)
     }
 

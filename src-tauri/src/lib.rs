@@ -572,6 +572,39 @@ async fn fmo_stats_snapshot(
     Ok(fmo.stats_snapshot().await)
 }
 
+// ---------------------------------------------------------------- FMO 设备激活（绑定 MAC 自动获取证书）
+
+/// 激活配置：证书服务器地址 + 本机 MAC（平台上登记绑定的就是这个地址）。
+#[tauri::command]
+async fn fmo_activate_get_config(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<serde_json::Value, String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    Ok(fmo::activate::config(&fmo.data_dir))
+}
+
+#[tauri::command]
+async fn fmo_activate_set_config(
+    state: tauri::State<'_, RuntimeState>,
+    server: String,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    fmo::activate::set_server(&fmo.data_dir, &server)
+}
+
+/// 执行激活：POST /api/device/activate → 写证书 → 校验身份 → MQTT 重连。
+#[tauri::command]
+async fn fmo_activate_run(state: tauri::State<'_, RuntimeState>) -> Result<String, String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    fmo::activate::run(&fmo).await
+}
+
 // ---------------------------------------------------------------- FMO QSO / 服务器广播
 
 #[tauri::command]
@@ -652,8 +685,7 @@ async fn fmo_broadcast_set_config(
     };
     let cfg: fmo::broadcast::BroadcastConfig =
         serde_json::from_value(config).map_err(|e| format!("广播配置格式错误: {e}"))?;
-    fmo.broadcast.set_config(cfg).await;
-    Ok(())
+    fmo.broadcast.set_config(cfg).await
 }
 
 #[tauri::command]
@@ -662,6 +694,49 @@ async fn fmo_broadcast_now(state: tauri::State<'_, RuntimeState>) -> Result<(), 
         return Err("FMO 未初始化".into());
     };
     fmo.broadcast.send(true).await
+}
+
+/// 广播 super 门控查询：{eligible, reason, role}，供前端禁用广播开关并提示原因。
+#[tauri::command]
+async fn fmo_broadcast_eligible(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<serde_json::Value, String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    let (eligible, reason, role) = fmo.broadcast.eligible().await;
+    Ok(serde_json::json!({"eligible": eligible, "reason": reason, "role": role}))
+}
+
+#[tauri::command]
+async fn fmo_beacon_config(
+    state: tauri::State<'_, RuntimeState>,
+) -> Result<serde_json::Value, String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    serde_json::to_value(fmo.beacon.config().await).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn fmo_beacon_set_config(
+    state: tauri::State<'_, RuntimeState>,
+    config: serde_json::Value,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    let cfg: fmo::broadcast::BeaconConfig =
+        serde_json::from_value(config).map_err(|e| format!("信标配置格式错误: {e}"))?;
+    fmo.beacon.set_config(cfg).await
+}
+
+#[tauri::command]
+async fn fmo_beacon_now(state: tauri::State<'_, RuntimeState>) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    fmo.beacon.send(true).await
 }
 
 pub fn run() {
@@ -734,6 +809,9 @@ pub fn run() {
             fmo_rx_play,
             fmo_mqtt_no_local,
             fmo_stats_snapshot,
+            fmo_activate_get_config,
+            fmo_activate_set_config,
+            fmo_activate_run,
             fmo_qso_call,
             fmo_qso_answer,
             fmo_qso_cancel,
@@ -742,7 +820,11 @@ pub fn run() {
             fmo_qso_set_auto_accept,
             fmo_broadcast_config,
             fmo_broadcast_set_config,
-            fmo_broadcast_now
+            fmo_broadcast_now,
+            fmo_broadcast_eligible,
+            fmo_beacon_config,
+            fmo_beacon_set_config,
+            fmo_beacon_now
         ])
         .run(tauri::generate_context!())
         .expect("failed to run NRL Pulse");
