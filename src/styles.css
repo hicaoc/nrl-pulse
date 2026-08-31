@@ -1140,9 +1140,9 @@ textarea {
   min-height: 0;
 }
 
-/* 两栏：NRL 群组 / FMO 服务器 同时显示 */
+/* 三栏：NRL 服务器 / FMO 服务器 / 群组管理 同时显示 */
 .ops-grid-3col {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 @media (max-width: 1000px) {
@@ -1358,7 +1358,10 @@ textarea {
   gap: 10px;
 }
 
-.auth-switch,
+.auth-switch {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .auth-server-mode {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -3028,6 +3031,42 @@ input[type="range"] {
   gap: 8px;
   margin-top: auto;
   padding-top: 8px;
+}
+
+.fmo-ops-body .fmo-server-list {
+  flex: 1;
+  min-height: 120px;
+}
+
+.nrl-custom-server {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 78px auto;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.server-kind-switch {
+  margin-bottom: 10px;
+}
+
+.nrl-custom-server input {
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.fmo-state-chip[data-state="online"] {
+  color: var(--success, #22c55e);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.fmo-state-chip[data-state="stale"] {
+  color: #ffd166;
+  background: rgba(255, 209, 102, 0.12);
 }
 
 /* ---------------------------------------------------------------- 设置标签页 */

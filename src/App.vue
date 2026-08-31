@@ -4,6 +4,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { platformFetchGroupDevices, platformRegister } from "@/lib/platform";
+import MonitorWindow from "@/components/MonitorWindow.vue";
 import { useFmoStore } from "@/stores/fmo";
 import {
   checkUpdate,
@@ -15,11 +16,12 @@ import {
   openPttWindow,
   readVoiceFile,
   startPttWindowDrag,
+  openMonitorWindow,
 } from "@/lib/tauri";
 import type { UpdateInfo } from "@/lib/tauri";
 import { usePlatformStore } from "@/stores/platform";
 import { useRuntimeStore } from "@/stores/runtime";
-import type { ChatMessageEvent, FmoBeaconConfig, FmoBroadcastConfig, FmoClient, FmoServer, PlatformDevice, PlatformGroup, PlatformRegisterPayload, SerialTunnelConfig, TimelineEvent } from "@/types";
+import type { ChatMessageEvent, FmoBeaconConfig, FmoBroadcastConfig, FmoClient, FmoServer, PlatformDevice, PlatformGroup, PlatformRegisterPayload, PlatformServer, SerialTunnelConfig, TimelineEvent } from "@/types";
 
 type Lang = "zh" | "en";
 
@@ -61,11 +63,12 @@ const runtime = useRuntimeStore();
 const platform = usePlatformStore();
 const fmo = useFmoStore();
 const isPttWindow = window.location.hash === "#ptt";
+const isMonitorWindow = window.location.hash === "#monitor";
 
 const protocol = computed(() => runtime.config.protocol || "nrl");
 const isFmo = computed(() => protocol.value === "fmo");
 // 顶部仪表/通话标识激活条件：NRL 需平台登录，FMO 只要协议激活即可
-const uiActive = computed(() => platform.loggedIn || isFmo.value);
+const uiActive = computed(() => isFmo.value || runtime.snapshot.connection === "connected");
 
 const draftMessage = ref("");
 const pttKeyDraft = ref("Space");
@@ -94,6 +97,7 @@ const updateProgress = ref(0);
 const updateTotal = ref(0);
 const showLogin = ref(false);
 const showRegister = ref(false);
+const showTokenLogin = ref(true);
 const loginError = ref("");
 const registerError = ref("");
 const registerSuccess = ref("");
@@ -123,6 +127,13 @@ const registerForm = ref<PlatformRegisterPayload>({
   address: "",
   mail: "",
 });
+const nrlServerSearch = ref("");
+const customNrlServerHost = ref("");
+const customNrlServerPort = ref("60050");
+const nrlServerError = ref("");
+const serverListTab = ref<"nrl" | "fmo">("nrl");
+const NRL_FAVORITES_STORAGE_KEY = "nrl-pulse-nrl-favorites";
+const nrlFavorites = ref<PlatformServer[]>(loadNrlFavorites());
 const registerLicense = ref<{
   name: string;
   size: number;
@@ -668,13 +679,23 @@ function resetRegisterForm() {
 
 function openRegisterForm() {
   loginError.value = "";
+  showTokenLogin.value = false;
   resetRegisterState();
   showRegister.value = true;
+}
+
+function openTokenLoginForm() {
+  loginError.value = "";
+  registerError.value = "";
+  resetRegisterState();
+  showRegister.value = false;
+  showTokenLogin.value = true;
 }
 
 function backToLoginForm() {
   registerError.value = "";
   showRegister.value = false;
+  showTokenLogin.value = false;
 }
 
 function fileToObjectUrl(file: Blob): string {
@@ -771,8 +792,73 @@ async function onRegisterImageChange(event: Event) {
   }
 }
 
+function normalizeHost(value: string): string {
+  const trimmed = value.trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  try {
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+      return new URL(trimmed).hostname;
+    }
+  } catch {
+    // invalid URL treated as plain host
+  }
+  return trimmed;
+}
+
+function nrlFavoriteKey(server: PlatformServer): string {
+  return `${normalizeHost(server.host)}:${server.port || 60050}`;
+}
+
+function loadNrlFavorites(): PlatformServer[] {
+  try {
+    const raw = localStorage.getItem(NRL_FAVORITES_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveNrlFavorites() {
+  localStorage.setItem(NRL_FAVORITES_STORAGE_KEY, JSON.stringify(nrlFavorites.value));
+}
+
+function isNrlFavorite(server: PlatformServer): boolean {
+  const key = nrlFavoriteKey(server);
+  return nrlFavorites.value.some((item) => nrlFavoriteKey(item) === key);
+}
+
+function toggleNrlFavorite(server: PlatformServer) {
+  const key = nrlFavoriteKey(server);
+  const index = nrlFavorites.value.findIndex((item) => nrlFavoriteKey(item) === key);
+  if (index >= 0) {
+    nrlFavorites.value.splice(index, 1);
+  } else {
+    nrlFavorites.value.push({ ...server });
+  }
+  saveNrlFavorites();
+}
+
 function resolveAuthHost(): string {
-  return platform.resolveSelectedServer()?.host?.trim() || "";
+  return platform.resolveAuthServer()?.host?.trim() || "";
+}
+
+async function selectNrlServer(server: PlatformServer) {
+  nrlServerError.value = "";
+  try {
+    await platform.selectVoiceServer(server);
+  } catch (error) {
+    nrlServerError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function applyCustomNrlServer() {
+  nrlServerError.value = "";
+  try {
+    await platform.selectCustomVoiceServer(customNrlServerHost.value, customNrlServerPort.value);
+  } catch (error) {
+    nrlServerError.value = error instanceof Error ? error.message : String(error);
+  }
 }
 
 const messages = {
@@ -883,12 +969,22 @@ const messages = {
     platformAuth: "平台账号",
     serverLogin: "平台登录",
     loginServer: "登录服务器",
+    authServer: "管理服务器",
+    authServerCustom: "自定义管理服务器",
+    nrlServerPanel: "NRL服务器",
+    fmoServerPanel: "FMO服务器",
     voicePort: "语音端口",
     username: "用户名",
     password: "密码",
     loggingIn: "登录中...",
     relogin: "重新登录",
     loginPlatformAction: "登录平台",
+    tokenLoginAction: "Token",
+    hamidToken: "HAM ID Token",
+    hamidTokenPlaceholder: "hamid_pat_...",
+    hamidTokenTip: "粘贴 HAM ID 平台签发的长期 API Token，服务器仍只连接当前选择的 NRL。",
+    enterHamidToken: "请输入 HAM ID 长期 Token",
+    invalidHamidToken: "Token 必须以 hamid_pat_ 开头",
     refreshServers: "刷新服务器列表",
     currentAccount: "当前账号",
     currentGroupLabel: "当前组",
@@ -1043,13 +1139,23 @@ const messages = {
     noLogs: "No system logs yet.",
     platformAuth: "Platform Account",
     serverLogin: "Platform Login",
-    loginServer: "Server",
+    loginServer: "Login Server",
+    authServer: "Management Server",
+    authServerCustom: "Custom management server",
+    nrlServerPanel: "NRL Servers",
+    fmoServerPanel: "FMO Servers",
     voicePort: "Voice Port",
     username: "Username",
     password: "Password",
     loggingIn: "Signing In...",
     relogin: "Sign In Again",
     loginPlatformAction: "Sign In",
+    tokenLoginAction: "Token",
+    hamidToken: "HAM ID Token",
+    hamidTokenPlaceholder: "hamid_pat_...",
+    hamidTokenTip: "Paste a long-lived HAM ID API token. The voice server is still the selected NRL server.",
+    enterHamidToken: "Enter your HAM ID token",
+    invalidHamidToken: "Token must start with hamid_pat_",
     refreshServers: "Refresh Servers",
     currentAccount: "Account",
     currentGroupLabel: "Current Group",
@@ -1184,6 +1290,14 @@ const currentTalkerRegion = computed(() => {
     return t.value.regionUnknown;
   }
   return describeCallsignRegion(runtime.snapshot.activeSpeaker);
+});
+const selectedNrlServerHost = computed(() => normalizeHost(runtime.config.server || platform.voiceServerHost));
+const filteredNrlServers = computed(() => {
+  const q = nrlServerSearch.value.trim().toLowerCase();
+  if (!q) return platform.servers;
+  return platform.servers.filter(
+    (s) => s.name.toLowerCase().includes(q) || s.host.toLowerCase().includes(q),
+  );
 });
 const groupSearch = ref("");
 const filteredGroups = computed(() => {
@@ -1579,6 +1693,29 @@ async function loginPlatform() {
   try {
     await platform.login();
     showRegister.value = false;
+    showTokenLogin.value = false;
+    showLogin.value = false;
+  } catch (error) {
+    loginError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function loginPlatformWithToken() {
+  loginError.value = "";
+  registerSuccess.value = "";
+  const token = platform.hamidToken.trim();
+  if (!token) {
+    loginError.value = t.value.enterHamidToken;
+    return;
+  }
+  if (!token.startsWith("hamid_pat_") || token.trim().length <= "hamid_pat_".length) {
+    loginError.value = t.value.invalidHamidToken;
+    return;
+  }
+  try {
+    await platform.loginWithToken(token);
+    showRegister.value = false;
+    showTokenLogin.value = false;
     showLogin.value = false;
   } catch (error) {
     loginError.value = error instanceof Error ? error.message : String(error);
@@ -2236,6 +2373,11 @@ onMounted(async () => {
     document.title = title;
     await getCurrentWindow().setTitle(title);
   } catch { /* 权限未授予时不影响后续初始化 */ }
+  if (isMonitorWindow) {
+    document.documentElement.classList.add("monitor-window");
+    document.body.classList.add("monitor-window");
+    return;
+  }
   if (isPttWindow) {
     document.documentElement.classList.add("ptt-window");
     document.body.classList.add("ptt-window");
@@ -2245,14 +2387,22 @@ onMounted(async () => {
   await loadFmoActivateConfig();
   defaultAudioPath.value = await getDefaultAudioDir();
   if (!isPttWindow) {
-    await platform.bootstrap();
-    // 启动后用上次成功的认证自动连接 NRL（登录态由 bootstrap 从保存的 token 恢复）
-    if (platform.loggedIn && runtime.snapshot.connection === "disconnected") {
+    // NRL 设备心跳不依赖登录/平台服务器列表；先用上次保存的 NRL 服务器自动连接。
+    if (runtime.config.protocol !== "fmo" && runtime.snapshot.connection === "disconnected") {
       void runtime.connect();
+    }
+
+    // 平台登录态/服务器列表只影响管理功能，加载失败不能阻塞语音自动连接。
+    try {
+      await platform.bootstrap();
+    } catch (error) {
+      flog("[platform] bootstrap failed:", String(error));
     }
   }
   syncConfigDrafts();
-  showLogin.value = !isPttWindow && !platform.loggedIn && !isFmo.value;
+  if (!isPttWindow && !platform.loggedIn && !isFmo.value) {
+    showLogin.value = false;
+  }
   await onChatMessage((event) => {
     appendChatMessage(event);
   });
@@ -2420,15 +2570,30 @@ watch(
 );
 
 watch(
+  () => runtime.snapshot.connection,
+  (state, previous) => {
+    // 设备心跳建档后，可能已被管理员迁移到某个房间。
+    // 连接建立时同步一次当前设备所在房间，避免登录后总是显示公共大厅。
+    if (state === "connected" && previous !== "connected" && protocol.value === "nrl") {
+      void platform.syncCurrentDeviceGroup();
+    }
+  },
+);
+
+watch(
   () => platform.loggedIn,
   (loggedIn) => {
-    showLogin.value = !loggedIn;
+    // 登录态只用于管理功能；不要因未登录强制打断主界面的服务器选择/语音连接。
+    if (!loggedIn) {
+      showLogin.value = false;
+    }
   },
-  { immediate: true },
 );
 </script>
 
 <template>
+  <MonitorWindow v-if="isMonitorWindow" />
+
   <main v-if="isPttWindow" class="shell shell-ptt">
     <section
       class="ptt-console"
@@ -2496,7 +2661,7 @@ watch(
     </section>
   </main>
 
-  <main v-else class="shell">
+  <main v-else-if="!isMonitorWindow" class="shell">
     <!-- 顶部菜单导航栏：语言/登录/配置/更新 -->
     <header class="menu-bar">
       <div class="menu-bar-brand">
@@ -2504,6 +2669,9 @@ watch(
         <span class="menu-bar-sub">{{ language === "zh" ? "网络电台客户端" : "Network Radio Client" }}</span>
       </div>
       <nav class="topbar-actions menu-bar-actions">
+        <button class="ghost-btn" :title="language === 'zh' ? '所有房间监听' : 'All Room Monitor'" @click="openMonitorWindow()">
+          {{ language === "zh" ? "监听" : "Monitor" }}
+        </button>
         <button class="ghost-btn lang-btn" @click="toggleLanguage">
           {{ language === "zh" ? "EN" : "中" }}
         </button>
@@ -2699,9 +2867,7 @@ watch(
                   @click="
                     nrlLinkState !== 'off'
                       ? runtime.disconnect()
-                      : platform.loggedIn
-                        ? runtime.connect()
-                        : (showLogin = true)
+                      : runtime.connect()
                   "
                 >NRL</button>
               </div>
@@ -2904,11 +3070,64 @@ watch(
         </div>
 
         <div class="ops-grid ops-grid-3col">
+          <!-- NRL 收藏服务器：常用服务器快捷切换 -->
+          <section class="ops-panel">
+            <div class="ops-head">
+              <div>
+                <p class="section-kicker">NRL {{ language === "zh" ? "收藏服务器" : "Favorite Servers" }}</p>
+              </div>
+              <div class="ops-head-right">
+                <span
+                  class="fmo-state-chip"
+                  :data-state="runtime.snapshot.connection"
+                >
+                  {{ nrlStatusText }}
+                </span>
+              </div>
+            </div>
+            <div class="fmo-ops-body">
+              <div v-if="nrlFavorites.length" class="fmo-server-list">
+                <article
+                  v-for="server in nrlFavorites"
+                  :key="nrlFavoriteKey(server)"
+                  class="fmo-server-row"
+                  :class="{ selected: selectedNrlServerHost === normalizeHost(server.host) }"
+                  @click="selectNrlServer(server)"
+                >
+                  <div class="fmo-server-main">
+                    <strong>{{ server.name || server.host }}</strong>
+                    <span>{{ server.host }}:{{ server.port }} · {{ server.online ?? "?" }}/{{ server.total ?? "?" }}</span>
+                  </div>
+                  <div class="fmo-server-actions">
+                    <span
+                      v-if="platform.loggedIn && normalizeHost(platform.authServerLabel) === normalizeHost(server.host)"
+                      class="fmo-server-meta"
+                    >{{ language === "zh" ? "已登录" : "Signed In" }}</span>
+                    <button
+                      class="icon-btn fmo-star-btn active"
+                      :title="language === 'zh' ? '取消收藏' : 'Unfavorite'"
+                      @click.stop="toggleNrlFavorite(server)"
+                    >
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                        <path d="M12 17.3l-6.2 3.7 1.6-7-5.4-4.7 7.1-.6L12 2l2.9 6.7 7.1.6-5.4 4.7 1.6 7z"/>
+                      </svg>
+                    </button>
+                  </div>
+                </article>
+              </div>
+              <div v-else class="ops-empty">
+                {{ language === "zh"
+                  ? "暂无收藏，在右侧「服务器 → NRL服务器」列表点 ☆ 收藏"
+                  : "No favorites yet. Star servers in Servers → NRL Servers." }}
+              </div>
+            </div>
+          </section>
+
           <!-- FMO 收藏面板：点击切换并连接 -->
           <section class="ops-panel fmo-ops-panel">
             <div class="ops-head">
               <div>
-                <p class="section-kicker">FMO {{ language === "zh" ? "收藏服务器" : "Favorite Servers" }}</p>
+                <p class="section-kicker">FMO {{ language === "zh" ? "服务器" : "Servers" }}</p>
               </div>
               <div class="ops-head-right">
                 <span class="fmo-state-chip" :data-state="fmo.state.mqttState">
@@ -3054,7 +3273,7 @@ watch(
               : chatTab === "logs"
                 ? t.messagesCount(runtime.timeline.length)
                 : chatTab === "servers"
-                  ? t.messagesCount(fmo.state.servers.length)
+                  ? t.messagesCount(serverListTab === "nrl" ? platform.servers.length : fmo.state.servers.length)
                   : chatTab === "qso"
                     ? t.messagesCount(qsoSuccessList.length)
                     : t.messagesCount(fmo.state.clients.length)
@@ -3141,8 +3360,79 @@ watch(
           </div>
         </div>
 
-        <!-- FMO 服务器列表：从 APRS 发现，点击选择，☆ 收藏 -->
+        <!-- 服务器选择：NRL 全量列表 / FMO 发现列表 -->
         <div v-else-if="chatTab === 'servers'" class="fmo-tab-panel">
+          <div class="auth-server-mode server-kind-switch">
+            <button
+              class="mode-chip"
+              :data-active="serverListTab === 'nrl'"
+              @click="serverListTab = 'nrl'"
+            >
+              {{ language === "zh" ? "NRL服务器" : "NRL Servers" }}
+            </button>
+            <button
+              class="mode-chip"
+              :data-active="serverListTab === 'fmo'"
+              @click="serverListTab = 'fmo'"
+            >
+              {{ language === "zh" ? "FMO服务器" : "FMO Servers" }}
+            </button>
+          </div>
+
+          <template v-if="serverListTab === 'nrl'">
+            <input
+              v-model="nrlServerSearch"
+              class="group-search fmo-tab-filter"
+              type="text"
+              :placeholder="language === 'zh' ? '搜索服务器…' : 'Search servers…'"
+            />
+            <div class="log-list chat-log-list fmo-tab-list">
+              <div v-if="!platform.servers.length" class="log-empty">
+                {{ language === "zh" ? "暂无 NRL 服务器" : "No NRL servers." }}
+              </div>
+              <div v-else-if="!filteredNrlServers.length" class="log-empty">
+                {{ language === "zh" ? "无匹配服务器" : "No matching servers" }}
+              </div>
+              <div v-else class="fmo-server-list">
+                <article
+                  v-for="server in filteredNrlServers"
+                  :key="server.host"
+                  class="fmo-server-row"
+                  :class="{ selected: selectedNrlServerHost === normalizeHost(server.host) }"
+                  @click="selectNrlServer(server)"
+                >
+                  <div class="fmo-server-main">
+                    <strong>{{ server.name || server.host }}</strong>
+                    <span>{{ server.host }}:{{ server.port }} · {{ server.online ?? "?" }}/{{ server.total ?? "?" }}</span>
+                  </div>
+                  <div class="fmo-server-actions">
+                    <span
+                      v-if="platform.loggedIn && normalizeHost(platform.authServerLabel) === normalizeHost(server.host)"
+                      class="fmo-server-meta"
+                    >{{ language === "zh" ? "已登录" : "Signed In" }}</span>
+                    <button
+                      class="icon-btn fmo-star-btn"
+                      :class="{ active: isNrlFavorite(server) }"
+                      :title="language === 'zh' ? '收藏' : 'Favorite'"
+                      @click.stop="toggleNrlFavorite(server)"
+                    >
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                        <path d="M12 17.3l-6.2 3.7 1.6-7-5.4-4.7 7.1-.6L12 2l2.9 6.7 7.1.6-5.4 4.7 1.6 7z"/>
+                      </svg>
+                    </button>
+                  </div>
+                </article>
+              </div>
+            </div>
+            <div class="nrl-custom-server">
+              <input v-model="customNrlServerHost" type="text" :placeholder="language === 'zh' ? '自定义服务器' : 'Custom host'" />
+              <input v-model="customNrlServerPort" type="text" inputmode="numeric" placeholder="60050" />
+              <button class="ghost-btn compact" @click="applyCustomNrlServer">{{ language === "zh" ? "使用" : "Use" }}</button>
+            </div>
+            <div v-if="nrlServerError" class="auth-error">{{ nrlServerError }}</div>
+          </template>
+
+          <template v-else>
           <input
             v-model="fmoServerFilter"
             class="group-search fmo-tab-filter"
@@ -3235,6 +3525,7 @@ watch(
             </article>
           </div>
           </div>
+          </template>
         </div>
 
         <!-- FMO 用户列表：APRS 客户端信标（呼号/UID/状态/最后出现时间） -->
@@ -3875,10 +4166,17 @@ watch(
           <div class="auth-switch">
             <button
               class="auth-switch-btn"
-              :data-active="!showRegister"
+              :data-active="!showRegister && !showTokenLogin"
               @click="backToLoginForm"
             >
               {{ t.loginPlatformAction }}
+            </button>
+            <button
+              class="auth-switch-btn"
+              :data-active="showTokenLogin"
+              @click="openTokenLoginForm"
+            >
+              {{ t.tokenLoginAction }}
             </button>
             <button
               class="auth-switch-btn"
@@ -3891,26 +4189,26 @@ watch(
           <div class="auth-server-mode">
             <button
               class="mode-chip"
-              :data-active="!platform.useCustomServer"
-              @click="platform.useCustomServer = false"
+              :data-active="!platform.useCustomAuthServer"
+              @click="platform.useCustomAuthServer = false"
             >
               {{ t.serverModeList }}
             </button>
             <button
               class="mode-chip"
-              :data-active="platform.useCustomServer"
-              @click="platform.useCustomServer = true"
+              :data-active="platform.useCustomAuthServer"
+              @click="platform.useCustomAuthServer = true"
             >
               {{ t.serverModeCustom }}
             </button>
           </div>
-          <template v-if="!platform.useCustomServer">
+          <template v-if="!platform.useCustomAuthServer">
             <div class="login-server-row">
               <label class="login-server">
-                <span>{{ t.loginServer }}</span>
-                <select v-model="platform.selectedServerHost">
+                <span>{{ t.authServer }}</span>
+                <select v-model="platform.authServerHost">
                   <option v-for="server in platform.servers" :key="server.host" :value="server.host">
-                    {{ server.name }} · {{ server.host }}:{{ server.port }} · {{ server.online }}/{{ server.total }}
+                    {{ server.name }} · {{ server.host }}
                   </option>
                 </select>
               </label>
@@ -3922,11 +4220,11 @@ watch(
             </div>
           </template>
           <label v-else class="full-width">
-            <span>{{ t.customServer }}</span>
-            <input v-model="platform.customServerHost" type="text" :placeholder="t.customServerPlaceholder" />
+            <span>{{ t.authServerCustom }}</span>
+            <input v-model="platform.customAuthServerHost" type="text" :placeholder="t.customServerPlaceholder" />
           </label>
 
-          <template v-if="!showRegister">
+          <template v-if="!showRegister && !showTokenLogin">
             <label class="full-width">
               <span>{{ t.username }}</span>
               <input v-model="platform.username" type="text" autocomplete="username" />
@@ -3946,6 +4244,28 @@ watch(
               </button>
               <button class="primary-btn" :disabled="platform.busy" @click="loginPlatform">
                 {{ platform.busy ? t.loggingIn : platform.loggedIn ? t.relogin : t.loginPlatformAction }}
+              </button>
+            </div>
+          </template>
+          <template v-else-if="showTokenLogin">
+            <label class="full-width">
+              <span>{{ t.hamidToken }}</span>
+              <input
+                v-model="platform.hamidToken"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                :placeholder="t.hamidTokenPlaceholder"
+                @keydown.enter.prevent="loginPlatformWithToken"
+              />
+            </label>
+            <div class="auth-tip">{{ t.hamidTokenTip }}</div>
+            <div class="auth-actions">
+              <button class="ghost-btn" :disabled="platform.busy" @click="backToLoginForm">
+                {{ t.backToLogin }}
+              </button>
+              <button class="primary-btn" :disabled="platform.busy" @click="loginPlatformWithToken">
+                {{ platform.busy ? t.loggingIn : platform.loggedIn ? t.relogin : t.tokenLoginAction }}
               </button>
             </div>
           </template>

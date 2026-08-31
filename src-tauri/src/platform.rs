@@ -191,6 +191,87 @@ pub async fn restore_session(
     restore_session_with_client(&client, api_base, token, server, current_group_id).await
 }
 
+pub async fn login_with_token(
+    server: PlatformServer,
+    token: String,
+) -> Result<LoginBootstrap, String> {
+    const HAMID_TOKEN_PREFIX: &str = "hamid_pat_";
+    let token = token.trim();
+    if !token.starts_with(HAMID_TOKEN_PREFIX) {
+        return Err("invalid HAM ID token format".into());
+    }
+
+    let client = http_client()?;
+    let candidates = base_candidates(&server.host);
+    let mut last_error = String::new();
+    let mut api_base: Option<String> = None;
+
+    // 依次探测 http/https 候选地址；只有 /user/info 能被当前 token 验证通过时才继续。
+    for candidate in candidates {
+        match get_data::<PlatformUser>(&client, &candidate, "/user/info", Some(token)).await {
+            Ok(_) => {
+                api_base = Some(candidate);
+                break;
+            }
+            Err(err) => last_error = err,
+        }
+    }
+
+    let api_base = api_base.ok_or(last_error)?;
+    restore_session_with_client(&client, api_base, token.to_string(), server, 0).await
+}
+
+pub async fn fetch_current_device_group(
+    server: String,
+    callsign: String,
+    ssid: u8,
+) -> Result<i32, String> {
+    let client = http_client()?;
+    let candidates = base_candidates(&server);
+    let body = json!({
+        "callsign": callsign.trim().to_uppercase(),
+        "ssid": ssid,
+    });
+
+    let mut last_error = String::new();
+    for base in candidates {
+        let response: Result<Value, String> = post_json_exact(
+            &client,
+            &base,
+            "/device/get",
+            None,
+            &body,
+        ).await;
+        match response {
+            Ok(value) => {
+                let code = value.get("code").and_then(Value::as_i64).unwrap_or_default();
+                if code != 20000 {
+                    // 设备尚未心跳建档时，按协议默认落在 0 号公共群组。
+                    return Ok(0);
+                }
+                let data = value.get("data").cloned().unwrap_or(Value::Null);
+                let device = if data.is_object() {
+                    data
+                } else if data.get("item").map(Value::is_object).unwrap_or(false) {
+                    data["item"].clone()
+                } else {
+                    Value::Null
+                };
+                if device.is_object() {
+                    let device_callsign = device.get("callsign").and_then(Value::as_str).unwrap_or_default();
+                    let device_ssid = device.get("ssid").and_then(Value::as_u64).unwrap_or(u64::MAX);
+                    if device_callsign.eq_ignore_ascii_case(callsign.trim()) && device_ssid == ssid as u64 {
+                        return Ok(device.get("group_id").and_then(Value::as_i64).unwrap_or(0) as i32);
+                    }
+                }
+                return Ok(0);
+            }
+            Err(err) => last_error = err,
+        }
+    }
+    Err(last_error)
+}
+
 pub async fn register(
     host: String,
     payload: PlatformRegisterPayload,

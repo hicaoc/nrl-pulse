@@ -252,6 +252,23 @@ async fn platform_restore_session(
 }
 
 #[tauri::command]
+async fn platform_login_with_token(
+    server: PlatformServer,
+    token: String,
+) -> Result<LoginBootstrap, String> {
+    platform::login_with_token(server, token).await
+}
+
+#[tauri::command]
+async fn platform_fetch_device_group(
+    server: String,
+    callsign: String,
+    ssid: u8,
+) -> Result<i32, String> {
+    platform::fetch_current_device_group(server, callsign, ssid).await
+}
+
+#[tauri::command]
 async fn platform_register(
     host: String,
     payload: PlatformRegisterPayload,
@@ -288,6 +305,25 @@ async fn platform_switch_group(
     group_id: i32,
 ) -> Result<GroupSnapshot, String> {
     platform::switch_group(api_base, token, callsign, ssid, group_id).await
+}
+
+#[tauri::command]
+async fn open_monitor_window(app: tauri::AppHandle) -> Result<bool, String> {
+    const LABEL: &str = "room-monitor";
+    if let Some(window) = app.get_webview_window(LABEL) {
+        let _ = window.set_focus();
+        return Ok(false);
+    }
+
+    WebviewWindowBuilder::new(&app, LABEL, WebviewUrl::App("index.html#monitor".into()))
+        .title("房间监听")
+        .inner_size(1040.0, 720.0)
+        .min_inner_size(720.0, 500.0)
+        .resizable(true)
+        .build()
+        .map_err(|err| format!("open monitor window failed: {err}"))?;
+
+    Ok(true)
 }
 
 #[tauri::command]
@@ -785,11 +821,14 @@ pub fn run() {
             list_serial_ports,
             fetch_platform_servers,
             platform_login,
+            platform_login_with_token,
             platform_register,
             platform_restore_session,
             platform_fetch_groups,
             platform_fetch_group_devices,
+            platform_fetch_device_group,
             platform_switch_group,
+            open_monitor_window,
             open_ptt_window,
             toggle_ptt_window,
             start_ptt_window_drag,

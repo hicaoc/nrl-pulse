@@ -115,6 +115,10 @@ export async function togglePttWindow(): Promise<boolean> {
   return invoke<boolean>("toggle_ptt_window");
 }
 
+export async function openMonitorWindow(): Promise<boolean> {
+  return invoke<boolean>("open_monitor_window");
+}
+
 export async function openPttWindow(): Promise<boolean> {
   return invoke<boolean>("open_ptt_window");
 }

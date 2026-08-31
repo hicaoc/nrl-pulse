@@ -22,6 +22,8 @@ export interface RuntimeConfig {
   server: string;
   port: number;
   serverName: string;
+  authServer: string;
+  authServerName: string;
   apiBase: string;
   authToken: string;
   loginUsername: string;

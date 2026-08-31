@@ -20,6 +20,13 @@ export async function platformLogin(
   return invoke<LoginBootstrap>("platform_login", { server, username, password });
 }
 
+export async function platformLoginWithToken(
+  server: PlatformServer,
+  token: string,
+): Promise<LoginBootstrap> {
+  return invoke<LoginBootstrap>("platform_login_with_token", { server, token });
+}
+
 export async function platformRegister(
   host: string,
   payload: PlatformRegisterPayload,
@@ -82,4 +89,12 @@ export async function platformSwitchGroup(
     ssid,
     groupId,
   });
+}
+
+export async function platformFetchDeviceGroup(
+  server: string,
+  callsign: string,
+  ssid: number,
+): Promise<number> {
+  return invoke<number>("platform_fetch_device_group", { server, callsign, ssid });
 }
