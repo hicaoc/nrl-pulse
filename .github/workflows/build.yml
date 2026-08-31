@@ -36,11 +36,16 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             src-tauri/target
-          key: windows-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: windows-cargo-
+          key: windows-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}-${{ hashFiles('src-tauri/tauri.conf.json', 'package.json', 'src-tauri/Cargo.toml') }}
+          restore-keys: |
+            windows-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}-
+            windows-cargo-
 
       - name: Install frontend deps
         run: pnpm install --no-frozen-lockfile
+
+      - name: Clean stale bundle artifacts
+        run: Remove-Item -Recurse -Force -ErrorAction SilentlyContinue src-tauri/target/release/bundle
 
       - name: Build
         env:
@@ -88,8 +93,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             src-tauri/target
-          key: linux-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: linux-cargo-
+          key: linux-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}-${{ hashFiles('src-tauri/tauri.conf.json', 'package.json', 'src-tauri/Cargo.toml') }}
+          restore-keys: |
+            linux-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}-
+            linux-cargo-
 
       - name: Install system deps
         run: |
@@ -104,6 +111,9 @@ jobs:
 
       - name: Install frontend deps
         run: pnpm install --no-frozen-lockfile
+
+      - name: Clean stale bundle artifacts
+        run: rm -rf src-tauri/target/release/bundle
 
       - name: Build
         env:
@@ -153,8 +163,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             src-tauri/target
-          key: mac-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: mac-cargo-
+          key: mac-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}-${{ hashFiles('src-tauri/tauri.conf.json', 'package.json', 'src-tauri/Cargo.toml') }}
+          restore-keys: |
+            mac-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}-
+            mac-cargo-
 
       - name: Generate icon.icns
         run: |
@@ -173,6 +185,9 @@ jobs:
 
       - name: Install frontend deps
         run: pnpm install --no-frozen-lockfile
+
+      - name: Clean stale bundle artifacts
+        run: rm -rf src-tauri/target/release/bundle
 
       - name: Build ARM
         env:
@@ -296,6 +311,20 @@ jobs:
           LIN_SIG=$(cat nrl-pulse-linux.sig)
           MAC_ARM_SIG=$(cat nrl-pulse-mac-arm.sig 2>/dev/null || echo "")
           MAC_X64_SIG=$(cat nrl-pulse-mac-x64.sig 2>/dev/null || echo "")
+
+          # Fail fast if any expected signature is empty
+          if [ -z "$WIN_SIG" ]; then echo "ERROR: Windows signature is empty"; exit 1; fi
+          if [ -z "$LIN_SIG" ]; then echo "ERROR: Linux signature is empty"; exit 1; fi
+          if [ -z "$MAC_ARM_SIG" ]; then echo "ERROR: macOS ARM signature is empty"; exit 1; fi
+          if [ -z "$MAC_X64_SIG" ]; then echo "ERROR: macOS x64 signature is empty"; exit 1; fi
+
+          # Sanity check: Windows signature should reference the correct version
+          SIG_COMMENT=$(echo "$WIN_SIG" | base64 -d 2>/dev/null | grep -o "NRL Pulse_[^_]*_x64-setup.exe" || true)
+          echo "Windows installer reference in signature: $SIG_COMMENT"
+          if [ -n "$SIG_COMMENT" ] && [[ "$SIG_COMMENT" != *"${VERSION#v}"* ]]; then
+            echo "ERROR: Windows signature references a different version: $SIG_COMMENT"; exit 1
+          fi
+
           cat > latest.json << EOF
           {
             "version": "${VERSION}",
