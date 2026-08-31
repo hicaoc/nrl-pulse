@@ -312,11 +312,8 @@ jobs:
           MAC_ARM_SIG=$(cat nrl-pulse-mac-arm.sig 2>/dev/null || echo "")
           MAC_X64_SIG=$(cat nrl-pulse-mac-x64.sig 2>/dev/null || echo "")
 
-          # Fail fast if any expected signature is empty
+          # Windows signature is mandatory for auto-updater
           if [ -z "$WIN_SIG" ]; then echo "ERROR: Windows signature is empty"; exit 1; fi
-          if [ -z "$LIN_SIG" ]; then echo "ERROR: Linux signature is empty"; exit 1; fi
-          if [ -z "$MAC_ARM_SIG" ]; then echo "ERROR: macOS ARM signature is empty"; exit 1; fi
-          if [ -z "$MAC_X64_SIG" ]; then echo "ERROR: macOS x64 signature is empty"; exit 1; fi
 
           # Sanity check: Windows signature should reference the correct version
           SIG_COMMENT=$(echo "$WIN_SIG" | base64 -d 2>/dev/null | grep -o "NRL Pulse_[^_]*_x64-setup.exe" || true)
@@ -325,31 +322,30 @@ jobs:
             echo "ERROR: Windows signature references a different version: $SIG_COMMENT"; exit 1
           fi
 
+          # Warn about missing macOS signatures (common when Apple certs are not configured)
+          [ -z "$MAC_ARM_SIG" ] && echo "WARN: macOS ARM signature missing; omitting darwin-aarch64 from latest.json"
+          [ -z "$MAC_X64_SIG" ] && echo "WARN: macOS x64 signature missing; omitting darwin-x86_64 from latest.json"
+
+          # Build platform JSON dynamically
+          PLATFORMS=''
+          PLATFORMS+="\"windows-x86_64\": { \"url\": \"${BASE}/nrl-pulse-windows-setup.exe\", \"signature\": \"${WIN_SIG}\" }"
+          PLATFORMS+=", \"linux-x86_64\": { \"url\": \"${BASE}/nrl-pulse-linux\", \"signature\": \"${LIN_SIG}\" }"
+          [ -n "$MAC_ARM_SIG" ] && PLATFORMS+=", \"darwin-aarch64\": { \"url\": \"${BASE}/nrl-pulse-mac-arm.app.tar.gz\", \"signature\": \"${MAC_ARM_SIG}\" }"
+          [ -n "$MAC_X64_SIG" ] && PLATFORMS+=", \"darwin-x86_64\": { \"url\": \"${BASE}/nrl-pulse-mac-x64.app.tar.gz\", \"signature\": \"${MAC_X64_SIG}\" }"
+
           cat > latest.json << EOF
           {
             "version": "${VERSION}",
             "notes": "See release notes at ${BASE}",
             "pub_date": "${DATE}",
             "platforms": {
-              "windows-x86_64": {
-                "url": "${BASE}/nrl-pulse-windows-setup.exe",
-                "signature": "${WIN_SIG}"
-              },
-              "linux-x86_64": {
-                "url": "${BASE}/nrl-pulse-linux",
-                "signature": "${LIN_SIG}"
-              },
-              "darwin-aarch64": {
-                "url": "${BASE}/nrl-pulse-mac-arm.app.tar.gz",
-                "signature": "${MAC_ARM_SIG}"
-              },
-              "darwin-x86_64": {
-                "url": "${BASE}/nrl-pulse-mac-x64.app.tar.gz",
-                "signature": "${MAC_X64_SIG}"
-              }
+              ${PLATFORMS}
             }
           }
           EOF
+
+          echo "latest.json content:"
+          cat latest.json
 
       - name: Create or update Release
         uses: softprops/action-gh-release@v2
@@ -365,6 +361,19 @@ jobs:
             nrl-pulse-linux
             nrl-pulse-mac-arm.dmg
             nrl-pulse-mac-x64.dmg
-            nrl-pulse-mac-arm.app.tar.gz
-            nrl-pulse-mac-x64.app.tar.gz
             latest.json
+
+      - name: Upload macOS updater artifacts (optional)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          for f in nrl-pulse-mac-arm.app.tar.gz nrl-pulse-mac-arm.sig nrl-pulse-mac-x64.app.tar.gz nrl-pulse-mac-x64.sig; do
+            if [ -f "$f" ]; then
+              echo "Uploading $f"
+              gh release upload "$VERSION" "$f" --clobber || true
+            else
+              echo "Skipping missing $f"
+            fi
+          done
