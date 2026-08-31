@@ -45,7 +45,14 @@ jobs:
         run: pnpm install --no-frozen-lockfile
 
       - name: Clean stale bundle artifacts
-        run: Remove-Item -Recurse -Force -ErrorAction SilentlyContinue src-tauri/target/release/bundle
+        run: |
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue src-tauri/target/release/bundle
+          Get-ChildItem -Path src-tauri/target -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne 'debug' } |
+            ForEach-Object {
+              $bundle = Join-Path $_.FullName "release/bundle"
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $bundle
+            }
 
       - name: Build
         env:
@@ -113,7 +120,7 @@ jobs:
         run: pnpm install --no-frozen-lockfile
 
       - name: Clean stale bundle artifacts
-        run: rm -rf src-tauri/target/release/bundle
+        run: find src-tauri/target -maxdepth 3 -type d -name bundle -exec rm -rf {} +
 
       - name: Build
         env:
@@ -187,7 +194,7 @@ jobs:
         run: pnpm install --no-frozen-lockfile
 
       - name: Clean stale bundle artifacts
-        run: rm -rf src-tauri/target/release/bundle
+        run: find src-tauri/target -maxdepth 3 -type d -name bundle -exec rm -rf {} +
 
       - name: Build ARM
         env:
