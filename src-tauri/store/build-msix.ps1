@@ -14,6 +14,7 @@
 param(
   [string]$IdentityName = $env:MSIX_IDENTITY_NAME,
   [string]$Publisher    = $env:MSIX_PUBLISHER,
+  [string]$PublisherDisplayName = $env:MSIX_PUBLISHER_DISPLAY_NAME,
   [string]$Version      = "",
   [string]$Cert         = $env:MSIX_CERT,
   [string]$CertPassword = $env:MSIX_CERT_PASSWORD,
@@ -61,6 +62,10 @@ if (-not $Publisher) {
   $Publisher = "CN=NRL Pulse"
   Write-Warning "未提供 -Publisher，使用占位符 'CN=NRL Pulse'。上架前必须替换为开发者证书的发布者主题。"
 }
+if (-not $PublisherDisplayName) {
+  $PublisherDisplayName = "NRL Pulse"
+  Write-Warning "未提供 -PublisherDisplayName，使用默认 'NRL Pulse'。"
+}
 
 # ---- 编译（禁用 updater，由商店托管更新）----
 if (-not $SkipBuild) {
@@ -98,6 +103,7 @@ foreach ($k in $icons.Keys) {
 $manifest = Get-Content (Join-Path $srcTauri "store\AppxManifest.xml") -Raw -Encoding UTF8
 $manifest = $manifest.Replace("__IDENTITY_NAME__", $IdentityName)
 $manifest = $manifest.Replace("__PUBLISHER__", $Publisher)
+$manifest = $manifest.Replace("__PUBLISHER_DISPLAY_NAME__", $PublisherDisplayName)
 $manifest = $manifest.Replace("__VERSION__", $Version)
 Set-Content -Path (Join-Path $stage "AppxManifest.xml") -Value $manifest -Encoding UTF8
 
@@ -129,6 +135,7 @@ Write-Host ""
 Write-Host "============================================" -ForegroundColor Yellow
 Write-Host " Identity Name : $IdentityName"
 Write-Host " Publisher     : $Publisher"
+Write-Host " PublisherDisp : $PublisherDisplayName"
 Write-Host " Version       : $Version"
 Write-Host " 输出          : $msixPath"
 Write-Host "============================================" -ForegroundColor Yellow

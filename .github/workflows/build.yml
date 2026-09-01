@@ -491,12 +491,13 @@ jobs:
           VERSION=${{ steps.version.outputs.version }}
           mkdir -p site/download/${VERSION}
           touch site/.nojekyll
+          cp docs/privacy.html site/privacy.html
           find artifacts -name "*-setup.exe" ! -name "*.sig" -exec cp {} site/download/${VERSION}/setup.exe \;
           if [ ! -f site/download/${VERSION}/setup.exe ]; then
             echo "ERROR: setup.exe not found in artifact"; exit 1
           fi
-          echo "Prepared site/download/${VERSION}/setup.exe"
-          ls -la site/download/${VERSION}/
+          echo "Prepared site/download/${VERSION}/setup.exe and site/privacy.html"
+          ls -la site/ site/download/${VERSION}/
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3

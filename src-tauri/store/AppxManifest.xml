@@ -9,7 +9,7 @@
             ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>NRL互联</DisplayName>
-    <PublisherDisplayName>NRL Pulse</PublisherDisplayName>
+    <PublisherDisplayName>__PUBLISHER_DISPLAY_NAME__</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
   <Dependencies>

@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NRL Pulse 隐私政策 / Privacy Policy</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+    line-height: 1.7; max-width: 820px; margin: 0 auto; padding: 32px 20px 64px;
+    color: #1a2233; background: #fafbfc;
+  }
+  h1 { font-size: 1.9em; border-bottom: 3px solid #2563eb; padding-bottom: .3em; }
+  h2 { font-size: 1.25em; margin-top: 2em; color: #1e40af; }
+  h3 { font-size: 1.05em; margin-top: 1.4em; }
+  .meta { color: #64748b; font-size: .92em; }
+  .lang-switch { margin: 16px 0; }
+  .lang-switch a { margin-right: 14px; color: #2563eb; text-decoration: none; font-weight: 600; }
+  ul { padding-left: 1.4em; }
+  li { margin: .35em 0; }
+  .divider { border: none; border-top: 1px dashed #cbd5e1; margin: 3em 0; }
+  code { background: #eef2f7; padding: 2px 6px; border-radius: 4px; font-size: .92em; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e2e8f0; background: #0f172a; }
+    h2 { color: #60a5fa; }
+    .meta { color: #94a3b8; }
+    code { background: #1e293b; }
+    .divider { border-top-color: #334155; }
+  }
+</style>
+</head>
+<body>
+
+<h1>NRL Pulse 隐私政策</h1>
+<p class="meta">生效日期：2026-09-01 &nbsp;|&nbsp; 版本 1.0</p>
+<div class="lang-switch"><a href="#zh">中文</a><a href="#en">English</a></div>
+
+<section id="zh">
+<p>NRL Pulse（以下简称"本应用"）是一款面向业余无线电与应急通信的桌面客户端，支持 NRL2 与 FMO 两套协议的全双工语音调度。我们尊重并保护用户隐私。本政策说明本应用收集、使用与处理信息的方式。<b>本应用不收集、不上传任何用于广告或用户画像的数据。</b></p>
+
+<h2>1. 我们收集与处理的信息</h2>
+<h3>1.1 语音数据</h3>
+<ul>
+  <li>仅当您按下 PTT（发射）键时，本应用才会采集麦克风音频，并实时编码发送到您所连接的服务器/群组，用于语音通联。</li>
+  <li>语音数据以实时流的形式传输，本应用<b>不会</b>将您的语音上传到任何与通联无关的服务器。</li>
+</ul>
+<h3>1.2 电台身份（呼号 / SSID）</h3>
+<ul>
+  <li>您在设置中填写的呼号与 SSID 用于在协议中标识您的身份，会随语音、文本调度消息、APRS 信令发送给对方台站或服务器。这是业余无线电通联的必要组成部分。</li>
+</ul>
+<h3>1.3 账号与凭据</h3>
+<ul>
+  <li>平台账号或 HAM ID 长期 Token 仅用于向您所选服务器完成身份认证，凭据只发送至对应服务器，不会发送给无关第三方。</li>
+  <li>FMO 模式下的证书（<code>cert_user.json</code> 等）由您本地导入，保存在本地，用于 SAS 认证。</li>
+</ul>
+<h3>1.4 设备信息（MAC 地址）</h3>
+<ul>
+  <li>当您使用"自动获取证书"功能时，本应用会读取本机 MAC 地址，并发送到证书服务（<code>hamptt.com</code>）以验证该设备是否已登记，从而拉取并激活证书。<b>仅在您主动点击该功能时才会发生</b>。</li>
+</ul>
+<h3>1.5 位置信息（仅当您启用信标）</h3>
+<ul>
+  <li>本应用<b>不会自动获取或上报您的地理位置</b>。只有当您在 FMO 进阶功能中主动开启"个人信标（BEACON）"并自行填写位置/自定义消息时，相关信息才会作为 APRS 信标发送。是否发送、发送什么内容完全由您控制。</li>
+</ul>
+<h3>1.6 本地配置与录音</h3>
+<ul>
+  <li>您的配置（协议、服务器、端口、呼号、音量、PTT 键、编码、串口、录音路径等）仅保存在本地。</li>
+  <li>"本地录音"功能开启后，语音会录制并保存到您指定的本地目录，<b>不会上传</b>。</li>
+</ul>
+
+<h2>2. 我们如何使用信息</h2>
+<ul>
+  <li>实现语音通联、文本调度、QSO 呼叫、房间监听、串口透传等核心功能。</li>
+  <li>完成服务器身份认证与证书激活。</li>
+  <li>显示连接状态、在线台站、网络质量等运行信息。</li>
+</ul>
+
+<h2>3. 信息的共享与第三方</h2>
+<ul>
+  <li>语音、呼号、文本消息会发送到您主动选择的 NRL / FMO 服务器及其上的其他台站，这是通联本身的性质决定的。</li>
+  <li>FMO 模式会连接 APRS-IS（如 <code>rotate.aprs2.net</code>）用于服务器发现；会自动连接您所选的 FMO 服务器（MQTT）。</li>
+  <li>自动获取证书时会连接 <code>hamptt.com</code>。</li>
+  <li>除上述为实现通联所必需的连接外，本应用不向任何第三方共享您的数据，<b>不含任何广告、统计或追踪 SDK</b>。</li>
+</ul>
+
+<h2>4. 数据安全</h2>
+<ul>
+  <li>证书与账号凭据保存在本地，请妥善保管您的设备与证书文件。</li>
+  <li>语音经编码后通过 UDP / MQTT 传输；请注意业余无线电通信内容在相应网络内对成员可见。</li>
+</ul>
+
+<h2>5. 数据留存</h2>
+<ul>
+  <li>本应用不在自有服务器上留存您的语音或个人数据。</li>
+  <li>本地录音、配置由您自行管理，可随时删除。</li>
+</ul>
+
+<h2>6. 您的权利</h2>
+<ul>
+  <li>您可随时在设置中修改或清除呼号、服务器、录音路径等信息。</li>
+  <li>您可随时停用麦克风（不按 PTT 即不采集）、关闭录音、关闭信标。</li>
+  <li>如需注销平台账号，请联系相应服务器/平台方。</li>
+</ul>
+
+<h2>7. 儿童隐私</h2>
+<p>本应用面向业余无线电爱好者，需在持有相应电台执照与呼号的前提下使用，不面向儿童收集数据。</p>
+
+<h2>8. 政策更新</h2>
+<p>本政策如有更新，将在本页发布并更新"生效日期"。继续使用即视为接受更新后的政策。</p>
+
+<h2>9. 联系我们</h2>
+<p>如对本政策有任何疑问，请通过以下方式联系：</p>
+<ul>
+  <li>项目仓库：<a href="https://github.com/hicaoc/nrl-pulse">https://github.com/hicaoc/nrl-pulse</a>（Issues）</li>
+  <li>呼号：BH4RPN</li>
+</ul>
+</section>
+
+<hr class="divider">
+
+<section id="en">
+<h1>Privacy Policy (English)</h1>
+<p class="meta">Effective date: 2026-09-01</p>
+<p>NRL Pulse ("the App") is a desktop client for amateur radio and emergency communications, supporting full-duplex voice dispatch over the NRL2 and FMO protocols. We respect your privacy. This policy explains how the App handles information. <b>The App does not collect or upload any data for advertising or profiling.</b></p>
+
+<h2>1. Information We Process</h2>
+<h3>1.1 Voice Data</h3>
+<ul>
+  <li>Audio from your microphone is captured <b>only while you hold PTT</b>, encoded, and streamed in real time to the server/group you connected to, solely for voice communication.</li>
+  <li>Voice is not uploaded to any server unrelated to the communication.</li>
+</ul>
+<h3>1.2 Station Identity (Callsign / SSID)</h3>
+<ul>
+  <li>The callsign and SSID you configure identify you in the protocol and are sent with voice, dispatch messages, and APRS signaling to other stations/servers — a necessary part of amateur radio operation.</li>
+</ul>
+<h3>1.3 Account & Credentials</h3>
+<ul>
+  <li>Your platform account or HAM ID token is used only to authenticate with the server you select and is sent only to that server.</li>
+  <li>FMO certificates you import are stored locally and used for SAS authentication.</li>
+</ul>
+<h3>1.4 Device Information (MAC address)</h3>
+<ul>
+  <li>Only when you explicitly use "Auto-fetch certificate", the App reads your MAC address and sends it to the certificate service (<code>hamptt.com</code>) to verify device registration and activate the certificate.</li>
+</ul>
+<h3>1.5 Location (only if you enable beacons)</h3>
+<ul>
+  <li>The App <b>does not automatically collect or report your location</b>. Only if you manually enable the personal APRS beacon and fill in location/custom text will such data be transmitted — fully under your control.</li>
+</ul>
+<h3>1.6 Local Config & Recordings</h3>
+<ul>
+  <li>Your settings are stored locally. If you enable local recording, audio is saved to a folder you choose and is <b>not uploaded</b>.</li>
+</ul>
+
+<h2>2. How We Use Information</h2>
+<ul>
+  <li>To provide voice communication, dispatch messaging, QSO calls, room monitoring, and serial tunneling.</li>
+  <li>To authenticate with servers and activate certificates.</li>
+  <li>To display connection status, online stations, and network quality.</li>
+</ul>
+
+<h2>3. Sharing & Third Parties</h2>
+<ul>
+  <li>Voice, callsign, and messages are sent to the NRL/FMO server you choose and to other stations on it — inherent to radio communication.</li>
+  <li>FMO mode connects to APRS-IS (e.g., <code>rotate.aprs2.net</code>) for server discovery and to your chosen FMO server (MQTT).</li>
+  <li>Auto-fetch certificate connects to <code>hamptt.com</code>.</li>
+  <li>Beyond these communication-essential connections, we do not share your data with third parties. <b>No advertising, analytics, or tracking SDKs are included.</b></li>
+</ul>
+
+<h2>4. Data Security</h2>
+<ul>
+  <li>Certificates and credentials are stored locally; keep your device and certificate files safe.</li>
+  <li>Voice is transmitted over UDP/MQTT; note that amateur radio content is visible to members of the respective network.</li>
+</ul>
+
+<h2>5. Data Retention</h2>
+<ul>
+  <li>We do not retain your voice or personal data on our own servers. Local recordings and settings are under your control and can be deleted anytime.</li>
+</ul>
+
+<h2>6. Your Choices</h2>
+<ul>
+  <li>You may edit or clear callsign, server, and recording path in settings at any time.</li>
+  <li>Not pressing PTT means no audio is captured; you can disable recording and beacons at any time.</li>
+</ul>
+
+<h2>7. Children's Privacy</h2>
+<p>The App is intended for licensed amateur radio operators and does not collect data from children.</p>
+
+<h2>8. Changes</h2>
+<p>Updates to this policy will be posted here with a revised effective date.</p>
+
+<h2>9. Contact</h2>
+<ul>
+  <li>Repository: <a href="https://github.com/hicaoc/nrl-pulse">https://github.com/hicaoc/nrl-pulse</a> (Issues)</li>
+  <li>Callsign: BH4RPN</li>
+</ul>
+</section>
+
+</body>
+</html>
