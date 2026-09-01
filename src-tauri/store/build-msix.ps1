@@ -93,6 +93,7 @@ $icons = @{
   "Square150x150Logo.png" = "Assets\Square150x150Logo.png"
   "Square310x310Logo.png" = "Assets\Square310x310Logo.png"
   "StoreLogo.png"         = "Assets\StoreLogo.png"
+  "Wide310x150Logo.png"   = "Assets\Wide310x150Logo.png"
 }
 $iconsDir = Join-Path $srcTauri "icons"
 foreach ($k in $icons.Keys) {
