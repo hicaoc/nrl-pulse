@@ -140,6 +140,7 @@ jobs:
         env:
           MSIX_IDENTITY_NAME: ${{ secrets.MSIX_IDENTITY_NAME }}
           MSIX_PUBLISHER: ${{ secrets.MSIX_PUBLISHER }}
+          MSIX_PUBLISHER_DISPLAY_NAME: ${{ secrets.MSIX_PUBLISHER_DISPLAY_NAME }}
           MSIX_CERT: ${{ steps.msix_cert.outputs.has_cert == 'true' && 'src-tauri/target/msix-cert.pfx' || '' }}
           MSIX_CERT_PASSWORD: ${{ secrets.MSIX_CERTIFICATE_PASSWORD }}
         shell: powershell
