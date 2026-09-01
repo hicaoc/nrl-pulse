@@ -753,7 +753,7 @@ textarea {
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.618fr) minmax(360px, 1fr);
+  grid-template-columns: minmax(0, 2.1fr) minmax(300px, 0.75fr);
   gap: var(--gap-lg);
   align-items: stretch;
   transition: gap 0.28s ease;
@@ -1181,6 +1181,14 @@ textarea {
   gap: 8px;
 }
 
+/* 面板头部按钮与状态徽章风格一致：紧凑、小字 */
+.ops-head-right .ghost-btn {
+  padding: 3px 10px;
+  font-size: 0.72rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
 .ops-empty {
   display: grid;
   gap: 12px;
@@ -1194,7 +1202,7 @@ textarea {
 
 .group-stack {
   display: grid;
-  gap: 10px;
+  gap: 6px;
   /* 填满面板剩余高度，超出滚动 */
   flex: 1;
   min-height: 0;
@@ -1203,13 +1211,13 @@ textarea {
 }
 
 .group-search {
-  width: 140px;
-  padding: 8px 12px;
+  width: 120px;
+  padding: 3px 10px;
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
+  border-radius: 999px;
   color: #f7f2e8;
   background: rgba(255, 255, 255, 0.06);
-  font-size: 0.88rem;
+  font-size: 0.72rem;
   outline: none;
   box-sizing: border-box;
 }
@@ -1227,14 +1235,19 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   width: 100%;
-  padding: 13px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
   color: #f7f2e8;
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.025);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.group-chip:hover {
+  background: rgba(91, 192, 255, 0.07);
 }
 
 .group-chip strong,
@@ -1242,15 +1255,26 @@ textarea {
   display: block;
 }
 
+.group-chip strong {
+  flex: 1;
+  min-width: 0;
+  color: #f7f2e8;
+  font-size: 0.84rem;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .group-chip span {
   color: var(--text-dim);
-  font-size: 0.82rem;
+  font-size: 0.74rem;
 }
 
 .group-chip.active {
-  border-color: rgba(255, 214, 109, 0.4);
-  background: rgba(255, 214, 109, 0.09);
-  box-shadow: 0 0 0 1px rgba(255, 214, 109, 0.08) inset;
+  border-color: rgba(91, 192, 255, 0.5);
+  background: rgba(91, 192, 255, 0.1);
+  box-shadow: none;
 }
 
 .group-chip.has-online {
@@ -3036,6 +3060,8 @@ input[type="range"] {
 .fmo-ops-body .fmo-server-list {
   flex: 1;
   min-height: 120px;
+  align-content: start;
+  overflow-y: auto;
 }
 
 .nrl-custom-server {
@@ -3246,6 +3272,15 @@ input[type="range"] {
   grid-template-columns: 64px 1fr auto;
   align-items: center;
   gap: 8px;
+}
+
+.fmo-conn-row--solo {
+  grid-template-columns: auto;
+  justify-content: start;
+}
+
+.fmo-conn-row--solo .ghost-btn {
+  white-space: nowrap;
 }
 
 .fmo-conn-label {

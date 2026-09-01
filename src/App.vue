@@ -3867,7 +3867,7 @@ watch(
                 {{ language === "zh" ? "保存" : "Save" }}
               </button>
             </div>
-            <div class="fmo-conn-row">
+            <div class="fmo-conn-row fmo-conn-row--solo">
               <button
                 class="ghost-btn compact"
                 :disabled="fmo.busy || fmoActivating"
