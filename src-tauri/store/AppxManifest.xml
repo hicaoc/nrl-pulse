@@ -8,7 +8,7 @@
             Version="__VERSION__"
             ProcessorArchitecture="x64" />
   <Properties>
-    <DisplayName>NRL Pulse</DisplayName>
+    <DisplayName>NRL互联</DisplayName>
     <PublisherDisplayName>NRL Pulse</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
@@ -21,7 +21,7 @@
   </Resources>
   <Applications>
     <Application Id="NRLPulse" Executable="nrl-pulse.exe" EntryPoint="Windows.FullTrustApplication">
-      <uap:VisualElements DisplayName="NRL Pulse"
+      <uap:VisualElements DisplayName="NRL互联"
                           Description="NRL Pulse - Radio voice communication client (NRL / FMO)"
                           BackgroundColor="#101623"
                           Square150x150Logo="Assets\Square150x150Logo.png"
