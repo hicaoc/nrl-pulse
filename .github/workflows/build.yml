@@ -76,6 +76,81 @@ jobs:
           name: nrl-pulse-windows
           path: src-tauri/target/x86_64-pc-windows-msvc/release/nrl-pulse.exe
 
+  build-windows-msix:
+    name: Windows MSIX
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: pnpm/action-setup@v4.1.0
+
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: actions/cache@v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: windows-msix-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}-${{ hashFiles('src-tauri/tauri.conf.json', 'src-tauri/tauri.store.json', 'package.json', 'src-tauri/Cargo.toml') }}
+          restore-keys: |
+            windows-msix-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}-
+            windows-msix-cargo-
+
+      - name: Install frontend deps
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Clean stale bundle artifacts
+        run: |
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue src-tauri/target/release/bundle
+          Get-ChildItem -Path src-tauri/target -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne 'debug' } |
+            ForEach-Object {
+              $bundle = Join-Path $_.FullName "release/bundle"
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $bundle
+            }
+
+      - name: Write MSIX signing certificate
+        id: msix_cert
+        shell: powershell
+        run: |
+          if ("${{ secrets.MSIX_CERTIFICATE_BASE64 }}") {
+            New-Item -ItemType Directory -Path "src-tauri/target" -Force | Out-Null
+            $bytes = [Convert]::FromBase64String("${{ secrets.MSIX_CERTIFICATE_BASE64 }}")
+            [IO.File]::WriteAllBytes("src-tauri/target/msix-cert.pfx", $bytes)
+            "has_cert=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "has_cert=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Build store binary (updater disabled)
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: pnpm build && ./node_modules/.bin/tauri build --config src-tauri/tauri.store.json --no-bundle
+
+      - name: Pack MSIX
+        env:
+          MSIX_IDENTITY_NAME: ${{ secrets.MSIX_IDENTITY_NAME }}
+          MSIX_PUBLISHER: ${{ secrets.MSIX_PUBLISHER }}
+          MSIX_CERT: ${{ steps.msix_cert.outputs.has_cert == 'true' && 'src-tauri/target/msix-cert.pfx' || '' }}
+          MSIX_CERT_PASSWORD: ${{ secrets.MSIX_CERTIFICATE_PASSWORD }}
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File src-tauri/store/build-msix.ps1 -SkipBuild
+
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: nrl-pulse-windows-msix
+          path: src-tauri/target/msix/*.msix
+          if-no-files-found: error
+
   build-linux:
     name: Linux (x86_64)
     runs-on: ubuntu-latest
@@ -276,7 +351,7 @@ jobs:
 
   release:
     name: Release
-    needs: [build-windows, build-linux, build-mac]
+    needs: [build-windows, build-windows-msix, build-linux, build-mac]
     runs-on: ubuntu-latest
     # push main 或手动触发时发布
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
@@ -300,6 +375,7 @@ jobs:
           cp artifacts/nrl-pulse-windows/nrl-pulse.exe              nrl-pulse-windows.exe
           find artifacts/nrl-pulse-windows-updater -name "*-setup.exe" -exec cp {} nrl-pulse-windows-setup.exe \;
           find artifacts/nrl-pulse-windows-updater -name "*-setup.exe.sig" -exec cp {} nrl-pulse-windows-setup.exe.sig \;
+          find artifacts/nrl-pulse-windows-msix -name "*.msix" -exec cp {} nrl-pulse-windows.msix \;
           cp artifacts/nrl-pulse-linux/nrl-pulse                    nrl-pulse-linux
           cp artifacts/nrl-pulse-linux-sig/nrl-pulse.sig            nrl-pulse-linux.sig
           cp artifacts/nrl-pulse-mac-arm/nrl-pulse-mac-arm.dmg              nrl-pulse-mac-arm.dmg
@@ -365,6 +441,7 @@ jobs:
           files: |
             nrl-pulse-windows.exe
             nrl-pulse-windows-setup.exe
+            nrl-pulse-windows.msix
             nrl-pulse-linux
             nrl-pulse-mac-arm.dmg
             nrl-pulse-mac-x64.dmg
@@ -384,3 +461,46 @@ jobs:
               echo "Skipping missing $f"
             fi
           done
+
+  # 发布到 GitHub Pages，提供不跳转的直链，供微软商店/Partner Center 抓取。
+  # 产物路径: download/<version>/setup.exe
+  publish-pages:
+    name: Publish direct-download to GitHub Pages
+    needs: build-windows
+    runs-on: ubuntu-latest
+    # 与 release 相同触发条件；PR 不发布
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: nrl-pulse-windows-updater
+          path: artifacts
+
+      - name: Prepare Pages directory
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          mkdir -p site/download/${VERSION}
+          touch site/.nojekyll
+          find artifacts -name "*-setup.exe" ! -name "*.sig" -exec cp {} site/download/${VERSION}/setup.exe \;
+          if [ ! -f site/download/${VERSION}/setup.exe ]; then
+            echo "ERROR: setup.exe not found in artifact"; exit 1
+          fi
+          echo "Prepared site/download/${VERSION}/setup.exe"
+          ls -la site/download/${VERSION}/
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          keep_files: true

@@ -15,6 +15,8 @@ src-tauri\target\msix\NRL-Pulse_<版本>_x64.msix
 
 ## 打包命令
 
+### 本地手动打包
+
 ```powershell
 # 在项目根目录
 powershell -ExecutionPolicy Bypass -File src-tauri/store/build-msix.ps1
@@ -26,6 +28,26 @@ powershell -ExecutionPolicy Bypass -File src-tauri/store/build-msix.ps1
 -Cert store\cert.pfx -CertPassword xxx # 本地签名（可选，商店上传时可由商店代签）
 -SkipBuild                             # 跳过编译直接打包（调试用）
 ```
+
+### GitHub Actions 自动构建
+
+仓库的 `.github/workflows/build.yml` 已包含 `build-windows-msix` job，每次推送到 `main`、打 `v*` 标签或手动触发 workflow 时，会自动：
+
+1. 在 `windows-latest` runner 上编译商店版（使用 `tauri.store.json` 禁用内置更新）
+2. 用 `store/build-msix.ps1` 生成 MSIX
+3. 如配置了签名证书，则对 MSIX 进行签名
+4. 将产物上传到 GitHub Release，文件名为 `nrl-pulse-windows.msix`
+
+需要在仓库 **Settings → Secrets and variables → Actions** 中配置以下 Secrets（可选）：
+
+| Secret | 说明 |
+| --- | --- |
+| `MSIX_IDENTITY_NAME` | Partner Center 的 `Package/Identity/Name`，如 `12345hicaoc.NRLPulse` |
+| `MSIX_PUBLISHER` | Partner Center 的 `Package/Identity/Publisher`，如 `CN=xxxxxxx-xxxx-...` |
+| `MSIX_CERTIFICATE_BASE64` | 代码签名证书 `.pfx` 的 Base64 内容（可选；未配置则生成未签名包） |
+| `MSIX_CERTIFICATE_PASSWORD` | `.pfx` 密码（可选） |
+
+若 `MSIX_IDENTITY_NAME` / `MSIX_PUBLISHER` 未配置，脚本会使用占位符并继续生成 MSIX，但无法上传到商店或正常安装；仅供本地/CI 测试。
 
 ## 上架步骤（需要你本人操作的部分）
 

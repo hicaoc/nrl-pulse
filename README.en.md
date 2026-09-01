@@ -108,6 +108,7 @@ Download the binary for your platform from the [Releases](../../releases) page:
 | --- | --- |
 | Windows (recommended, auto-update) | `nrl-pulse-windows-setup.exe` |
 | Windows portable | `nrl-pulse-windows.exe` |
+| Windows Store / MSIX | `nrl-pulse-windows.msix` |
 | Linux | `nrl-pulse-linux` |
 | macOS Apple Silicon | `nrl-pulse-mac-arm` |
 | macOS Intel | `nrl-pulse-mac-x64` |

@@ -108,6 +108,7 @@
 | --- | --- |
 | Windows（推荐，支持自动升级） | `nrl-pulse-windows-setup.exe` |
 | Windows 便携版 | `nrl-pulse-windows.exe` |
+| Windows 商店版 / MSIX | `nrl-pulse-windows.msix` |
 | Linux | `nrl-pulse-linux` |
 | macOS Apple Silicon | `nrl-pulse-mac-arm` |
 | macOS Intel | `nrl-pulse-mac-x64` |
