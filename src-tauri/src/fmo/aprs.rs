@@ -450,9 +450,13 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 pub struct ServerTable {
     pub servers: Arc<Mutex<HashMap<String, serde_json::Value>>>,
-    /// FMO 用户（客户端设备）表：key = 呼号大写，仅内存，随信标实时更新
+    /// FMO 用户（客户端设备）表：key = 呼号大写，随信标实时更新；
+    /// 持久化到 clients.json（对齐原厂固件 cache_4.db 的 APRS 消息缓存），
+    /// 重启后说话人电台/频率/高度/坐标立即显示，不必等下一个 10 分钟 BEACON。
     pub clients: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     pub persist_path: Option<PathBuf>,
+    /// 客户端缓存落盘节流（30 秒）
+    clients_last_save: std::sync::Mutex<Option<std::time::Instant>>,
     /// STATION 广播 upsert 后的回调（FmoState 安装，用于选定服务器证书自愈刷新）
     pub on_upsert: Arc<std::sync::Mutex<Option<Arc<dyn Fn(serde_json::Value) + Send + Sync>>>>,
 }
@@ -460,7 +464,33 @@ pub struct ServerTable {
 impl ServerTable {
     pub fn new(persist_path: Option<PathBuf>) -> Self {
         let mut servers = HashMap::new();
+        let mut clients_map = HashMap::new();
         if let Some(p) = &persist_path {
+            // 客户端缓存：与 servers.json 同目录的 clients.json，加载时丢弃 7 天未见的
+            let cp = p.with_file_name("clients.json");
+            if let Ok(text) = std::fs::read_to_string(&cp) {
+                if let Ok(list) = serde_json::from_str::<Vec<serde_json::Value>>(&text) {
+                    let now = chrono::Utc::now().timestamp();
+                    for entry in list {
+                        let cs = entry
+                            .get("callsign")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if cs.is_empty() {
+                            continue;
+                        }
+                        let last = entry
+                            .get("last_seen")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        if now - last > 7 * 24 * 3600 {
+                            continue;
+                        }
+                        clients_map.insert(cs.to_uppercase(), entry);
+                    }
+                }
+            }
             if let Ok(text) = std::fs::read_to_string(p) {
                 if let Ok(list) = serde_json::from_str::<Vec<serde_json::Value>>(&text) {
                     for s in list {
@@ -485,9 +515,31 @@ impl ServerTable {
         }
         Self {
             servers: Arc::new(Mutex::new(servers)),
-            clients: Arc::new(Mutex::new(HashMap::new())),
+            clients: Arc::new(Mutex::new(clients_map)),
             persist_path,
+            clients_last_save: std::sync::Mutex::new(None),
             on_upsert: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    /// 客户端缓存限频落盘（30 秒一次）：信标周期性重复，节流丢数据会在下次补写。
+    fn save_clients_throttled(&self, clients: &HashMap<String, serde_json::Value>) {
+        let Some(p) = &self.persist_path else { return };
+        {
+            let mut last = self.clients_last_save.lock().unwrap();
+            if last
+                .map(|t| t.elapsed() < std::time::Duration::from_secs(30))
+                .unwrap_or(false)
+            {
+                return;
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        let cp = p.with_file_name("clients.json");
+        let list: Vec<&serde_json::Value> = clients.values().collect();
+        if let Ok(text) = serde_json::to_string(&list) {
+            std::fs::write(cp.with_extension("tmp"), text).ok();
+            let _ = std::fs::rename(cp.with_extension("tmp"), &cp);
         }
     }
 
@@ -678,6 +730,7 @@ impl ServerTable {
                 clients.remove(&k);
             }
         }
+        self.save_clients_throttled(&clients);
         Some(entry)
     }
 
@@ -1353,6 +1406,40 @@ mod tests {
         let list = table.client_list().await;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0]["rig"], "海能达PDC580");
+    }
+
+    #[tokio::test]
+    async fn clients_persist_across_restarts() {
+        // 客户端缓存落盘 + 重启加载（对齐原厂 cache_4.db）：重启后 rig/freq 立即可用
+        let dir = std::env::temp_dir().join(format!("fmo-clients-persist-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("servers.json");
+        {
+            let table = ServerTable::new(Some(path.clone()));
+            let beacon = parse_fmo_line(b"BI1SQH-15>APFMO4,TCPIP*,qAC,T2CS:=3953.80NF11633.56EiFMO-V4,BEACON,CERT:eJzjYmBgYEowyMzMTAAxGQwAAf0D-g,FREQ:433.2000,HEIGHT:72,RIG:TK-308,ANT:QTH,SIG:abc").unwrap();
+            table.upsert_client(&beacon).await.expect("BEACON 入表");
+        } // drop 后重建，模拟重启
+        let table2 = ServerTable::new(Some(path));
+        let e = table2.find_client("BI1SQH").await.expect("重启后条目应仍在");
+        assert_eq!(e["rig"], "TK-308");
+        assert_eq!(e["freq"], 433.2);
+        assert_eq!(e["height"], 72);
+    }
+
+    #[tokio::test]
+    async fn vocal_after_beacon_preserves_fields() {
+        // BEACON 建立条目后，VOCAL/ONLINE（无 RIG/FREQ/HEIGHT）入表不得覆盖既有字段
+        let table = ServerTable::new(None);
+        let beacon = parse_fmo_line(b"BI1SQH-15>APFMO4,TCPIP*,qAC,T2CS:=3953.80NF11633.56EiFMO-V4,BEACON,CERT:eJzjYmBgYEowyMzMTAAxGQwAAf0D-g,FREQ:433.2000,HEIGHT:72,RIG:TK-308,ANT:QTH,SIG:abc").unwrap();
+        table.upsert_client(&beacon).await.expect("BEACON 入表");
+        let vocal = parse_fmo_line(b"BI1SQH-15>APFMO4,TCPIP*,qAC,T2CS:=3953.80NF11633.56EiFMO-V4,VOCAL,CERT:eJzjYmBgYEowyMzMTAAxGQwAAf0D-g,S2533,SIG:abc").unwrap();
+        table.upsert_client(&vocal).await.expect("VOCAL 入表");
+        let e = table.find_client("BI1SQH").await.expect("条目应在");
+        assert_eq!(e["freq"], 433.2, "freq 不应丢失");
+        assert_eq!(e["rig"], "TK-308", "rig 不应丢失");
+        assert_eq!(e["height"], 72, "height 不应丢失");
+        assert_eq!(e["ant"], "QTH", "ant 不应丢失");
+        assert_eq!(e["subtype"], "VOCAL");
     }
 
     #[tokio::test]
