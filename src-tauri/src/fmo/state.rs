@@ -895,9 +895,17 @@ impl FmoState {
         )
         .into_bytes();
         let topic = format!("FMO/QSO/UID/{uid}");
-        if let Err(e) = self.mqtt_client.publish(&topic, payload, 0).await {
+        if let Err(e) = self.mqtt_client.publish(&topic, payload.clone(), 0).await {
             (self.emit)(json!({"type": "log", "level": "warn",
                 "msg": format!("成员状态发布失败（{topic}）：{e}")}));
+        }
+        // 对齐官方盒子：定向 QSO 已建立时同时发到对端 uid 主题——官方盒子
+        // 只订阅自己的 uid 主题，只发本机主题它们的 QSO 屏收不到网格/距离。
+        if let Some((_peer, peer_uid)) = self.qso.established_peer().await {
+            if peer_uid != 0 && peer_uid != uid {
+                let ptopic = format!("FMO/QSO/UID/{peer_uid}");
+                let _ = self.mqtt_client.publish(&ptopic, payload, 0).await;
+            }
         }
     }
 

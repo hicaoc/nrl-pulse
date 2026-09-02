@@ -271,6 +271,16 @@ impl QsoEngine {
         *self.established_hook.lock().unwrap() = Some(hook);
     }
 
+    /// QSO 已建立时返回 (对方呼号, 对方 uid)，否则 None。
+    /// 供 PTT 成员 JSON 发布定向到对端 uid 主题（官方盒子只订阅自己的
+    /// uid 主题，发本机主题它们收不到——对齐官方盒子行为必须发对端）。
+    pub async fn established_peer(&self) -> Option<(String, u32)> {
+        match &*self.phase.lock().await {
+            QsoPhase::Established { peer, peer_uid, .. } => Some((peer.clone(), *peer_uid)),
+            _ => None,
+        }
+    }
+
     pub fn auto_accept(&self) -> bool {
         *self.auto_accept.lock().unwrap()
     }
