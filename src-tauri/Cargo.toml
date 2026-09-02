@@ -28,7 +28,9 @@ mac_address = "1"
 opus = "0.3"
 rand = "0.8"
 regex = "1"
-reqwest = { version = "0.12.15", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+# TLS 根证书用系统证书库（native-roots）：webpki-roots 内置根不信任 360/电脑管家等
+# HTTPS 扫描软件的自签根，会导致部分电脑拉取平台 API（服务器列表/登录）验签失败
+reqwest = { version = "0.12.15", default-features = false, features = ["json", "multipart", "rustls-tls-native-roots"] }
 rumqttc = "0.24"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

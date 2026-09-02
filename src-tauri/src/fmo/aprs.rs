@@ -788,17 +788,17 @@ impl ServerTable {
     }
 
     pub async fn client_list(&self) -> Vec<serde_json::Value> {
-        // 服务器（STATION 广播带 host）也会发 STATUS/位置报文，按其呼号把服务器从用户表中剔除
+        // 服务器（STATION 广播带 host）也会发 STATUS/位置报文，按其广播源呼号把服务器
+        // 自身条目从用户表中剔除。注意只能按完整呼号（含 SSID）剔除，不能按基础呼号——
+        // 服务器台长的个人设备（如 BA4SOE 的台子 BA4SOE-2）基础呼号与服务器相同，
+        // 按基础呼号剔除会把台长的个人信标一起误杀。
         let servers = self.servers.lock().await;
         let mut server_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
         for s in servers.values() {
             if let Some(c) = s.get("callsign").and_then(|c| c.as_str()) {
                 let up = c.to_uppercase();
                 if !up.is_empty() {
-                    server_calls.insert(up.clone());
-                    if let Some(base) = up.split('-').next() {
-                        server_calls.insert(base.to_string());
-                    }
+                    server_calls.insert(up);
                 }
             }
         }
@@ -812,8 +812,7 @@ impl ServerTable {
                     .and_then(|x| x.as_str())
                     .unwrap_or("")
                     .to_uppercase();
-                let base = cs.split('-').next().unwrap_or("");
-                !cs.is_empty() && !server_calls.contains(&cs) && !server_calls.contains(base)
+                !cs.is_empty() && !server_calls.contains(&cs)
             })
             .cloned()
             .collect();
@@ -1307,6 +1306,45 @@ impl AprsTx {
 
 #[cfg(test)]
 mod tests {
+
+    // 用实捕的 BA4SOE-2 ONLINE 行测解析器
+    #[test]
+    fn debug_ba4soe_online_parse() {
+        let line = b"BA4SOE-2>APFMO4,TCPIP*,qAC,T2HK:=3346.12NF12018.20EiFMO-V4,ONLINE,CERT:imNGTU8EaHVzZXJDZXJ0GQPpZkJBNFNPRRkJRVggEzPF1bDRb04S6zGM47cWi0wUDOjEFXjRCEp-5QOsxlYaamRxwRpsRaVBWECcEamjN6XoK5X3fvf--fLQHK6rME13L1SHHlGw075WaMWoejzGrPeh3mPsx_6feyymT6moSaiMe8_HTOWFmKkI,S1121,SIG:UKwvnwaFiYqTXIGlREOThACEqJiQI7TiZGKPEk62-JIUFuyUvZ8_Q29veQ2TbPtLK6VrqEsnWUcJhXB-egM8Dw";
+        let v = crate::fmo::aprs::parse_fmo_line(line);
+        assert!(v.is_some(), "解析失败");
+        let v = v.unwrap();
+        assert_eq!(v["kind"], "broadcast");
+        assert_eq!(v["subtype"], "ONLINE");
+        assert_eq!(v["callsign"], "BA4SOE-2");
+        assert_eq!(v["uid"], 2373);
+        assert_eq!(v["lat"], "3346.12N");
+        assert_eq!(v["lon"], "12018.20E");
+    }
+
+    #[tokio::test]
+    async fn server_operator_personal_device_stays_in_client_list() {
+        // 回归：台长 BA4SOE 的服务器（盐城FMO集群）广播不应把其个人设备 BA4SOE-2
+        // 从用户列表剔除（client_list 曾按基础呼号剔除，误杀台长个人信标）
+        let table = ServerTable::new(None);
+        let station = parse_fmo_line(b"BA4SOE>APFMO4,TCPIP*,qAC,T2HK:=3346.12NF12018.20EiFMO-V4,STATION,CERT:eJzjYmBgYEowyMzMTAAxGQwAAf0D-g,CN,\xe7\x9b\x90\xe5\x9f\x8eFMO\xe9\x9b\x86\xe7\xbe\xa4,fmo.example.com,P1883,F100KM,U3/9,SIG:abc").unwrap();
+        table.upsert(&station, "aprs").await.expect("STATION 入服务器表");
+        // 服务器自己的登录公告 STATUS 会进入用户表（应被剔除）
+        let status = parse_fmo_line("BA4SOE>APFMO1,TCPIP*:>盐城FMO集群,正常,在线/峰值:3/9".as_bytes()).unwrap();
+        table.upsert_client(&status).await;
+        // 台长个人设备的 ONLINE 信标（实捕行）
+        let online = parse_fmo_line(b"BA4SOE-2>APFMO4,TCPIP*,qAC,T2HK:=3346.12NF12018.20EiFMO-V4,ONLINE,CERT:imNGTU8EaHVzZXJDZXJ0GQPpZkJBNFNPRRkJRVggEzPF1bDRb04S6zGM47cWi0wUDOjEFXjRCEp-5QOsxlYaamRxwRpsRaVBWECcEamjN6XoK5X3fvf--fLQHK6rME13L1SHHlGw075WaMWoejzGrPeh3mPsx_6feyymT6moSaiMe8_HTOWFmKkI,S1121,SIG:UKwvnwaFiYqTXIGlREOThACEqJiQI7TiZGKPEk62-JIUFuyUvZ8_Q29veQ2TbPtLK6VrqEsnWUcJhXB-egM8Dw").unwrap();
+        table.upsert_client(&online).await.expect("ONLINE 入用户表");
+        let list = table.client_list().await;
+        assert!(
+            list.iter().any(|c| c["callsign"] == "BA4SOE-2"),
+            "台长个人设备 BA4SOE-2 应出现在用户列表"
+        );
+        assert!(
+            !list.iter().any(|c| c["callsign"] == "BA4SOE"),
+            "服务器自身条目 BA4SOE 不应出现在用户列表"
+        );
+    }
     use super::*;
 
     #[test]

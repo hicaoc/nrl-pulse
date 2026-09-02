@@ -995,6 +995,7 @@ const messages = {
     registering: "注册中...",
     serverModeList: "服务器列表",
     serverModeCustom: "自定义服务器",
+    serverListError: "服务器列表获取失败",
     customServer: "自定义服务器地址",
     customServerPlaceholder: "例如 m.nrlptt.com",
     callsignField: "呼号",
@@ -1166,6 +1167,7 @@ const messages = {
     registering: "Registering...",
     serverModeList: "Server List",
     serverModeCustom: "Custom Server",
+    serverListError: "Failed to load server list",
     customServer: "Custom Server Host",
     customServerPlaceholder: "For example: m.nrlptt.com",
     callsignField: "Callsign",
@@ -3406,6 +3408,7 @@ watch(
               type="text"
               :placeholder="language === 'zh' ? '搜索服务器…' : 'Search servers…'"
             />
+            <div v-if="platform.serversError" class="auth-error">{{ t.serverListError }}：{{ platform.serversError }}</div>
             <div class="log-list chat-log-list fmo-tab-list">
               <div v-if="!platform.servers.length" class="log-empty">
                 {{ language === "zh" ? "暂无 NRL 服务器" : "No NRL servers." }}
@@ -4247,6 +4250,7 @@ watch(
                 </svg>
               </button>
             </div>
+            <div v-if="platform.serversError" class="auth-error">{{ t.serverListError }}：{{ platform.serversError }}</div>
           </template>
           <label v-else class="full-width">
             <span>{{ t.authServerCustom }}</span>

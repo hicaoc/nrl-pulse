@@ -67,6 +67,9 @@ export const usePlatformStore = defineStore("platform", () => {
   const currentGroupId = ref(0);
   const busy = ref(false);
   const loaded = ref(false);
+  // 服务器列表拉取失败的原因（TLS/代理/防火墙等），供界面直接展示，
+  // 否则列表为空时用户无法区分「没有服务器」和「网络故障」
+  const serversError = ref("");
 
   const loggedIn = computed(() => !!token.value && !!user.value);
   const onlineDevices = computed(() => devices.value.filter((device) => device.isOnline));
@@ -117,7 +120,13 @@ export const usePlatformStore = defineStore("platform", () => {
   }
 
   async function refreshServers() {
-    servers.value = await fetchPlatformServers();
+    try {
+      servers.value = await fetchPlatformServers();
+      serversError.value = "";
+    } catch (error) {
+      // 失败时保留旧列表，只记录原因；不再向上抛，避免阻塞登录态恢复
+      serversError.value = error instanceof Error ? error.message : String(error);
+    }
     hydrateVoiceServer(runtime.config.server || voiceServerHost.value);
     hydrateAuthServer(authServerHost.value || hostFromApiBase(apiBase.value || ""));
   }
@@ -251,10 +260,33 @@ export const usePlatformStore = defineStore("platform", () => {
       roomName: currentGroupName,
       currentGroupId: data.currentGroupId,
     };
+    // 语音服务器仍是出厂默认（127.0.0.1/Local，用户从未选择）时，登录成功后把
+    // 语音服务器对齐到登录服务器并发起连接，否则顶部状态/呼号栏一直停留在
+    // Local + 公共大厅，看起来像登录没生效。
+    const voiceUntouched = ["", "127.0.0.1", "localhost", "::1"].includes(
+      normalizeHost(runtime.config.server).toLowerCase(),
+    );
+    const authHost = normalizeHost(data.server.host);
+    const adoptVoiceServer = voiceUntouched && !!authHost;
+    if (adoptVoiceServer) {
+      nextConfig.server = authHost;
+      nextConfig.serverName = data.server.name || authHost;
+      nextConfig.port = Number(data.server.port || DEFAULT_CUSTOM_SERVER_PORT) || Number(DEFAULT_CUSTOM_SERVER_PORT);
+      voiceServerHost.value = authHost;
+      useCustomVoiceServer.value = false;
+      customVoiceServerHost.value = "";
+    }
     if (reconnectNeeded) {
       await runtime.reconnectWithConfig(nextConfig);
     } else {
       await runtime.saveConfig(nextConfig);
+      if (
+        adoptVoiceServer &&
+        runtime.snapshot.connection !== "connected" &&
+        runtime.snapshot.connection !== "connecting"
+      ) {
+        await runtime.connect();
+      }
     }
   }
 
@@ -426,6 +458,7 @@ export const usePlatformStore = defineStore("platform", () => {
     onlineDevices,
     busy,
     loaded,
+    serversError,
     loggedIn,
     bootstrap,
     refreshServers,
