@@ -352,6 +352,13 @@ export interface FmoStatsSnapshot {
   downlinkKbps: number;
   uplinkKbps: number;
   rxCodec: string;
+  /** 说话人位置（后端解算，对齐原厂）：网格 / 距离km / 方位角 / 罗盘方位 / 来源 */
+  speakerGrid?: string;
+  speakerDistanceKm?: number;
+  speakerBearingDeg?: number;
+  speakerCompass?: string;
+  /** beacon=APRS 信标经纬度（精确）；grid=成员 JSON 网格（±10km，显示加 ≈） */
+  speakerPosSource?: "beacon" | "grid";
 }
 
 export interface FmoQsoState {

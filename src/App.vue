@@ -2332,6 +2332,24 @@ const fmoSpeakerInfoLines = computed<string[]>(() => {
   return lines;
 });
 
+// 说话人位置行（后端已解算，对齐原厂固件）：网格 · 距离 · 罗盘方位。
+// 位置来源 beacon（APRS 信标经纬度）精确；grid（成员 JSON 网格）±10km，距离前加 ≈。
+const fmoSpeakerGeoLine = computed<string>(() => {
+  const s = fmo.stats;
+  if (s.speakerDistanceKm == null && !s.speakerGrid) return "";
+  const parts: string[] = [];
+  if (s.speakerGrid) parts.push(s.speakerGrid);
+  if (s.speakerDistanceKm != null) {
+    const approx = s.speakerPosSource === "grid" ? "≈" : "";
+    parts.push(`${approx}${s.speakerDistanceKm} km`);
+  }
+  if (s.speakerCompass) {
+    const deg = s.speakerBearingDeg != null ? ` ${s.speakerBearingDeg.toFixed(0)}°` : "";
+    parts.push(`${s.speakerCompass}${deg}`);
+  }
+  return parts.join(" · ");
+});
+
 // 语音活动检测：接收帧序号/计数变化视为有语音进来，900ms 内在大呼号右下角显示编码角标
 const nrlLastVoiceAt = ref(0);
 const fmoLastVoiceAt = ref(0);
@@ -3041,9 +3059,11 @@ watch(
                   </span>
                 </span>
               </div>
-              <!-- 说话人命中 APRS 用户表时，展示其信标附加信息（状态/频率/电台/天线/高度） -->
-              <div v-if="fmoSpeakerInfoLines.length" class="callsign-speaker-info">
+              <!-- 说话人命中 APRS 用户表时，展示其信标附加信息（状态/频率/电台/天线/高度）；
+                   位置行（网格/距离/方位）独立于用户表匹配，网格源也可显示 -->
+              <div v-if="fmoSpeakerInfoLines.length || fmoSpeakerGeoLine" class="callsign-speaker-info">
                 <span v-for="(line, i) in fmoSpeakerInfoLines" :key="i">{{ line }}</span>
+                <span v-if="fmoSpeakerGeoLine" class="speaker-geo-line">{{ fmoSpeakerGeoLine }}</span>
               </div>
               <div class="callsign-meta">
                 <span class="callsign-room">

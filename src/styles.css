@@ -1013,6 +1013,12 @@ textarea {
   white-space: nowrap;
 }
 
+/* 说话人位置行（网格·距离·方位，对齐原厂固件 QSO 屏）——用主题强调色区分 */
+.callsign-speaker-info .speaker-geo-line {
+  color: rgba(255, 210, 140, 0.95);
+  font-weight: 600;
+}
+
 .callsign-ssid,
 .callsign-room {
   color: var(--text-dim);

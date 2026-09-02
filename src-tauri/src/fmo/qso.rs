@@ -115,6 +115,75 @@ pub fn maidenhead_grid(lat: f64, lon: f64) -> String {
     s
 }
 
+/// 4/6 位梅登黑德网格 → 方格中心经纬度（与 maidenhead_grid 互逆的解码器，
+/// 对齐原厂固件 Position::fromGrid @0x42080588 / 解码核 @0x42082084）。
+/// 非法输入返回 None（原厂默认 (-180,-90)，UI 层宁可不显示）。
+/// 精度：6 位方格 5′×2.5′，4 位方格 2°×1°，返回方格中心点。
+pub fn grid_to_latlon(grid: &str) -> Option<(f64, f64)> {
+    let g: Vec<u8> = grid.trim().to_uppercase().bytes().collect();
+    if g.len() != 4 && g.len() != 6 {
+        return None;
+    }
+    let field = |b: u8| -> Option<f64> {
+        // 头两位：场（18×18 覆盖全球），字母范围 A..R
+        if (b'A'..=b'R').contains(&b) {
+            Some((b - b'A') as f64)
+        } else {
+            None
+        }
+    };
+    let sub = |b: u8| -> Option<f64> {
+        // 末两位：子方（24×24），字母范围 A..X（原厂固件 toupper 后同样按此范围）
+        if (b'A'..=b'X').contains(&b) {
+            Some((b - b'A') as f64)
+        } else {
+            None
+        }
+    };
+    let dig = |b: u8| -> Option<f64> {
+        if b.is_ascii_digit() {
+            Some((b - b'0') as f64)
+        } else {
+            None
+        }
+    };
+    let lon = field(g[0])? * 20.0 + dig(g[2])? * 2.0;
+    let lat = field(g[1])? * 10.0 + dig(g[3])?;
+    if g.len() == 4 {
+        // 4 位方格 2°×1°，取中心
+        Some((lat - 90.0 + 0.5, lon - 180.0 + 1.0))
+    } else {
+        // 6 位子方 5′×2.5′，取中心
+        Some((
+            lat - 90.0 + sub(g[5])? * 2.5 / 60.0 + 1.25 / 60.0,
+            lon - 180.0 + sub(g[4])? * 5.0 / 60.0 + 2.5 / 60.0,
+        ))
+    }
+}
+
+/// 大圆距离（米）与初始方位角（度，0=北 顺时针）。
+/// 与原厂固件同参数：f64、R=6371000 米、deg2rad/rad2deg（常量池 0x420808bc/c8/ec 实锤）。
+pub fn geo_distance_bearing(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> (f64, f64) {
+    let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
+    let dp = (lat2 - lat1).to_radians();
+    let dl = (lon2 - lon1).to_radians();
+    let a = (dp / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dl / 2.0).sin().powi(2);
+    let dist_m = 6_371_000.0 * 2.0 * a.sqrt().asin();
+    let y = dl.sin() * p2.cos();
+    let x = p1.cos() * p2.sin() - p1.sin() * p2.cos() * dl.cos();
+    let brg = (y.atan2(x).to_degrees() + 360.0) % 360.0;
+    (dist_m, brg)
+}
+
+/// 方位角 → 16 方位罗盘（与原厂字符串表一致：N/NNE/NE/ENE/E/ESE/SE/SSE/S/SSW/SW/WSW/W/WNW/NW/NNW）。
+pub fn compass16(deg: f64) -> &'static str {
+    const DIRS: [&str; 16] = [
+        "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W",
+        "WNW", "NW", "NNW",
+    ];
+    DIRS[(((deg % 360.0) + 11.25) / 22.5).floor() as usize % 16]
+}
+
 /// 固件完整 QSO 记录 JSON（FMO/QSO/UID/<对方uid> 载荷，QSO 祝福在 toComment 字段）。
 /// 字段名与固件模板一致：{"logId":..,"timestamp":..,"freqHz":..,"fromCallsign":..,
 /// "fromGrid":..,"toCallsign":..,"toGrid":..,"toComment":..,"mode":..,"relayName":..,"relayAdmin":..}
@@ -953,6 +1022,60 @@ mod tests {
         assert_eq!(maidenhead_grid(-33.865, -74.006), "FF26xd");
         // 非法输入返回空串
         assert_eq!(maidenhead_grid(f64::NAN, 116.4), "");
+    }
+
+    #[test]
+    fn grid_to_latlon_roundtrip() {
+        // 与 maidenhead_grid 互逆：编码后的网格解码回方格中心，中心再编码应得同网格
+        for (la, lo, g) in [
+            (39.9, 116.4, "OM89ev"),
+            (32.3932, 119.3706, "OM92qj"),
+            (-33.865, -74.006, "FF26xd"),
+        ] {
+            let (dla, dlo) = grid_to_latlon(g).expect("合法网格应可解码");
+            assert_eq!(maidenhead_grid(dla, dlo), g, "方格中心再编码应还原 {g}");
+            // 中心点与原点的偏差应在半个子方内（lon ≤2.5′, lat ≤1.25′）
+            assert!((dla - la).abs() <= 1.25 / 60.0 + 1e-9);
+            assert!((dlo - lo).abs() <= 2.5 / 60.0 + 1e-9);
+        }
+        // 4 位网格：方格 2°×1° 中心
+        assert_eq!(grid_to_latlon("OM89"), Some((39.5, 117.0)));
+        // 小写/空白容错
+        assert_eq!(grid_to_latlon(" om89ev "), grid_to_latlon("OM89ev"));
+        // 非法输入
+        assert!(grid_to_latlon("").is_none());
+        assert!(grid_to_latlon("OM89e").is_none());
+        assert!(grid_to_latlon("ZZ89ev").is_none());
+        assert!(grid_to_latlon("OM89evx").is_none());
+    }
+
+    #[test]
+    fn geo_distance_bearing_known() {
+        // 北京(39.9,116.4) → 上海(31.2,121.5)：约 1067km，方位约 153°（南偏东）
+        let (d, b) = geo_distance_bearing(39.9, 116.4, 31.2, 121.5);
+        assert!((d / 1000.0 - 1067.0).abs() < 20.0, "距离 {d} 应约 1067km");
+        assert!((b - 153.0).abs() < 5.0, "方位 {b} 应约 153°");
+        // 正北/正东/同点边界
+        let (_, bn) = geo_distance_bearing(39.9, 116.4, 49.9, 116.4);
+        assert!(bn < 0.5 || bn > 359.5, "正北方位 {bn}");
+        let (_, be) = geo_distance_bearing(0.0, 0.0, 0.0, 1.0);
+        assert!((be - 90.0).abs() < 0.5, "赤道正东方位 {be}");
+        let (d0, _) = geo_distance_bearing(39.9, 116.4, 39.9, 116.4);
+        assert!(d0 < 1.0, "同点距离 {d0}");
+    }
+
+    #[test]
+    fn compass16_sectors() {
+        assert_eq!(compass16(0.0), "N");
+        assert_eq!(compass16(11.24), "N");
+        assert_eq!(compass16(11.26), "NNE");
+        assert_eq!(compass16(90.0), "E");
+        assert_eq!(compass16(180.0), "S");
+        assert_eq!(compass16(270.0), "W");
+        assert_eq!(compass16(359.9), "N");
+        assert_eq!(compass16(348.76), "N");
+        assert_eq!(compass16(337.5), "NNW");
+        assert_eq!(compass16(326.26), "NNW");
     }
 
     #[test]

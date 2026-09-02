@@ -14,6 +14,7 @@ use crate::fmo::presence::PresenceTracker;
 use crate::fmo::qso::QsoEngine;
 use crate::fmo::{mqtt_client as fmo_mqtt, qso as fmo_qso};
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -45,6 +46,16 @@ pub fn read_identity(data_dir: &Path, configured: &str) -> (String, u32) {
         callsign = "N0CALL".into();
     }
     (callsign, uid)
+}
+
+/// QSO 成员网格表条目（FMO/QSO/UID/# 成员 JSON 实时推送，对齐原厂固件：
+/// 网格随 isSpeaking 发言状态发布，是通话中对方位置的实时来源）。
+#[derive(Clone, Default)]
+pub struct MemberEntry {
+    pub grid: String,
+    pub is_speaking: bool,
+    pub is_host: bool,
+    pub ts: i64,
 }
 
 pub struct FmoState {
@@ -80,6 +91,8 @@ pub struct FmoState {
     pub stats: FmoStats,
     /// 手动配置的 FMO 呼号（优先于证书），空则用证书呼号
     pub configured_callsign: Arc<std::sync::Mutex<String>>,
+    /// 成员网格表（成员 JSON）：呼号大写 → 条目；呼号框距离/方位的数据源
+    pub member_roster: Arc<std::sync::Mutex<HashMap<String, MemberEntry>>>,
     aprs_task_running: Arc<AtomicBool>,
     identity_watch_running: Arc<AtomicBool>,
 }
@@ -237,6 +250,7 @@ impl FmoState {
             bridge,
             stats,
             configured_callsign,
+            member_roster: Arc::new(std::sync::Mutex::new(HashMap::new())),
             aprs_task_running: Arc::new(AtomicBool::new(false)),
             identity_watch_running: Arc::new(AtomicBool::new(false)),
         }
@@ -370,39 +384,77 @@ impl FmoState {
         }
     }
 
-    /// 收到 `FMO/QSO/UID/<uid>` 的完整通联记录 JSON：只收发给自己的（topic 尾段 ==
-    /// 本机 uid），写入本地 qso_log（"展示在对方的 QSO 记录中"）。
+    /// 收到 `FMO/QSO/UID/<uid>` 载荷：两种载荷分开处理——
+    /// 1) 完整通联记录 JSON：只收发给自己的（topic 尾段 == 本机 uid），写入本地 qso_log；
+    /// 2) 成员 JSON（{"callsign","isSpeaking","isHost","grid"}）：存入成员网格表，
+    ///    供呼号框实时距离/方位显示（对齐原厂：网格随发言状态推送，不限本机 topic）。
     async fn handle_qso_record(&self, topic: &str, payload: &[u8]) {
-        let Some(rec) = fmo_mqtt::parse_qso_record_json(payload) else {
-            return;
-        };
-        let my_uid = self.current_uid();
-        let topic_uid: u32 = topic
-            .rsplit('/')
-            .next()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        if my_uid == 0 || topic_uid != my_uid {
+        if let Some(rec) = fmo_mqtt::parse_qso_record_json(payload) {
+            let my_uid = self.current_uid();
+            let topic_uid: u32 = topic
+                .rsplit('/')
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            if my_uid == 0 || topic_uid != my_uid {
+                return;
+            }
+            let from = rec
+                .get("fromCallsign")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string();
+            let comment = rec
+                .get("toComment")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string();
+            self.qso.record_remote(&rec);
+            let wish = if comment.is_empty() {
+                String::new()
+            } else {
+                format!("，祝福：{comment}")
+            };
+            (self.emit)(json!({"type": "log", "level": "info",
+                "msg": format!("收到 {from} 的 QSO 通联记录{wish}")}));
             return;
         }
-        let from = rec
-            .get("fromCallsign")
-            .and_then(|c| c.as_str())
-            .unwrap_or("")
-            .to_string();
-        let comment = rec
-            .get("toComment")
-            .and_then(|c| c.as_str())
-            .unwrap_or("")
-            .to_string();
-        self.qso.record_remote(&rec);
-        let wish = if comment.is_empty() {
-            String::new()
-        } else {
-            format!("，祝福：{comment}")
-        };
-        (self.emit)(json!({"type": "log", "level": "info",
-            "msg": format!("收到 {from} 的 QSO 通联记录{wish}")}));
+        if let Some(m) = fmo_mqtt::parse_qso_member_json(payload) {
+            let cs = m
+                .get("callsign")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_uppercase();
+            if cs.is_empty() {
+                return;
+            }
+            let entry = MemberEntry {
+                grid: m
+                    .get("grid")
+                    .and_then(|g| g.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                is_speaking: m
+                    .get("isSpeaking")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                is_host: m.get("isHost").and_then(|v| v.as_bool()).unwrap_or(false),
+                ts: chrono::Utc::now().timestamp(),
+            };
+            let mut roster = self.member_roster.lock().unwrap();
+            roster.insert(cs, entry);
+            // 上限保护：超过 500 个成员淘汰最久未更新的
+            if roster.len() > 500 {
+                let oldest = roster
+                    .iter()
+                    .min_by_key(|(_, e)| e.ts)
+                    .map(|(k, _)| k.clone());
+                if let Some(k) = oldest {
+                    roster.remove(&k);
+                }
+            }
+        }
     }
 
     /// 选定服务器的认证信息（host/uid/证书指纹），供构建 SAS 凭据。
@@ -963,10 +1015,66 @@ impl FmoState {
         }
         out["serverName"] = json!(server_name);
         out["activeSpeaker"] = json!(self.current_speaker.lock().unwrap().clone());
+        // 广播配置提前取出：说话人位置计算（本机 QTH）与 online/peak 生效值都要用
+        let bc_cfg = self.broadcast.config().await;
+        // 说话人位置/距离/方位（对齐原厂固件：Position 类大圆计算 + 16 方位罗盘）。
+        // 位置来源优先级：APRS 用户表经纬度（精确，source=beacon）→ 成员 JSON 网格
+        // （方格中心 ±10km，source=grid，前端标 ≈）。本机位置用广播配置的 QTH。
+        {
+            let spk = self.current_speaker.lock().unwrap().clone();
+            let own_ok = bc_cfg.lat.is_finite()
+                && bc_cfg.lon.is_finite()
+                && bc_cfg.lat.abs() <= 90.0
+                && bc_cfg.lon.abs() <= 180.0;
+            if !spk.is_empty() && own_ok {
+                let mut geo: Option<(f64, f64, &'static str)> = None;
+                // 1) APRS 用户表（信标经纬度，精确）
+                if let Some(c) = self.server_table.find_client(&spk).await {
+                    let la = c
+                        .get("lat")
+                        .and_then(|v| v.as_str())
+                        .and_then(crate::fmo::aprs::aprs_to_deg);
+                    let lo = c
+                        .get("lon")
+                        .and_then(|v| v.as_str())
+                        .and_then(crate::fmo::aprs::aprs_to_deg);
+                    if let (Some(la), Some(lo)) = (la, lo) {
+                        geo = Some((la, lo, "beacon"));
+                    }
+                }
+                // 2) 成员 JSON 网格（±10km）
+                if geo.is_none() {
+                    let key = spk.to_uppercase();
+                    let base = key.split('-').next().unwrap_or(&key).to_string();
+                    let grid = {
+                        let roster = self.member_roster.lock().unwrap();
+                        roster
+                            .get(&key)
+                            .or_else(|| roster.get(&base))
+                            .map(|e| e.grid.clone())
+                    };
+                    if let Some(g) = grid {
+                        if let Some((la, lo)) = fmo_qso::grid_to_latlon(&g) {
+                            geo = Some((la, lo, "grid"));
+                        }
+                    }
+                }
+                if let Some((la, lo, src)) = geo {
+                    let (dist_m, brg) =
+                        fmo_qso::geo_distance_bearing(bc_cfg.lat, bc_cfg.lon, la, lo);
+                    // 与原厂一致：(米+500)/1000 取整 → 整数公里
+                    let km = ((dist_m + 500.0) / 1000.0).floor() as u32;
+                    out["speakerDistanceKm"] = json!(km);
+                    out["speakerBearingDeg"] = json!((brg * 10.0).round() / 10.0);
+                    out["speakerCompass"] = json!(fmo_qso::compass16(brg));
+                    out["speakerPosSource"] = json!(src);
+                    out["speakerGrid"] = json!(fmo_qso::maidenhead_grid(la, lo));
+                }
+            }
+        }
         // 在线数/峰值自动统计（LATE 心跳花名册）+ 广播 online/peak 生效值（0=自动，>0=手动覆盖）
         out["presenceOnline"] = json!(self.presence.online());
         out["presencePeak"] = json!(self.presence.peak());
-        let bc_cfg = self.broadcast.config().await;
         let (eff_online, eff_peak) = self.broadcast.effective_online_peak(&bc_cfg);
         out["broadcastOnline"] = json!(eff_online);
         out["broadcastPeak"] = json!(eff_peak);

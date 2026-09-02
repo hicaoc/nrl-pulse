@@ -228,7 +228,8 @@ pub fn parse_qso_record_json(payload: &[u8]) -> Option<serde_json::Value> {
 }
 
 /// 成员 JSON（{callsign,isSpeaking,isHost,grid}）兼容识别。
-fn parse_qso_member_json(payload: &[u8]) -> Option<serde_json::Value> {
+/// pub：state 的 handle_qso_record 用它把网格存入成员网格表（呼号框距离/方位数据源）。
+pub fn parse_qso_member_json(payload: &[u8]) -> Option<serde_json::Value> {
     let v = parse_qso_json(payload)?;
     if v.get("callsign").and_then(|c| c.as_str()).is_some() {
         return Some(v);

@@ -63,6 +63,32 @@ fn is_country(s: &[u8]) -> bool {
     s.len() == 2 && s.iter().all(|b| b.is_ascii_uppercase())
 }
 
+/// APRS 位置串 → 十进制度："3952.80N"→39.88，"11931.57E"→119.526166…；非法返回 None。
+/// 纬度 DDMM.MM+N/S（2 位度），经度 DDDMM.MM+E/W（3 位度）。
+pub fn aprs_to_deg(s: &str) -> Option<f64> {
+    let s = s.trim();
+    let hemi = s.chars().last()?;
+    let deg_len = match hemi {
+        'N' | 'S' => 2,
+        'E' | 'W' => 3,
+        _ => return None,
+    };
+    let body = &s[..s.len() - 1];
+    if body.len() < deg_len + 1 || !body[..deg_len].bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let d: f64 = body[..deg_len].parse().ok()?;
+    let m: f64 = body[deg_len..].parse().ok()?;
+    if !(0.0..60.0).contains(&m) {
+        return None;
+    }
+    let v = d + m / 60.0;
+    Some(match hemi {
+        'S' | 'W' => -v,
+        _ => v,
+    })
+}
+
 fn parse_position_comment(body: &[u8]) -> (serde_json::Value, usize) {
     let re =
         regex::Regex::new(r"^[=!](\d{2})(\d{2}\.\d+)([NS]).(\d{3})(\d{2}\.\d+)([EW]).").unwrap();
@@ -655,6 +681,20 @@ impl ServerTable {
         Some(entry)
     }
 
+    /// 按呼号查用户条目（忽略大小写，SSID 退化匹配），供说话人位置/详情展示用。
+    pub async fn find_client(&self, callsign: &str) -> Option<serde_json::Value> {
+        let key = callsign.to_uppercase();
+        let base = key.split('-').next().unwrap_or(&key).to_string();
+        let clients = self.clients.lock().await;
+        if let Some(v) = clients.get(&key) {
+            return Some(v.clone());
+        }
+        clients
+            .iter()
+            .find(|(k, _)| k.split('-').next().unwrap_or(k) == base)
+            .map(|(_, v)| v.clone())
+    }
+
     /// 按呼号（忽略 SSID/大小写）在用户表/服务器表查 uid（QSO 呼叫解析目标 uid 用）
     pub async fn lookup_uid_by_callsign(&self, callsign: &str) -> Option<u32> {
         let key = callsign
@@ -1027,11 +1067,26 @@ impl AprsClient {
                     .and_then(|h| h.as_str())
                     .map(|h| h.is_empty())
                     .unwrap_or(true);
+                // 任何带位置的客户端广播（抓包证实 ONLINE/VOCAL/CQ 与 BEACON 一样带
+                // =<lat><lon> 位置前缀）都刷新用户表坐标：VOCAL 是对方开口后最快到达的
+                // 位置包（语音活跃事件触发），说话人距离/方位靠它秒级出现；
+                // RIG/FREQ/HEIGHT 仅 BEACON（10 分钟周期）携带，属协议固有时延。
+                let has_pos = parsed
+                    .get("lat")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false)
+                    && parsed
+                        .get("lon")
+                        .and_then(|v| v.as_str())
+                        .map(|s| !s.is_empty())
+                        .unwrap_or(false);
                 let is_client_broadcast = kind == "broadcast"
                     && no_host
                     && (parsed.get("subtype").and_then(|s| s.as_str()) == Some("BEACON")
                         || parsed.get("legacy_type").and_then(|s| s.as_str())
-                            == Some("FMO-CLIENT"));
+                            == Some("FMO-CLIENT")
+                        || has_pos);
                 if (matches!(kind, "client_beacon" | "position" | "status") || is_client_broadcast)
                     && self.table.upsert_client(&parsed).await.is_some()
                 {
@@ -1200,6 +1255,18 @@ impl AprsTx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aprs_to_deg_works() {
+        assert!((aprs_to_deg("3952.80N").unwrap() - 39.88).abs() < 1e-9);
+        assert!((aprs_to_deg("11931.57E").unwrap() - (119.0 + 31.57 / 60.0)).abs() < 1e-9);
+        assert!((aprs_to_deg("2946.37S").unwrap() + (29.0 + 46.37 / 60.0)).abs() < 1e-9);
+        assert!((aprs_to_deg("07400.60W").unwrap() + 74.01).abs() < 1e-9);
+        assert!(aprs_to_deg("3952.80").is_none());
+        assert!(aprs_to_deg("").is_none());
+        assert!(aprs_to_deg("3952.80X").is_none());
+        assert!(aprs_to_deg("3961.00N").is_none(), "分 >= 60 非法");
+    }
 
     #[test]
     fn parse_v4_station() {
