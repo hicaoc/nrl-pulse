@@ -397,6 +397,10 @@ export interface FmoBroadcastConfig {
   lon: number;
   /** 广播呼号的 APRS SSID（0-15，0=不带；包头和 TBS 签同一个值） */
   ssid: number;
+  /** 梅登黑德网格（4/6 位；留空由经纬度自动推导），PTT 时随成员 JSON 发布 */
+  grid: string;
+  /** 后端返回的有效网格（只读展示，保存时不下发） */
+  grid_effective?: string;
 }
 
 /** 个人信标（BEACON）配置（beacon.json，后端 serde(default) 全字段兜底） */

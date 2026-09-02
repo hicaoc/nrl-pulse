@@ -4051,7 +4051,16 @@ watch(
                   <span>{{ language === "zh" ? "经度" : "Lon" }}</span>
                   <input v-model.number="broadcastDraft.lon" type="number" step="0.0001" class="text-input" placeholder="116.4" />
                 </label>
+                <label>
+                  <span>{{ language === "zh" ? "网格" : "Grid" }}</span>
+                  <input v-model="broadcastDraft.grid" class="text-input" placeholder="OM89EV" maxlength="6" />
+                </label>
               </div>
+              <small class="fmo-cert-msg">
+                {{ language === "zh"
+                  ? `PTT 时向对端发布的说话人网格：${fmo.broadcast.grid_effective || "—"}（留空由经纬度自动推导）`
+                  : `Speaker grid published on PTT: ${fmo.broadcast.grid_effective || "—"} (empty = derive from lat/lon)` }}
+              </small>
               <small class="fmo-cert-msg">
                 {{ language === "zh"
                   ? `当前自动值：在线 ${fmo.stats.presenceOnline} / 峰值 ${fmo.stats.presencePeak}（填 0 使用自动）`

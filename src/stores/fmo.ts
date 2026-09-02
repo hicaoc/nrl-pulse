@@ -102,7 +102,7 @@ export const useFmoStore = defineStore("fmo", () => {
   const qsoLog = ref<FmoQsoRecord[]>([]);
   const broadcast = ref<FmoBroadcastConfig>({
     mode_min: 0, name: "", host: "", port: 1883, cover_km: 100,
-    online: 0, peak: 0, country: "CN", lat: 39.9, lon: 116.4, ssid: 0,
+    online: 0, peak: 0, country: "CN", lat: 39.9, lon: 116.4, ssid: 0, grid: "",
   });
   const beacon = ref<FmoBeaconConfig>({
     enabled: false, ssid: 0, rig: "", freq_mhz: 0, ant: "",

@@ -708,7 +708,11 @@ async fn fmo_broadcast_config(
     let Some(fmo) = state.fmo_state().await else {
         return Err("FMO 未初始化".into());
     };
-    serde_json::to_value(fmo.broadcast.config().await).map_err(|e| e.to_string())
+    let cfg = fmo.broadcast.config().await;
+    let mut v = serde_json::to_value(&cfg).map_err(|e| e.to_string())?;
+    // 有效网格（配置为空时由经纬度推导），供设置页展示
+    v["grid_effective"] = serde_json::json!(cfg.effective_grid());
+    Ok(v)
 }
 
 #[tauri::command]

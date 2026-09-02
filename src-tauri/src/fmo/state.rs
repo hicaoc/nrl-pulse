@@ -326,7 +326,7 @@ impl FmoState {
         }
         let beacon = self.beacon.config().await;
         let bc = self.broadcast.config().await;
-        let grid = fmo_qso::maidenhead_grid(bc.lat, bc.lon);
+        let grid = bc.effective_grid();
         // 无射频：频率用 beacon 配置的直频（未配置为 0）
         let freq_hz = if beacon.freq_mhz > 0.0 {
             (beacon.freq_mhz * 1e6) as u64
@@ -872,7 +872,33 @@ impl FmoState {
             Some(self.stats.tx_frames.clone()),
         )?);
         *self.tx_session.lock().await = Some(ts);
+        self.publish_member_state(true).await;
         Ok(())
+    }
+
+    /// PTT 时向 `FMO/QSO/UID/<本机uid>` 发布成员 JSON（isSpeaking/grid），
+    /// 对齐原版固件的成员状态机制：订阅通配的客户端（nrl-pulse、ESP32、
+    /// NRL 桥）据此显示/转发说话人网格、距离、方位。
+    /// uid=0（未注册设备）不发，避免污染名册。
+    async fn publish_member_state(&self, speaking: bool) {
+        let uid = self.current_uid();
+        if uid == 0 {
+            return;
+        }
+        let bc = self.broadcast.config().await;
+        let grid = bc.effective_grid();
+        let callsign = self.current_callsign();
+        let utc = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S");
+        let payload = format!(
+            "{{\"callsign\":\"{}\",\"isSpeaking\":{},\"isHost\":false,\"grid\":\"{}\",\"utcTime\":\"{}\"}}",
+            callsign, speaking, grid, utc
+        )
+        .into_bytes();
+        let topic = format!("FMO/QSO/UID/{uid}");
+        if let Err(e) = self.mqtt_client.publish(&topic, payload, 0).await {
+            (self.emit)(json!({"type": "log", "level": "warn",
+                "msg": format!("成员状态发布失败（{topic}）：{e}")}));
+        }
     }
 
     /// PTT 喂 PCM（8k s16le）。
@@ -890,6 +916,7 @@ impl FmoState {
             ts.stop().await;
         }
         *self.tx_session.lock().await = None;
+        self.publish_member_state(false).await;
     }
 
     /// 桥接喂 PCM（8k s16le）。返回 true 表示本次新建了发射会话，
@@ -914,6 +941,7 @@ impl FmoState {
         let ts = Arc::new(ts);
         ts.feed_pcm(pcm).await;
         *self.bridge_tx.lock().await = Some(ts);
+        self.publish_member_state(true).await;
         true
     }
 
@@ -924,6 +952,7 @@ impl FmoState {
             ts.stop().await;
         }
         *self.bridge_tx.lock().await = None;
+        self.publish_member_state(false).await;
     }
 
     // ---------------------------------------------------------------- 收藏

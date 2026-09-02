@@ -61,6 +61,12 @@ pub struct BroadcastConfig {
     /// 0 也合法，但个别地图服务器对 ssid=0 有额外过滤时可用此项对齐原版行为。
     #[serde(default)]
     pub ssid: u32,
+    /// 梅登黑德网格（4/6 位）。留空 = 由经纬度自动推导（对齐原版固件：
+    /// 原版网格是独立配置项，GRIDS 界面手填，未配置显示 GRID NOT SET）。
+    /// PTT 时随成员 JSON（isSpeaking/grid）发布到 FMO/QSO/UID/<本机uid>，
+    /// 对端据此显示距离/方位。
+    #[serde(default)]
+    pub grid: String,
 }
 
 impl Default for BroadcastConfig {
@@ -77,7 +83,20 @@ impl Default for BroadcastConfig {
             lat: 39.9,
             lon: 116.4,
             ssid: 0,
+            grid: String::new(),
         }
+    }
+}
+
+impl BroadcastConfig {
+    /// 有效网格：配置非空且合法（4/6 位梅登黑德）则用配置值（大写），
+    /// 否则由经纬度推导 6 位网格。
+    pub fn effective_grid(&self) -> String {
+        let g = self.grid.trim().to_uppercase();
+        if crate::fmo::qso::grid_to_latlon(&g).is_some() {
+            return g;
+        }
+        crate::fmo::qso::maidenhead_grid(self.lat, self.lon)
     }
 }
 
@@ -1184,5 +1203,17 @@ mod tests {
         let mut expect = b"BA4TCS-15>APFMO2,TCPIP*:>".to_vec();
         expect.extend_from_slice("73 de 江苏".as_bytes());
         assert_eq!(f, expect);
+    }
+
+    /// 回归：网格配置——留空由经纬度推导；手填合法值优先（大写）；
+    /// 非法值回退推导。
+    #[test]
+    fn effective_grid_manual_overrides_and_fallback() {
+        let mut cfg = BroadcastConfig::default(); // 默认北京 39.9/116.4
+        assert_eq!(cfg.effective_grid(), "OM89ev");
+        cfg.grid = "om92jd".into();
+        assert_eq!(cfg.effective_grid(), "OM92JD");
+        cfg.grid = "XX!!".into(); // 非法 → 回退推导
+        assert_eq!(cfg.effective_grid(), "OM89ev");
     }
 }
