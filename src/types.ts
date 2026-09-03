@@ -312,6 +312,10 @@ export interface FmoStateSnapshot {
   mqttClientId: string;
   aprsState: string;
   aprsDetail: string;
+  /** APRS 上行（发送专用 14580）状态：verified / listen-only / connecting / disconnected */
+  aprsTxState: string;
+  /** APRS-IS 服务器主机（主连接 10152 / 上行 14580 共用，设置页可改） */
+  aprsHost: string;
   selectedServer: Partial<FmoServer> | null;
   rxPlay: boolean;
   mqttNoLocal: boolean;
@@ -326,6 +330,7 @@ export interface FmoStatsSnapshot {
   mqttRole: string;
   aprsState: string;
   aprsDetail: string;
+  aprsTxState: string;
   serverHost: string;
   serverPort: number;
   serverName: string;
@@ -430,6 +435,7 @@ export interface FmoEvent {
     | "log"
     | "mqtt_state"
     | "aprs_state"
+    | "aprs_tx_state"
     | "server_list"
     | "cert_state"
     | "favorites"

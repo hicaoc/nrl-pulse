@@ -491,9 +491,7 @@ impl QsoEngine {
                 .await
                 .ok_or_else(|| format!("不知道 {peer} 的 UID（从用户列表选择或手动输入）"))?,
         };
-        if *self.tx.state.lock().await != "verified" {
-            return Err("APRS 上行未验证登录（先连接 APRS 且 passcode 正确）".into());
-        }
+        self.tx.gate_verified().await?;
         let (my_call, my_uid) = self.identity();
         let _ = my_call;
         let t = now();

@@ -422,6 +422,8 @@ async fn fmo_state_snapshot(
         "mqttClientId": fmo.mqtt_client.client_id_str().await,
         "aprsState": fmo.aprs_client.state.lock().await.clone(),
         "aprsDetail": fmo.aprs_client.detail.lock().await.clone(),
+        "aprsTxState": fmo.aprs_client.tx.state.lock().await.clone(),
+        "aprsHost": fmo.aprs_host(),
         "selectedServer": fmo.selected_server.lock().await.clone(),
         "rxPlay": *fmo.rx_play_enabled.lock().unwrap(),
         "mqttNoLocal": fmo.mqtt_client.no_local_enabled(),
@@ -503,7 +505,7 @@ async fn fmo_aprs_connect(
         return Err("FMO 未初始化".into());
     };
     let params = fmo::aprs::AprsParams {
-        host: fmo::aprs::DEFAULT_HOST.to_string(),
+        host: fmo.aprs_host(),
         port: fmo::aprs::DEFAULT_PORT,
         callsign,
         passcode,
@@ -512,6 +514,28 @@ async fn fmo_aprs_connect(
         dist: 500.0,
     };
     fmo.aprs_client.connect_to(params).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn fmo_aprs_set_server(
+    state: tauri::State<'_, RuntimeState>,
+    host: String,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    fmo.set_aprs_host(&host)?;
+    // 已经在连接/连过（connect_req 存在）时用新地址重连主连接与上行连接
+    let req = fmo.aprs_client.connect_req.lock().await.clone();
+    if let Some(mut v) = req {
+        v["host"] = serde_json::json!(fmo.aprs_host());
+        let params: fmo::aprs::AprsParams = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        fmo.aprs_client.disconnect().await;
+        fmo.aprs_client.connect_to(params).await;
+        (fmo.emit)(serde_json::json!({"type": "log", "level": "info",
+            "msg": format!("APRS 服务器已切换为 {}，正在重连", fmo.aprs_host())}));
+    }
     Ok(())
 }
 
@@ -844,6 +868,7 @@ pub fn run() {
             fmo_cert_import_file,
             fmo_aprs_connect,
             fmo_aprs_disconnect,
+            fmo_aprs_set_server,
             fmo_server_select,
             fmo_mqtt_connect,
             fmo_mqtt_disconnect,

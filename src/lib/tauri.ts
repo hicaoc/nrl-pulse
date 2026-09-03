@@ -205,6 +205,10 @@ export async function fmoAprsDisconnect(): Promise<void> {
   return invoke("fmo_aprs_disconnect");
 }
 
+export async function fmoAprsSetServer(host: string): Promise<void> {
+  return invoke("fmo_aprs_set_server", { host });
+}
+
 export async function fmoServerSelect(server: Record<string, unknown>): Promise<void> {
   return invoke("fmo_server_select", { server });
 }

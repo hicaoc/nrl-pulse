@@ -465,9 +465,7 @@ impl BroadcastEngine {
         // super 门控：仅自己服务器 + super 角色可广播；手动发送把原因返回给前端，
         // 自动循环由 start() 把该 Err 记为 warn 日志后跳过
         self.gate_check().await?;
-        if *self.tx.state.lock().await != "verified" {
-            return Err("APRS 上行未验证登录（先连接 APRS 且 passcode 正确）".into());
-        }
+        self.tx.gate_verified().await?;
         let (line, source) = self.build_packet(&cfg)?;
         let (online, peak) = self.effective_online_peak(&cfg);
         let preview = String::from_utf8_lossy(&line).into_owned();
@@ -776,9 +774,7 @@ impl BeaconEngine {
         }
         let cfg = self.cfg.lock().await.clone();
         // 门控（与原厂一致）：APRS 上行 verified + 证书就绪 + freq>0；不做 super 门控
-        if *self.tx.state.lock().await != "verified" {
-            return Err("APRS 上行未验证登录（先连接 APRS 且 passcode 正确）".into());
-        }
+        self.tx.gate_verified().await?;
         let (callsign, cert_blob, cert_b64, seed) = cert_blob(&self.data_dir)?;
         if cfg.freq_mhz <= 0.0 {
             return Err("未配置直频频率（freq=0 时原厂当轮跳过信标）".into());

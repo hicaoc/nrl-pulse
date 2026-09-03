@@ -9,10 +9,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 
-pub const DEFAULT_HOST: &str = "rotate.aprs2.net";
 pub const DEFAULT_PORT: u16 = 10152;
-/// 上行（发送）专用连接：10152 全馈端口只读，发送需 verified 登录 14580
-pub const TX_HOST: &str = "rotate.aprs2.net";
+/// 上行（发送）专用连接：10152 全馈端口只读，发送需 verified 登录 14580。
+/// 上行主机跟随主连接配置（settings 可改），端口固定 14580（APRS-IS 标准用户端口）。
 pub const TX_PORT: u16 = 14580;
 
 pub type EmitFn = Arc<dyn Fn(serde_json::Value) + Send + Sync>;
@@ -838,7 +837,6 @@ pub struct AprsClient {
     /// 上行（发送）专用连接
     pub tx: Arc<AprsTx>,
 }
-
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AprsParams {
     pub host: String,
@@ -866,8 +864,10 @@ impl AprsClient {
     }
 
     pub async fn connect_to(&self, params: AprsParams) {
-        // 有有效 passcode 时同步设置上行登录（verified 才可发送）
-        self.tx.set_login(&params.callsign, &params.passcode).await;
+        // 有有效 passcode 时同步设置上行登录（verified 才可发送）；上行主机跟随主连接地址
+        self.tx
+            .set_login(&params.host, &params.callsign, &params.passcode)
+            .await;
         *self.connect_req.lock().await = Some(serde_json::to_value(params).unwrap());
         *self.disconnect_signal.lock().await = false;
     }
@@ -1169,7 +1169,8 @@ pub struct AprsTx {
     emit: EmitFn,
     /// disconnected / connecting / verified / listen-only
     pub state: Arc<Mutex<String>>,
-    login: Arc<Mutex<Option<(String, String)>>>,
+    /// (host, callsign, passcode)；host 跟随主连接的服务器地址配置
+    login: Arc<Mutex<Option<(String, String, String)>>>,
     sender: Arc<Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>>,
     on_message: MsgCallback,
 }
@@ -1185,17 +1186,50 @@ impl AprsTx {
         }
     }
 
-    pub async fn set_login(&self, callsign: &str, passcode: &str) {
+    pub async fn set_login(&self, host: &str, callsign: &str, passcode: &str) {
+        let h = host.trim();
         let cs = callsign.trim();
         let pc = passcode.trim();
-        if cs.is_empty() || pc.is_empty() || pc == "-1" {
+        if h.is_empty() || cs.is_empty() || pc.is_empty() || pc == "-1" {
             return;
         }
-        *self.login.lock().await = Some((cs.to_uppercase(), pc.to_string()));
+        *self.login.lock().await = Some((h.to_string(), cs.to_uppercase(), pc.to_string()));
     }
 
     pub async fn clear_login(&self) {
         *self.login.lock().await = None;
+    }
+
+    /// 更新上行状态并通知前端（状态不变不重复发）。
+    async fn set_state(&self, s: &str) {
+        let mut guard = self.state.lock().await;
+        if *guard == s {
+            return;
+        }
+        *guard = s.to_string();
+        drop(guard);
+        (self.emit)(json!({"type": "aprs_tx_state", "state": s}));
+    }
+
+    /// 上行发送门控：verified 才放行，否则按当前状态给出可定位的原因。
+    /// 主连接（10152 全馈）只读、能收信标不代表上行（14580）可用，
+    /// 某些网络只放行 10152 而拦 14580，需要把两者状态区分开。
+    pub async fn gate_verified(&self) -> Result<(), String> {
+        let st = self.state.lock().await.clone();
+        match st.as_str() {
+            "verified" => Ok(()),
+            "listen-only" => {
+                Err("APRS 上行登录未验证（passcode 不对），不能发送".into())
+            }
+            "connecting" => Err(
+                "APRS 上行连接中，稍后再试；若一直连接中，可能 14580 端口被防火墙/安全软件拦截"
+                    .into(),
+            ),
+            _ => Err(
+                "APRS 上行未连接（发送端口 14580），可能 14580 端口被防火墙/安全软件拦截，详见日志"
+                    .into(),
+            ),
+        }
     }
 
     /// 排队发送一行 APRS 报文（不含换行）。上行未连接/未验证时返回错误。
@@ -1214,16 +1248,16 @@ impl AprsTx {
         let mut backoff = 1.0f64;
         loop {
             let login = self.login.lock().await.clone();
-            let Some((cs, pc)) = login else {
+            let Some((host, cs, pc)) = login else {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 continue;
             };
-            match self.session(&cs, &pc).await {
+            match self.session(&host, &cs, &pc).await {
                 Ok(()) => {
-                    *self.state.lock().await = "disconnected".into();
+                    self.set_state("disconnected").await;
                 }
                 Err(e) => {
-                    *self.state.lock().await = "disconnected".into();
+                    self.set_state("disconnected").await;
                     (self.emit)(json!({"type": "log", "level": "warn",
                         "msg": format!("APRS 上行断开：{e}；{backoff:.0}s 后重连")}));
                 }
@@ -1238,9 +1272,9 @@ impl AprsTx {
         }
     }
 
-    async fn session(&self, callsign: &str, passcode: &str) -> Result<(), String> {
-        *self.state.lock().await = "connecting".into();
-        let addr = format!("{TX_HOST}:{TX_PORT}");
+    async fn session(&self, host: &str, callsign: &str, passcode: &str) -> Result<(), String> {
+        self.set_state("connecting").await;
+        let addr = format!("{host}:{TX_PORT}");
         let stream = TcpStream::connect(&addr).await.map_err(|e| e.to_string())?;
         stream.set_nodelay(true).ok();
         let login = format!("user {callsign} pass {passcode} vers NRL-PULSE 1.0\r\n");
@@ -1249,6 +1283,10 @@ impl AprsTx {
             .write_all(login.as_bytes())
             .await
             .map_err(|e| e.to_string())?;
+        // 诊断用：记录实际上行登录的呼号/passcode 与服务器 logresp 原文，
+        // 现场出现「unverified」时可直接对比身份区显示的 passcode
+        (self.emit)(json!({"type": "log", "level": "info",
+            "msg": format!("APRS 上行登录 {addr}：user={callsign} pass={passcode}")}));
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
         *self.sender.lock().await = Some(tx);
         let mut reader = BufReader::new(read_half);
@@ -1269,11 +1307,11 @@ impl AprsTx {
                     let raw = String::from_utf8_lossy(&bytes);
                     if raw.starts_with("# logresp") {
                         if raw.contains("unverified") {
-                            *self.state.lock().await = "listen-only".into();
+                            self.set_state("listen-only").await;
                             (self.emit)(json!({"type": "log", "level": "warn",
-                                "msg": "APRS 上行登录未验证（passcode 不对），QSO/广播发送不可用"}));
+                                "msg": format!("APRS 上行登录被服务器拒绝（{raw}），QSO/广播发送不可用")}));
                         } else if raw.contains("verified") {
-                            *self.state.lock().await = "verified".into();
+                            self.set_state("verified").await;
                             (self.emit)(json!({"type": "log", "level": "info",
                                 "msg": "APRS 上行已验证，QSO 信令与服务器广播可发送"}));
                         }

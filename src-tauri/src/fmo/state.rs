@@ -91,6 +91,8 @@ pub struct FmoState {
     pub stats: FmoStats,
     /// 手动配置的 FMO 呼号（优先于证书），空则用证书呼号
     pub configured_callsign: Arc<std::sync::Mutex<String>>,
+    /// APRS-IS 服务器主机（主连接 10152 / 上行 14580 共用），持久化 aprs_server.json
+    pub aprs_host: Arc<std::sync::Mutex<String>>,
     /// 成员网格表（成员 JSON）：呼号大写 → 条目；呼号框距离/方位的数据源
     pub member_roster: Arc<std::sync::Mutex<HashMap<String, MemberEntry>>>,
     aprs_task_running: Arc<AtomicBool>,
@@ -189,6 +191,15 @@ impl FmoState {
                 .unwrap_or(serde_json::Value::Null);
         let selected_server = Arc::new(Mutex::new(selected));
         let configured_callsign = Arc::new(std::sync::Mutex::new(String::new()));
+        // APRS-IS 服务器主机：aprs_server.json（{"host": "..."}），缺省 rotate.aprs2.net
+        let aprs_host = Arc::new(std::sync::Mutex::new(
+            std::fs::read_to_string(data_dir.join("aprs_server.json"))
+                .ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .and_then(|v| v["host"].as_str().map(|s| s.trim().to_string()))
+                .filter(|h| !h.is_empty())
+                .unwrap_or_else(|| DEFAULT_APRS_HOST.to_string()),
+        ));
 
         // QSO 信令引擎 + 服务器广播引擎（共用 APRS 上行连接）
         let qso = Arc::new(QsoEngine::new(
@@ -250,6 +261,7 @@ impl FmoState {
             bridge,
             stats,
             configured_callsign,
+            aprs_host,
             member_roster: Arc::new(std::sync::Mutex::new(HashMap::new())),
             aprs_task_running: Arc::new(AtomicBool::new(false)),
             identity_watch_running: Arc::new(AtomicBool::new(false)),
@@ -263,6 +275,23 @@ impl FmoState {
     pub fn current_callsign(&self) -> String {
         let configured = self.configured_callsign.lock().unwrap().clone();
         read_identity(&self.data_dir, &configured).0
+    }
+
+    /// 当前 APRS-IS 服务器主机（主连接 10152 / 上行 14580 共用）
+    pub fn aprs_host(&self) -> String {
+        self.aprs_host.lock().unwrap().clone()
+    }
+
+    /// 保存 APRS-IS 服务器主机；重连由调用方触发
+    pub fn set_aprs_host(&self, host: &str) -> Result<(), String> {
+        let h = host.trim();
+        if h.is_empty() || h.chars().any(|c| c.is_whitespace()) {
+            return Err("APRS 服务器地址不能为空且不能包含空白字符".into());
+        }
+        *self.aprs_host.lock().unwrap() = h.to_string();
+        let text = serde_json::to_string_pretty(&json!({ "host": h })).unwrap();
+        std::fs::write(self.data_dir.join("aprs_server.json"), text).ok();
+        Ok(())
     }
 
     pub fn current_uid(&self) -> u32 {
@@ -664,7 +693,7 @@ impl FmoState {
                 if let Some(cs) = cert["subject"]["callsign"].as_str() {
                     if !cs.is_empty() {
                         let params = AprsParams {
-                            host: DEFAULT_APRS_HOST.to_string(),
+                            host: self.aprs_host(),
                             port: DEFAULT_APRS_PORT,
                             callsign: cs.to_string(),
                             passcode: fmo_auth::aprs_passcode(cs),
@@ -1023,6 +1052,9 @@ impl FmoState {
         out["mqttRole"] = json!(self.mqtt_client.current_role.lock().await.clone());
         out["aprsState"] = json!(self.aprs_client.state.lock().await.clone());
         out["aprsDetail"] = json!(self.aprs_client.detail.lock().await.clone());
+        // APRS 上行（14580 发送专用）状态：与主连接（10152 只读全馈）独立，
+        // 有些网络只放行 10152，需要分开展示以便定位「能收不能发」
+        out["aprsTxState"] = json!(self.aprs_client.tx.state.lock().await.clone());
         let sel = self.selected_server.lock().await.clone();
         let host = sel
             .get("host")

@@ -10,6 +10,7 @@ import {
   fmoActivateSetConfig,
   fmoAprsConnect,
   fmoAprsDisconnect,
+  fmoAprsSetServer,
   fmoBeaconConfig,
   fmoBeaconNow,
   fmoBeaconSetConfig,
@@ -51,6 +52,8 @@ const initial: FmoStateSnapshot = {
   mqttClientId: "",
   aprsState: "disconnected",
   aprsDetail: "",
+  aprsTxState: "disconnected",
+  aprsHost: "",
   selectedServer: null,
   rxPlay: true,
   mqttNoLocal: true,
@@ -65,6 +68,7 @@ const initialStats: FmoStatsSnapshot = {
   mqttRole: "",
   aprsState: "disconnected",
   aprsDetail: "",
+  aprsTxState: "disconnected",
   serverHost: "",
   serverPort: 0,
   serverName: "",
@@ -137,6 +141,8 @@ export const useFmoStore = defineStore("fmo", () => {
       // 避免界面显示已连接但 PTT 仍被旧状态禁用。
       state.value.mqttState = next.mqttState;
       state.value.mqttDetail = next.mqttDetail;
+      // 上行状态同理：轮询快照为权威，修正事件监听安装前错过的状态
+      state.value.aprsTxState = next.aprsTxState;
       if (next.mqttClientId) {
         state.value.mqttClientId = next.mqttClientId;
       }
@@ -181,6 +187,9 @@ export const useFmoStore = defineStore("fmo", () => {
       case "aprs_state":
         state.value.aprsState = (ev.state as string) ?? "disconnected";
         state.value.aprsDetail = (ev.detail as string) ?? "";
+        break;
+      case "aprs_tx_state":
+        state.value.aprsTxState = (ev.state as string) ?? "disconnected";
         break;
       case "server_traffic":
         traffic.value = {
@@ -317,6 +326,12 @@ export const useFmoStore = defineStore("fmo", () => {
     await runAction(fmoAprsDisconnect);
   }
 
+  /** 保存 APRS-IS 服务器主机（后端持久化；若已连接会自动用新地址重连），然后刷新快照。 */
+  async function setAprsServer(host: string) {
+    await runAction(() => fmoAprsSetServer(host));
+    await refresh();
+  }
+
   async function selectServer(server: FmoServer) {
     state.value.selectedServer = server;
     await runAction(() => fmoServerSelect(server as unknown as Record<string, unknown>));
@@ -438,6 +453,7 @@ export const useFmoStore = defineStore("fmo", () => {
     refreshStats,
     connectAprs,
     disconnectAprs,
+    setAprsServer,
     selectServer,
     connectMqtt,
     disconnectMqtt,

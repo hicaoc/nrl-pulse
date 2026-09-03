@@ -3314,6 +3314,13 @@ input[type="range"] {
   color: #ff7070;
 }
 
+.fmo-conn-hint {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  opacity: 0.75;
+  grid-column: 1 / -1;
+}
+
 .fmo-conn-detail {
   color: var(--text-dim);
   font-size: 0.72rem;

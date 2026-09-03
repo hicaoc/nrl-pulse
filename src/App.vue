@@ -141,6 +141,9 @@ const registerLicense = ref<{
 } | null>(null);
 
 const fmoAprsCallsign = ref("");
+// APRS-IS 服务器主机（设置页可改，快照回填）
+const fmoAprsServer = ref("");
+const fmoAprsServerMsg = ref("");
 const fmoCertMsg = ref("");
 const fmoMuted = ref(false);
 
@@ -1909,6 +1912,26 @@ async function saveFmoActivateServer() {
   }
 }
 
+// 快照回填 APRS 服务器地址（仅首次拿到值且输入框为空时，不覆盖用户编辑）
+watch(
+  () => fmo.state.aprsHost,
+  (v) => {
+    if (v && !fmoAprsServer.value) {
+      fmoAprsServer.value = v;
+    }
+  },
+  { immediate: true },
+);
+
+async function saveFmoAprsServer() {
+  try {
+    await fmo.setAprsServer(fmoAprsServer.value.trim());
+    fmoAprsServerMsg.value = language.value === "zh" ? "✓ 已保存" : "✓ Saved";
+  } catch (e) {
+    fmoAprsServerMsg.value = String(e);
+  }
+}
+
 async function runFmoActivate() {
   fmoActivateMsg.value = "";
   fmoActivating.value = true;
@@ -2035,6 +2058,17 @@ const fmoAprsText = computed(() => {
 const fmoAprsOnline = computed(() =>
   ["verified", "logged-in", "listen-only"].includes(fmo.state.aprsState),
 );
+
+// APRS 上行（发送专用 14580）状态文本；与主连接（10152 只读全馈）独立
+const fmoAprsTxText = computed(() => {
+  const map: Record<string, string> = {
+    verified: language.value === "zh" ? "已验证" : "Verified",
+    "listen-only": language.value === "zh" ? "未验证(passcode)" : "Unverified",
+    connecting: language.value === "zh" ? "连接中" : "Connecting",
+    disconnected: language.value === "zh" ? "未连接" : "Disconnected",
+  };
+  return map[fmo.state.aprsTxState] ?? fmo.state.aprsTxState;
+});
 
 // FMO 服务器列表：按在线设备数从高到低排序
 const sortedFmoServers = computed(() =>
@@ -3158,6 +3192,15 @@ watch(
                 <span class="fmo-state-chip" :data-state="fmo.state.aprsState">
                   APRS: {{ fmoAprsText }}
                 </span>
+                <span
+                  class="fmo-state-chip"
+                  :data-state="fmo.state.aprsTxState === 'verified' ? 'verified' : 'disconnected'"
+                  :title="language === 'zh'
+                    ? 'APRS 上行（发送专用 14580）：个人信标/广播/QSO 信令需要已验证'
+                    : 'APRS uplink (14580): required for beacon/broadcast/QSO'"
+                >
+                  APRS↑: {{ fmoAprsTxText }}
+                </span>
               </div>
             </div>
             <div class="fmo-ops-body">
@@ -3935,6 +3978,41 @@ watch(
                     : language === "zh" ? "连接" : "Connect"
                 }}
               </button>
+            </div>
+            <div class="fmo-conn-row">
+              <span class="fmo-conn-label">{{ language === "zh" ? "APRS 服务器" : "APRS Server" }}</span>
+              <input
+                v-model="fmoAprsServer"
+                type="text"
+                class="text-input"
+                placeholder="rotate.aprs2.net"
+              />
+              <button class="ghost-btn compact" :disabled="fmo.busy" @click="saveFmoAprsServer">
+                {{ language === "zh" ? "保存" : "Save" }}
+              </button>
+              <small class="fmo-conn-hint">
+                {{
+                  language === "zh"
+                    ? `主连接 ${fmoAprsServer || "rotate.aprs2.net"}:10152（只读全馈）· 上行 ${fmoAprsServer || "rotate.aprs2.net"}:14580（发送）${fmoAprsServerMsg ? "· " + fmoAprsServerMsg : ""}`
+                    : `Feed ${fmoAprsServer || "rotate.aprs2.net"}:10152 · Uplink ${fmoAprsServer || "rotate.aprs2.net"}:14580${fmoAprsServerMsg ? " · " + fmoAprsServerMsg : ""}`
+                }}
+              </small>
+            </div>
+            <div class="fmo-conn-row">
+              <span class="fmo-conn-label">{{ language === "zh" ? "APRS 上行" : "APRS Uplink" }}</span>
+              <span
+                class="fmo-conn-value"
+                :data-state="fmo.state.aprsTxState === 'verified' ? 'verified' : 'disconnected'"
+              >
+                {{ fmoAprsTxText }}
+              </span>
+              <small class="fmo-conn-hint">
+                {{
+                  language === "zh"
+                    ? "发送个人信标/广播/QSO 需要「已验证」；长期未连接可能是 14580 端口被防火墙拦截"
+                    : "Beacon/broadcast/QSO require Verified; stuck disconnected may mean port 14580 is blocked"
+                }}
+              </small>
             </div>
             <div class="fmo-conn-row">
               <span class="fmo-conn-label">MQTT</span>
