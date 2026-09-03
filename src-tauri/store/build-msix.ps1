@@ -55,16 +55,16 @@ if (-not $Version) {
 
 # ---- Identity / Publisher 校验 ----
 if (-not $IdentityName) {
-  $IdentityName = "NRLPulse"
-  Write-Warning "未提供 -IdentityName，使用占位符 'NRLPulse'。上架前必须替换为 Partner Center 的 Package/Identity/Name。"
+  $IdentityName = "BH4RPN.NRL-PULSE"
+  Write-Host "[msix] 未提供 -IdentityName，使用商店身份 'BH4RPN.NRL-PULSE'。"
 }
 if (-not $Publisher) {
-  $Publisher = "CN=NRL Pulse"
-  Write-Warning "未提供 -Publisher，使用占位符 'CN=NRL Pulse'。上架前必须替换为开发者证书的发布者主题。"
+  $Publisher = "CN=DB872BF1-A64C-4C3E-8AB3-DC5ABBB0DAC7"
+  Write-Host "[msix] 未提供 -Publisher，使用商店发布者 '$Publisher'。"
 }
 if (-not $PublisherDisplayName) {
-  $PublisherDisplayName = "NRL Pulse"
-  Write-Warning "未提供 -PublisherDisplayName，使用默认 'NRL Pulse'。"
+  $PublisherDisplayName = "BH4RPN"
+  Write-Host "[msix] 未提供 -PublisherDisplayName，使用商店发布者显示名 'BH4RPN'。"
 }
 
 # ---- 编译（禁用 updater，由商店托管更新）----
@@ -73,6 +73,7 @@ if (-not $SkipBuild) {
   Push-Location $root
   npm run tauri build -- --config src-tauri/tauri.store.json --no-bundle
   Pop-Location
+  if ($LASTEXITCODE -ne 0) { throw "tauri build 失败（exit $LASTEXITCODE），请检查是否有正在运行的 nrl-pulse.exe 占用产物" }
 }
 
 $exe = Join-Path $releaseDir "nrl-pulse.exe"
