@@ -514,8 +514,9 @@ jobs:
     name: Publish to Microsoft Store
     needs: build-windows-msix
     runs-on: windows-latest
-    # 与 release 相同触发条件；PR 不发布
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # 暂不随 main 自动发布；Entra secrets 配好前仅手动触发。
+    # 配好后改回与 release 相同的条件即可恢复自动发布。
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/download-artifact@v4.3.0
         with:
