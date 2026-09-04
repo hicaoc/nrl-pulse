@@ -774,6 +774,50 @@ impl FmoState {
         }
     }
 
+    /// 直连自己的服务器（发布服务器场景）：服务器尚未发布、不在 STATION 广播
+    /// 列表时，用给定 host/port + 本机证书合成选定项并连接 MQTT——自己服务器的
+    /// 身份（呼号/uid/证书指纹）就是台长的用户证书，无需等广播。本机证书呼号
+    /// == 服务器呼号 → initial_role 为 super，广播门控（gate_decide）随之满足，
+    /// 解开「未发布 → 无法登录 → 无法发布」的死锁。
+    pub async fn connect_own_server(&self, host: &str, port: u16, tls: bool) -> Result<(), String> {
+        let host = host.trim().to_string();
+        if host.is_empty() {
+            return Err("请先填写服务器地址".into());
+        }
+        if port == 0 {
+            return Err("端口无效".into());
+        }
+        let certs_dir = self.data_dir.join("certs");
+        fmo_auth::validate_identity(&certs_dir)?;
+        let ident = fmo_auth::load_identity(&certs_dir)?;
+        let uc = &ident["user_cert"];
+        let callsign = uc["subject"]["callsign"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let uid = uc["subject"]["uid"].as_u64().unwrap_or(0);
+        if callsign.is_empty() || uid == 0 {
+            return Err("本机证书缺少呼号/uid，请先导入证书".into());
+        }
+        let fp = fmo_auth::cert_fingerprint(uc);
+        let server = json!({
+            "host": host,
+            "port": port,
+            "callsign": callsign,
+            "uid": uid,
+            "fingerprint": fp,
+            "name": format!("{callsign}（本机直连）"),
+        });
+        (self.emit)(json!({"type": "log", "level": "info",
+            "msg": format!("直连自己的服务器 {callsign} {host}:{port}（发布场景，身份来自本机证书）")}));
+        self.update_selected(server).await;
+        let st = self.mqtt_client.state_str().await;
+        if st == "connected" || st == "connecting" {
+            self.disconnect_mqtt().await;
+        }
+        self.connect_mqtt(tls).await
+    }
+
     /// 在 server_table 里查选定服务器对应的最新条目（uid 优先，其次 host:port）。
     async fn table_entry_for_selected(
         &self,

@@ -291,6 +291,12 @@ export async function fmoBroadcastNow(): Promise<void> {
   return invoke("fmo_broadcast_now");
 }
 
+// 直连自己的服务器（发布场景）：用广播配置里的地址 + 本机证书身份（super）连接，
+// 无需先从服务器列表选择
+export async function fmoBroadcastConnect(host: string, port: number): Promise<void> {
+  return invoke("fmo_broadcast_connect", { host, port });
+}
+
 export async function fmoBeaconConfig(): Promise<FmoBeaconConfig> {
   return invoke<FmoBeaconConfig>("fmo_beacon_config");
 }

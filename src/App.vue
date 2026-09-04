@@ -2313,6 +2313,21 @@ async function manualBroadcast() {
   }
 }
 
+// 直连自己的服务器（发布场景）：服务器未发布、不在服务器列表时，直接用上方
+// 广播配置里的地址端口 + 本机证书身份（super）连接，无需先从列表选定
+async function connectOwnServer() {
+  const host = (broadcastDraft.value.host || "").trim();
+  if (!host) {
+    alert(language.value === "zh" ? "请先填写服务器地址" : "Please fill in the server host first");
+    return;
+  }
+  try {
+    await fmo.connectBroadcastServer(host, broadcastDraft.value.port || 1883);
+  } catch (e) {
+    alert(String(e));
+  }
+}
+
 // 个人信标（BEACON）配置草稿（设置页编辑，保存才下发后端）
 const beaconDraft = ref<FmoBeaconConfig>({ ...fmo.beacon });
 watch(
@@ -4160,9 +4175,14 @@ watch(
               </div>
             </div>
             <small v-if="!fmo.canBroadcast()" class="fmo-cert-msg">
-              {{ language === "zh" ? "需以 super 身份连接自己的服务器才能开启/执行广播" : "Broadcast requires connecting to your own server as super" }}
+              {{ language === "zh"
+                ? "需以 super 身份连接自己的服务器才能开启/执行广播；服务器未发布不在列表时，填好上方地址端口后点「连接我的服务器」"
+                : "Broadcast requires connecting to your own server as super; if your server is not listed yet, fill host/port above and click \"Connect my server\"" }}
             </small>
             <div class="auth-actions">
+              <button class="ghost-btn" :disabled="fmo.busy || !broadcastDraft.host" @click="connectOwnServer">
+                {{ language === "zh" ? "连接我的服务器" : "Connect my server" }}
+              </button>
               <button class="ghost-btn" :disabled="fmo.busy || !fmo.canBroadcast()" @click="manualBroadcast">
                 {{ language === "zh" ? "立即广播" : "Broadcast now" }}
               </button>

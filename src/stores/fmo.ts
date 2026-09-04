@@ -15,6 +15,7 @@ import {
   fmoBeaconNow,
   fmoBeaconSetConfig,
   fmoBroadcastConfig,
+  fmoBroadcastConnect,
   fmoBroadcastNow,
   fmoBroadcastSetConfig,
   fmoCertImportFile,
@@ -426,6 +427,12 @@ export const useFmoStore = defineStore("fmo", () => {
     await runAction(fmoBroadcastNow);
   }
 
+  // 直连自己的服务器（发布场景）：服务器未发布不在列表时，用广播配置的地址 +
+  // 本机证书身份（super）连接，解开「未发布 → 无法登录 → 无法发布」死锁
+  async function connectBroadcastServer(host: string, port: number) {
+    await runAction(() => fmoBroadcastConnect(host, port));
+  }
+
   async function saveBeacon(cfg: FmoBeaconConfig) {
     beacon.value = { ...cfg };
     await runAction(() => fmoBeaconSetConfig(cfg));
@@ -473,6 +480,7 @@ export const useFmoStore = defineStore("fmo", () => {
     setQsoAutoAccept,
     saveBroadcast,
     broadcastNow,
+    connectBroadcastServer,
     saveBeacon,
     beaconNow,
   };

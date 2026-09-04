@@ -760,6 +760,23 @@ async fn fmo_broadcast_now(state: tauri::State<'_, RuntimeState>) -> Result<(), 
     fmo.broadcast.send(true).await
 }
 
+/// 直连自己的服务器（发布服务器场景）：用广播配置里的 host/port + 本机证书
+/// 身份（super）合成选定项并连接 MQTT，解开「未发布 → 无法登录 → 无法发布」
+/// 的死锁——无需先从服务器列表连接。
+#[tauri::command]
+async fn fmo_broadcast_connect(
+    state: tauri::State<'_, RuntimeState>,
+    host: String,
+    port: u16,
+    tls: Option<bool>,
+) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未初始化".into());
+    };
+    state.ensure_audio_running().await;
+    fmo.connect_own_server(&host, port, tls.unwrap_or(false)).await
+}
+
 /// 广播 super 门控查询：{eligible, reason, role}，供前端禁用广播开关并提示原因。
 #[tauri::command]
 async fn fmo_broadcast_eligible(
@@ -889,6 +906,7 @@ pub fn run() {
             fmo_broadcast_config,
             fmo_broadcast_set_config,
             fmo_broadcast_now,
+            fmo_broadcast_connect,
             fmo_broadcast_eligible,
             fmo_beacon_config,
             fmo_beacon_set_config,
