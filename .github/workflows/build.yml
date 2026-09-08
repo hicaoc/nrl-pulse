@@ -400,7 +400,7 @@ jobs:
         run: pnpm install --no-frozen-lockfile
 
       - name: Clean stale bundle artifacts
-        run: find src-tauri/target -maxdepth 3 -type d -name bundle -exec rm -rf {} +
+        run: find src-tauri/target -maxdepth 3 -type d -name bundle -exec rm -rf {} + || true
 
       # MAS 版：--no-default-features 关闭 macos-private-api（App Store 禁止私有 API），
       # tauri.mas.json 关闭内置 updater（商店托管更新）并改用 App Sandbox entitlements
