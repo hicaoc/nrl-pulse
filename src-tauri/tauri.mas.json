@@ -17,7 +17,7 @@
     "targets": ["app"],
     "macOS": {
       "entitlements": "entitlements.mas.plist",
-      "bundleVersion": "3"
+      "bundleVersion": "5"
     }
   }
 }

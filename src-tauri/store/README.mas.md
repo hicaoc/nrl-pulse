@@ -113,6 +113,9 @@ xcrun altool --upload-app  -f src-tauri/target/mas/NRL-Pulse_<版本>.pkg -t mac
 
 ## 实战坑位记录（macOS 26 / Xcode 26）
 
+- 审核自动化检查要求**最小 entitlements 集合**：本应用为纯客户端（UDP/MQTT/WebSocket
+  均为发起外连），只需 `network.client`；曾带 `network.server` 被 Guideline 退回
+  （2026-09 提交 0.2.9 时），移除后重传即可。
 - `codesign`（macOS 15/26 均如此）拒绝签名 `Contents/` 根目录带杂散文件的 bundle
   （报 "code object is not signed at all"）。脚本先尝试普通签名，失败则回退 `--deep`：
   描述文件留在根目录、作为已签名嵌套组件纳入封印。App Store 校验 0 错误。
