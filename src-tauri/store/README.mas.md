@@ -113,12 +113,14 @@ xcrun altool --upload-app  -f src-tauri/target/mas/NRL-Pulse_<版本>.pkg -t mac
 
 ## 实战坑位记录（macOS 26 / Xcode 26）
 
-- `codesign`（macOS 26）拒绝签名 `Contents/` 根目录带杂散文件的 bundle
-  （报 "code object is not signed at all"）。脚本先尝试普通签名（macOS ≤15 可直接通过），
-  失败则回退 `--deep`：描述文件留在根目录、作为已签名嵌套组件纳入封印。
-  两种情况下 Apple 校验均 0 错误；但 macOS 26 产出的构建会带 90889 警告
-  （profile 未按普通资源封印 → **Mac TestFlight 不可用**，App Store 上架不受影响）。
-  需要 TestFlight 时，在 macOS ≤15 环境（如 CI `macos-15` runner）执行签名即可免警告。
+- `codesign`（macOS 15/26 均如此）拒绝签名 `Contents/` 根目录带杂散文件的 bundle
+  （报 "code object is not signed at all"）。脚本先尝试普通签名，失败则回退 `--deep`：
+  描述文件留在根目录、作为已签名嵌套组件纳入封印。App Store 校验 0 错误。
+- **90889（TestFlight 资格）目前无解**：服务端要求描述文件以 Xcode 私有签名路径封印，
+  公共工具链（含 macOS 15/26、profile 放根目录/Resources/符号链接三种变体，均已实测）
+  无法满足；Unity/Solar2D/.NET 等非 Xcode 工具链多年存在同样问题。
+  **Mac  beta 测试请走 Developer ID 公证 DMG 渠道（`make build-mac` + notarize），
+  或等审核通过后直接用商店版。**
 - OpenSSL 3 生成的 p12 需加 `-legacy`（3DES/SHA1）才能被 `security import` 导入钥匙串。
 - 专用钥匙串（如 `mas-build.keychain-db`）+ `set-key-partition-list` 可免交互签名。
 - MAS 版本号在 `tauri.mas.json` 的 `version` 独立管理（当前 1.0.0），与仓库版本解耦；
