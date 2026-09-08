@@ -9,6 +9,12 @@ edition = "2021"
 name = "nrl_pulse_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = ["macos-private-api"]
+# macOS 窗口透明依赖私有 API，Mac App Store 审核禁止私有 API；
+# 商店版构建时用 --no-default-features 关闭（见 src-tauri/store/README.mas.md）
+macos-private-api = ["tauri/macos-private-api"]
+
 [build-dependencies]
 tauri-build = { version = "2.0.1", features = [] }
 
@@ -36,7 +42,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serialport = { version = "4.9", default-features = false }
 sha2 = "0.10"
-tauri = { version = "2.3.1", features = ["devtools", "macos-private-api"] }
+tauri = { version = "2.3.1", features = ["devtools"] }
 tauri-plugin-dialog = "2.2.1"
 tauri-plugin-fs = "2.2.1"
 tauri-plugin-opener = "2.2.1"

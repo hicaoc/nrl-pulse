@@ -1,5 +1,7 @@
 # Microsoft Store 上架指南（NRL Pulse）
 
+> Mac App Store 上架见 [README.mas.md](README.mas.md)。
+
 ## 打包产物
 
 MSIX 包由 `store/build-msix.ps1` 生成（内部用 Windows SDK 的 `makeappx.exe`，无需额外插件）：

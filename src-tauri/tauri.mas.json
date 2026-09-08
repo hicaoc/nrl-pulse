@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "NRL互联",
+  "identifier": "com.nrlptt.pttapp",
+  "version": "0.2.9",
+  "app": {
+    "macOSPrivateApi": false
+  },
+  "plugins": {
+    "updater": {
+      "active": false
+    }
+  },
+  "bundle": {
+    "category": "Utility",
+    "createUpdaterArtifacts": false,
+    "targets": ["app"],
+    "macOS": {
+      "entitlements": "entitlements.mas.plist",
+      "bundleVersion": "3"
+    }
+  }
+}

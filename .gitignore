@@ -3,5 +3,6 @@ dist
 src-tauri/target
 *.log
 .claude
+.playwright-mcp
 
 release-test

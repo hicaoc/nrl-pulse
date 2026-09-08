@@ -344,16 +344,22 @@ async fn open_ptt_window(app: tauri::AppHandle) -> Result<bool, String> {
         return Ok(true);
     }
 
-    WebviewWindowBuilder::new(&app, LABEL, WebviewUrl::App("index.html#ptt".into()))
+    let builder = WebviewWindowBuilder::new(&app, LABEL, WebviewUrl::App("index.html#ptt".into()))
         .title("PTT")
         // 双 PTT（NRL + FMO）并排 + 呼号显示行，区域加大
         .inner_size(440.0, 214.0)
         .min_inner_size(400.0, 190.0)
         .resizable(false)
         .decorations(false)
-        .transparent(true)
         .always_on_top(true)
-        .skip_taskbar(true)
+        .skip_taskbar(true);
+
+    // macOS 窗口透明依赖私有 API；Mac App Store 版不带 macos-private-api feature 编译，
+    // 此时悬浮窗退化为不透明无边框窗口
+    #[cfg(any(not(target_os = "macos"), feature = "macos-private-api"))]
+    let builder = builder.transparent(true);
+
+    builder
         .build()
         .map_err(|err| format!("open ptt window failed: {err}"))?;
 
