@@ -49,7 +49,7 @@ build-mac-x64:
 # Mac App Store 版（universal；禁用私有 API / 内置更新）
 # 产物为未签名 .app，随后用 src-tauri/store/build-mas.sh 签名打包成 pkg
 build-mas:
-	$(TAURI) --config src-tauri/tauri.mas.json --target universal-apple-darwin --bundles app -- --no-default-features
+	$(TAURI) --config src-tauri/tauri.mas.json --target universal-apple-darwin --bundles app -- --no-default-features --features mas
 
 # 同时构建全部平台（仅 macOS 上支持，需要预先安装 cargo-xwin 和 Linux target）
 build-all:

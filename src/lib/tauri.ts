@@ -71,6 +71,10 @@ export async function sendTextMessage(message: string): Promise<SessionSnapshot>
   return invoke<SessionSnapshot>("send_text_message", { message });
 }
 
+export async function isMasBuild(): Promise<boolean> {
+  return invoke<boolean>("is_mas_build");
+}
+
 export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
   return invoke<RuntimeConfig>("load_runtime_config");
 }

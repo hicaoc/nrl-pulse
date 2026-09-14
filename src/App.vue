@@ -19,6 +19,7 @@ import {
   openMonitorWindow,
 } from "@/lib/tauri";
 import type { UpdateInfo } from "@/lib/tauri";
+import { isMasBuild } from "@/lib/tauri";
 import { usePlatformStore } from "@/stores/platform";
 import { useRuntimeStore } from "@/stores/runtime";
 import type { ChatMessageEvent, FmoBeaconConfig, FmoBroadcastConfig, FmoClient, FmoServer, PlatformDevice, PlatformGroup, PlatformRegisterPayload, PlatformServer, SerialTunnelConfig, TimelineEvent } from "@/types";
@@ -97,6 +98,7 @@ const updateProgress = ref(0);
 const updateTotal = ref(0);
 const showLogin = ref(false);
 const showRegister = ref(false);
+const isMas = ref(false);
 const showTokenLogin = ref(true);
 const loginError = ref("");
 const registerError = ref("");
@@ -2437,6 +2439,9 @@ const fmoVoiceActive = computed(() => {
 
 onMounted(async () => {
   try {
+    isMas.value = await isMasBuild();
+  } catch { /* 非 Tauri 环境（浏览器预览）按非商店版处理 */ }
+  try {
     const version = await getVersion();
     const title = `NRL Pulse v${version} © BH4RPN 2026 , BA4RN BG6FCS BH4TDV BD4RFG BD4VKI BI4UMD BA4QAO BA4QGT ...  `;
     document.title = title;
@@ -4309,6 +4314,7 @@ watch(
               {{ t.tokenLoginAction }}
             </button>
             <button
+              v-if="!isMas"
               class="auth-switch-btn"
               :data-active="showRegister"
               @click="openRegisterForm"

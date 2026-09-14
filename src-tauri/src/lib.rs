@@ -389,6 +389,11 @@ async fn close_ptt_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn is_mas_build() -> bool {
+    cfg!(feature = "mas")
+}
+
+#[tauri::command]
 fn get_default_audio_dir() -> String {
     dirs::audio_dir()
         .map(|p| p.to_string_lossy().to_string())
@@ -871,6 +876,7 @@ pub fn run() {
             stop_serial_tunnel,
             list_serial_ports,
             fetch_platform_servers,
+            is_mas_build,
             platform_login,
             platform_login_with_token,
             platform_register,

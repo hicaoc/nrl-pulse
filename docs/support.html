@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NRL互联 支持中心 / Support</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+    line-height: 1.7; max-width: 820px; margin: 0 auto; padding: 32px 20px 64px;
+    color: #1a2233; background: #fafbfc;
+  }
+  h1 { font-size: 1.9em; border-bottom: 3px solid #2563eb; padding-bottom: .3em; }
+  h2 { font-size: 1.25em; margin-top: 2em; color: #1e40af; }
+  h3 { font-size: 1.05em; margin-top: 1.4em; }
+  .meta { color: #64748b; font-size: .92em; }
+  ul { padding-left: 1.4em; }
+  li { margin: .35em 0; }
+  .card {
+    border: 1px solid #dbe3ee; border-radius: 10px; padding: 16px 20px; margin: 18px 0;
+    background: #fff;
+  }
+  .divider { border: none; border-top: 1px dashed #cbd5e1; margin: 3em 0; }
+  code { background: #eef2f7; padding: 2px 6px; border-radius: 4px; font-size: .92em; }
+  a { color: #2563eb; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e2e8f0; background: #0f172a; }
+    h2 { color: #60a5fa; }
+    .meta { color: #94a3b8; }
+    code { background: #1e293b; }
+    .card { background: #111c30; border-color: #24344d; }
+    .divider { border-top-color: #334155; }
+  }
+</style>
+</head>
+<body>
+<h1>NRL互联 支持中心</h1>
+<p class="meta">NRL Pulse / NRL互联 — 业余无线电与应急通信客户端 · 支持页面 / Support Center</p>
+
+<div class="card">
+  <h2 style="margin-top:0">联系支持 / Contact Support</h2>
+  <ul>
+    <li>支持邮箱 / Email：<a href="mailto:caoc@me.com">caoc@me.com</a>（工作日 48 小时内回复 / reply within 48 hours on business days）</li>
+    <li>问题反馈与功能请求 / Issues &amp; feature requests：<a href="https://github.com/hicaoc/nrl-pulse/issues">github.com/hicaoc/nrl-pulse/issues</a></li>
+    <li>隐私政策 / Privacy Policy：<a href="https://hicaoc.github.io/nrl-pulse/privacy.html">privacy.html</a></li>
+  </ul>
+  <p class="meta">来信请附上：应用版本、操作系统、问题描述与复现步骤，必要时附日志截图。<br>
+  Please include app version, OS, description and steps to reproduce, plus screenshots/logs if possible.</p>
+</div>
+
+<h2>常见问题 / FAQ</h2>
+
+<h3>1. 无法登录平台账号 / Cannot sign in</h3>
+<ul>
+  <li>确认已选择正确的平台服务器（登录页「服务器列表」），并使用平台主站账号。</li>
+  <li>持有 HAM ID 长期 Token 的用户可在「Token」页签登录。</li>
+  <li>账号注册与注销请在 NRL 平台主站或其 iOS 客户端完成；macOS 商店版仅提供登录。</li>
+</ul>
+
+<h3>2. 连接后听不到声音 / No audio after connecting</h3>
+<ul>
+  <li>在系统设置中允许本应用访问麦克风（隐私 → 麦克风）。</li>
+  <li>在应用「配置」面板确认输入/输出设备与采样率（默认 8000 Hz）。</li>
+  <li>检查网络质量指示（延迟/丢包），必要时切换服务器或群组。</li>
+</ul>
+
+<h3>3. PTT 无法发射 / PTT not transmitting</h3>
+<ul>
+  <li>默认热键为空格，可在「配置 → PTT 热键」自定义。</li>
+  <li>确认已连接群组且账号具备发射权限；短按切换、长按持续发射。</li>
+</ul>
+
+<h3>4. 商店版功能差异 / App Store build differences</h3>
+<ul>
+  <li>受 App Sandbox 限制，Mac 商店版不支持串口透传；录音仅可写入应用容器或您授权的目录。</li>
+  <li>商店版不含内置自动更新，更新经由 App Store 分发。</li>
+</ul>
+
+<h3>5. 账号删除 / Account deletion</h3>
+<ul>
+  <li>macOS 商店版不提供账号创建；如需删除平台账号，请在 NRL 平台主站（<a href="https://www.nrlptt.com">www.nrlptt.com</a>）联系管理员，或使用 iOS 客户端的账号管理功能，也可通过支持邮箱协助处理。</li>
+</ul>
+
+<hr class="divider">
+<h2>English</h2>
+<p>NRL Pulse (NRL互联) is an amateur-radio / emergency-communication voice client supporting NRL2 and FMO protocols.</p>
+<ul>
+  <li>Support email: <a href="mailto:caoc@me.com">caoc@me.com</a></li>
+  <li>Bug reports: <a href="https://github.com/hicaoc/nrl-pulse/issues">GitHub Issues</a></li>
+  <li>The Mac App Store build offers sign-in only; account creation and deletion are handled on the NRL platform main site (<a href="https://www.nrlptt.com">www.nrlptt.com</a>) or via the support email.</li>
+</ul>
+</body>
+</html>

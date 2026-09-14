@@ -14,6 +14,8 @@ default = ["macos-private-api"]
 # macOS 窗口透明依赖私有 API，Mac App Store 审核禁止私有 API；
 # 商店版构建时用 --no-default-features 关闭（见 src-tauri/store/README.mas.md）
 macos-private-api = ["tauri/macos-private-api"]
+# Mac App Store 渠道标记：隐藏应用内注册入口（5.1.1(v) 账号删除要求）
+mas = []
 
 [build-dependencies]
 tauri-build = { version = "2.0.1", features = [] }

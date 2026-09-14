@@ -407,7 +407,7 @@ jobs:
       - name: Build MAS app
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: pnpm build && ./node_modules/.bin/tauri build --config src-tauri/tauri.mas.json --target universal-apple-darwin --bundles app -- --no-default-features
+        run: pnpm build && ./node_modules/.bin/tauri build --config src-tauri/tauri.mas.json --target universal-apple-darwin --bundles app -- --no-default-features --features mas
 
       - name: Sign and package for App Store
         id: mas_pkg
@@ -603,6 +603,7 @@ jobs:
           mkdir -p site/download/${VERSION}
           touch site/.nojekyll
           cp docs/privacy.html site/privacy.html
+          cp docs/support.html site/support.html
           find artifacts -name "*-setup.exe" ! -name "*.sig" -exec cp {} site/download/${VERSION}/setup.exe \;
           if [ ! -f site/download/${VERSION}/setup.exe ]; then
             echo "ERROR: setup.exe not found in artifact"; exit 1
