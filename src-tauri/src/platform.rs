@@ -310,36 +310,48 @@ pub async fn register(
     }
 }
 
-/// 账号删除（5.1.1(v)）：POST /user/delete，x-token 鉴权，通用 envelope 返回
+/// 账号删除（5.1.1(v)）：POST /user/delete，body 需带 /user/info 的 data.id，x-token 鉴权。
+/// 外层 code 仅为接口状态；操作结果看 data.isok（0=成功）与 data.message。
 pub async fn delete_account(api_base: String, token: String) -> Result<String, String> {
     let client = http_client()?;
+    let info: Value = get_data(&client, &api_base, "/user/info", Some(&token)).await?;
+    let uid = info
+        .get("id")
+        .cloned()
+        .ok_or_else(|| "无法获取用户 ID，请重新登录后再试".to_string())?;
     let envelope: Value =
-        post_json_exact(&client, &api_base, "/user/delete", Some(&token), &json!({})).await?;
+        post_json_exact(&client, &api_base, "/user/delete", Some(&token), &json!({ "id": uid })).await?;
     let code = envelope.get("code").and_then(Value::as_i64).unwrap_or_default() as i32;
-    let message = envelope
+    let outer = envelope
         .get("message")
         .and_then(Value::as_str)
-        .map(str::to_string)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_string();
     if code != 20000 {
-        return Err(if message.is_empty() {
-            format!("账号删除失败: code {code}")
-        } else {
-            message
-        });
+        return Err(if outer.is_empty() { format!("账号删除失败: code {code}") } else { outer });
     }
-    // 服务端可能返回 20000 但实际未删除（如权限逻辑拒绝）；
-    // 用同一 token 复查 /user/info：仍可访问则判定删除未生效
+    let data = envelope.get("data");
+    let inner = data
+        .and_then(|d| d.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let isok = data.and_then(|d| d.get("isok")).and_then(Value::as_i64).unwrap_or(-1);
+    if isok != 0 {
+        return Err(if inner.is_empty() { format!("账号删除失败: isok {isok}") } else { inner });
+    }
+    // 终验：同 token 复查 /user/info，仍可访问则判定删除未生效
     if get_data::<Value>(&client, &api_base, "/user/info", Some(&token))
         .await
         .is_ok()
     {
-        return Err(format!(
-            "删除未生效（服务器响应: {}）。请稍后重试或联系支持。",
-            if message.is_empty() { "无附加信息" } else { &message }
-        ));
+        return Err(if inner.is_empty() {
+            "删除未生效，请稍后重试或联系支持".to_string()
+        } else {
+            format!("删除未生效: {inner}")
+        });
     }
-    Ok(message)
+    Ok(inner)
 }
 
 pub async fn fetch_groups(
