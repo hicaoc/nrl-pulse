@@ -352,7 +352,11 @@ export interface UpdateInfo {
   body?: string;
 }
 
+const IS_MAS = import.meta.env.VITE_MAS === "1";
+
 export async function checkUpdate(): Promise<UpdateInfo> {
+  // MAS 渠道编译期裁剪：updater 动态 import 被 dead-code 消除，不进包
+  if (IS_MAS) return { available: false };
   try {
     const { check } = await import("@tauri-apps/plugin-updater");
     const update = await check();
@@ -368,6 +372,7 @@ export async function checkUpdate(): Promise<UpdateInfo> {
 export async function downloadAndInstallUpdate(
   onProgress: (downloaded: number, total: number | null) => void,
 ): Promise<void> {
+  if (IS_MAS) return;
   const { check } = await import("@tauri-apps/plugin-updater");
   const { relaunch } = await import("@tauri-apps/plugin-process");
   const update = await check();
