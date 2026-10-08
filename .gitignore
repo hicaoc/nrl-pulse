@@ -6,3 +6,4 @@ src-tauri/target
 .playwright-mcp
 
 release-test
+.DS_Store
