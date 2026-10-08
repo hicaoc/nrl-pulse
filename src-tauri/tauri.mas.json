@@ -3,6 +3,9 @@
   "productName": "NRL互联",
   "identifier": "com.nrlptt.pttapp",
   "version": "0.2.9",
+  "build": {
+    "beforeBuildCommand": "VITE_MAS=1 npm run build"
+  },
   "app": {
     "macOSPrivateApi": false
   },
@@ -17,7 +20,7 @@
     "targets": ["app"],
     "macOS": {
       "entitlements": "entitlements.mas.plist",
-      "bundleVersion": "6"
+      "bundleVersion": "7"
     }
   }
 }

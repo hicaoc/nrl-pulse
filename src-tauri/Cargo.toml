@@ -10,11 +10,13 @@ name = "nrl_pulse_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
-default = ["macos-private-api"]
+default = ["macos-private-api", "updater"]
 # macOS 窗口透明依赖私有 API，Mac App Store 审核禁止私有 API；
 # 商店版构建时用 --no-default-features 关闭（见 src-tauri/store/README.mas.md）
 macos-private-api = ["tauri/macos-private-api"]
-# Mac App Store 渠道标记：隐藏应用内注册入口（5.1.1(v) 账号删除要求）
+# 内置自动更新（Mac App Store 版必须关闭：审核 2.4.5(vii) 禁止站外更新机制）
+updater = ["dep:tauri-plugin-updater"]
+# Mac App Store 渠道标记：编译期移除注册接口等（5.1.1(v)）
 mas = []
 
 [build-dependencies]
@@ -48,7 +50,7 @@ tauri = { version = "2.3.1", features = ["devtools"] }
 tauri-plugin-dialog = "2.2.1"
 tauri-plugin-fs = "2.2.1"
 tauri-plugin-opener = "2.2.1"
-tauri-plugin-updater = "2"
+tauri-plugin-updater = { version = "2", optional = true }
 tauri-plugin-process = "2"
 rubato = "2.0.0"
 audioadapter-buffers = "3.0.0"

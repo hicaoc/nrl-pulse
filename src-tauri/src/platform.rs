@@ -1,7 +1,9 @@
 use std::net::IpAddr;
 use std::str::FromStr;
 
-use reqwest::{multipart, Client};
+#[cfg(not(feature = "mas"))]
+use reqwest::multipart;
+use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -278,26 +280,55 @@ pub async fn register(
     license_filename: String,
     license_bytes: Vec<u8>,
 ) -> Result<PlatformRegisterResult, String> {
+    #[cfg(feature = "mas")]
+    {
+        let _ = (host, payload, license_filename, license_bytes);
+        return Err("当前分发渠道不提供账号注册".into());
+    }
+    #[cfg(not(feature = "mas"))]
+    {
+        let client = http_client()?;
+        let candidates = base_candidates(&host);
+        let (_api_base, value): (String, Value) = post_multipart_candidates(
+            &client,
+            &candidates,
+            "/user/reg/create",
+            &payload,
+            &license_filename,
+            &license_bytes,
+        )
+        .await?;
+        let code = value
+            .get("code")
+            .and_then(Value::as_i64)
+            .unwrap_or_default() as i32;
+        let message = value
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        Ok(PlatformRegisterResult { code, message })
+    }
+}
+
+/// 账号删除（5.1.1(v)）：POST /user/reg/delete，x-token 鉴权，通用 envelope 返回
+pub async fn delete_account(api_base: String, token: String) -> Result<String, String> {
     let client = http_client()?;
-    let candidates = base_candidates(&host);
-    let (_api_base, value): (String, Value) = post_multipart_candidates(
-        &client,
-        &candidates,
-        "/user/reg/create",
-        &payload,
-        &license_filename,
-        &license_bytes,
-    )
-    .await?;
-    let code = value
-        .get("code")
-        .and_then(Value::as_i64)
-        .unwrap_or_default() as i32;
-    let message = value
+    let envelope: Value =
+        post_json_exact(&client, &api_base, "/user/reg/delete", Some(&token), &json!({})).await?;
+    let code = envelope.get("code").and_then(Value::as_i64).unwrap_or_default() as i32;
+    let message = envelope
         .get("message")
         .and_then(Value::as_str)
-        .map(str::to_string);
-    Ok(PlatformRegisterResult { code, message })
+        .map(str::to_string)
+        .unwrap_or_default();
+    if code != 20000 {
+        return Err(if message.is_empty() {
+            format!("账号删除失败: code {code}")
+        } else {
+            message
+        });
+    }
+    Ok(message)
 }
 
 pub async fn fetch_groups(
@@ -467,6 +498,7 @@ fn base_candidates(host: &str) -> Vec<String> {
     }
 }
 
+#[cfg(not(feature = "mas"))]
 fn build_register_form(
     payload: PlatformRegisterPayload,
     license_filename: String,
@@ -538,6 +570,7 @@ pub(crate) async fn post_json_exact<T: DeserializeOwned>(
         .map_err(|err| format!("decode response failed: {err}; body={text}"))
 }
 
+#[cfg(not(feature = "mas"))]
 async fn post_multipart_candidates<T: DeserializeOwned>(
     client: &Client,
     candidates: &[String],
@@ -561,6 +594,7 @@ async fn post_multipart_candidates<T: DeserializeOwned>(
     Err(last_error)
 }
 
+#[cfg(not(feature = "mas"))]
 async fn post_multipart_exact<T: DeserializeOwned>(
     client: &Client,
     api_base: &str,

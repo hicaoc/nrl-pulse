@@ -1,0 +1,9 @@
+{
+  "$schema": "../../gen/schemas/desktop-schema.json",
+  "identifier": "updater",
+  "description": "Built-in updater capability; excluded from Mac App Store builds (guideline 2.4.5(vii))",
+  "windows": ["main"],
+  "permissions": [
+    "updater:default"
+  ]
+}

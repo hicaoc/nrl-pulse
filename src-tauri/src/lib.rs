@@ -279,6 +279,11 @@ async fn platform_register(
 }
 
 #[tauri::command]
+async fn platform_delete_account(api_base: String, token: String) -> Result<String, String> {
+    platform::delete_account(api_base, token).await
+}
+
+#[tauri::command]
 async fn platform_fetch_groups(
     api_base: String,
     token: String,
@@ -386,11 +391,6 @@ async fn close_ptt_window(app: tauri::AppHandle) -> Result<(), String> {
             .map_err(|err| format!("close ptt window failed: {err}"))?;
     }
     Ok(())
-}
-
-#[tauri::command]
-fn is_mas_build() -> bool {
-    cfg!(feature = "mas")
 }
 
 #[tauri::command]
@@ -832,12 +832,18 @@ async fn fmo_beacon_now(state: tauri::State<'_, RuntimeState>) -> Result<(), Str
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_process::init());
+    // MAS 版不链接 updater（审核 2.4.5(vii) 禁止站外更新机制）
+    #[cfg(feature = "updater")]
+    {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+    builder
         .setup(|app| {
             g711::warmup_tables();
             runtime::manage(app);
@@ -876,10 +882,10 @@ pub fn run() {
             stop_serial_tunnel,
             list_serial_ports,
             fetch_platform_servers,
-            is_mas_build,
             platform_login,
             platform_login_with_token,
             platform_register,
+            platform_delete_account,
             platform_restore_session,
             platform_fetch_groups,
             platform_fetch_group_devices,

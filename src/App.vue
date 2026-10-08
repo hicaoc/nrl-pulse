@@ -19,7 +19,11 @@ import {
   openMonitorWindow,
 } from "@/lib/tauri";
 import type { UpdateInfo } from "@/lib/tauri";
-import { isMasBuild } from "@/lib/tauri";
+import { platformDeleteAccount } from "@/lib/tauri";
+
+// Mac App Store 渠道编译期标记（tauri.mas.json 的 beforeBuildCommand 注入 VITE_MAS=1）：
+// 移除注册入口与内置更新 UI（审核 5.1.1(v) / 2.4.5(vii)）
+const IS_MAS = import.meta.env.VITE_MAS === "1";
 import { usePlatformStore } from "@/stores/platform";
 import { useRuntimeStore } from "@/stores/runtime";
 import type { ChatMessageEvent, FmoBeaconConfig, FmoBroadcastConfig, FmoClient, FmoServer, PlatformDevice, PlatformGroup, PlatformRegisterPayload, PlatformServer, SerialTunnelConfig, TimelineEvent } from "@/types";
@@ -98,12 +102,13 @@ const updateProgress = ref(0);
 const updateTotal = ref(0);
 const showLogin = ref(false);
 const showRegister = ref(false);
-const isMas = ref(false);
 const showTokenLogin = ref(true);
 const loginError = ref("");
 const registerError = ref("");
 const registerSuccess = ref("");
 const registerBusy = ref(false);
+const deleteBusy = ref(false);
+const deleteError = ref("");
 const listeningPttKey = ref(false);
 const pttPressed = ref(false);
 const holdActivated = ref(false);
@@ -994,6 +999,10 @@ const messages = {
     currentAccount: "当前账号",
     currentGroupLabel: "当前组",
     logoutLocal: "退出本地登录态",
+    deleteAccount: "删除账号",
+    deleteAccountConfirm: "确认删除账号？该操作不可撤销：账号、设备绑定与关联数据将被永久删除。",
+    deleteAccountConfirm2: "再次确认：永久删除当前登录账号并退出登录？",
+    deleteAccountDone: "账号已删除",
     openRegister: "注册账号",
     backToLogin: "返回登录",
     registerAction: "提交注册",
@@ -1166,6 +1175,10 @@ const messages = {
     currentAccount: "Account",
     currentGroupLabel: "Current Group",
     logoutLocal: "Clear Local Session",
+    deleteAccount: "Delete Account",
+    deleteAccountConfirm: "Delete your account? This cannot be undone: the account, device bindings and related data will be permanently removed.",
+    deleteAccountConfirm2: "Confirm again: permanently delete the signed-in account and sign out?",
+    deleteAccountDone: "Account deleted",
     openRegister: "Create Account",
     backToLogin: "Back to Login",
     registerAction: "Submit Registration",
@@ -2439,9 +2452,6 @@ const fmoVoiceActive = computed(() => {
 
 onMounted(async () => {
   try {
-    isMas.value = await isMasBuild();
-  } catch { /* 非 Tauri 环境（浏览器预览）按非商店版处理 */ }
-  try {
     const version = await getVersion();
     const title = `NRL Pulse v${version} © BH4RPN 2026 , BA4RN BG6FCS BH4TDV BD4RFG BD4VKI BI4UMD BA4QAO BA4QGT ...  `;
     document.title = title;
@@ -2503,11 +2513,13 @@ onMounted(async () => {
   window.addEventListener("resize", redrawRealtimeCanvases);
   if (!isPttWindow) {
     void openPttWindow();
-    // 启动后静默检查更新
-    setTimeout(async () => {
-      const info = await checkUpdate();
-      if (info.available) updateInfo.value = info;
-    }, 3000);
+    // 启动后静默检查更新（MAS 渠道无内置更新）
+    if (!IS_MAS) {
+      setTimeout(async () => {
+        const info = await checkUpdate();
+        if (info.available) updateInfo.value = info;
+      }, 3000);
+    }
   }
 });
 
@@ -2530,7 +2542,25 @@ async function doUpdate() {
   }
 }
 
+async function requestDeleteAccount() {
+  if (!platform.loggedIn || deleteBusy.value) return;
+  if (!window.confirm(t.value.deleteAccountConfirm)) return;
+  if (!window.confirm(t.value.deleteAccountConfirm2)) return;
+  deleteBusy.value = true;
+  deleteError.value = "";
+  try {
+    await platformDeleteAccount(platform.apiBase, platform.token);
+    alert(t.value.deleteAccountDone);
+    await platform.logout();
+  } catch (err) {
+    deleteError.value = String(err);
+  } finally {
+    deleteBusy.value = false;
+  }
+}
+
 async function manualCheckUpdate() {
+  if (IS_MAS) return;
   updateInfo.value = null;
   const info = await checkUpdate();
   if (info.available) {
@@ -2760,7 +2790,7 @@ watch(
         <button class="ghost-btn" :disabled="runtime.busy" @click="showSettings = !showSettings">
           {{ showSettings ? t.closeSettings : t.openSettings }}
         </button>
-        <button class="ghost-btn" @click="manualCheckUpdate">
+        <button v-if="!IS_MAS" class="ghost-btn" @click="manualCheckUpdate">
           {{ t.checkUpdate }}
         </button>
       </nav>
@@ -2885,7 +2915,7 @@ watch(
 
     <!-- 更新提示横幅 -->
     <transition name="drawer-fade">
-      <div v-if="updateInfo" class="update-banner">
+      <div v-if="updateInfo && !IS_MAS" class="update-banner">
         <span class="update-banner-msg">
           {{ updateDownloading ? t.updateDownloading : t.updateAvailable(updateInfo.version ?? "") }}
         </span>
@@ -4314,7 +4344,7 @@ watch(
               {{ t.tokenLoginAction }}
             </button>
             <button
-              v-if="!isMas"
+              v-if="!IS_MAS"
               class="auth-switch-btn"
               :data-active="showRegister"
               @click="openRegisterForm"
@@ -4472,6 +4502,14 @@ watch(
           <button class="ghost-btn" :disabled="platform.busy" @click="platform.logout()">
             {{ t.logoutLocal }}
           </button>
+          <button
+            class="ghost-btn"
+            :disabled="platform.busy || deleteBusy"
+            @click="requestDeleteAccount"
+          >
+            {{ t.deleteAccount }}
+          </button>
+          <div v-if="deleteError" class="auth-error">{{ deleteError }}</div>
         </template>
       </div>
     </aside>
