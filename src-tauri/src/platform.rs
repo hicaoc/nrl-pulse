@@ -310,11 +310,11 @@ pub async fn register(
     }
 }
 
-/// 账号删除（5.1.1(v)）：POST /user/reg/delete，x-token 鉴权，通用 envelope 返回
+/// 账号删除（5.1.1(v)）：POST /user/delete，x-token 鉴权，通用 envelope 返回
 pub async fn delete_account(api_base: String, token: String) -> Result<String, String> {
     let client = http_client()?;
     let envelope: Value =
-        post_json_exact(&client, &api_base, "/user/reg/delete", Some(&token), &json!({})).await?;
+        post_json_exact(&client, &api_base, "/user/delete", Some(&token), &json!({})).await?;
     let code = envelope.get("code").and_then(Value::as_i64).unwrap_or_default() as i32;
     let message = envelope
         .get("message")
