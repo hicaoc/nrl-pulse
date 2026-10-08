@@ -2,7 +2,7 @@
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, confirm as dialogConfirm, message as dialogMessage } from "@tauri-apps/plugin-dialog";
 import { platformFetchGroupDevices, platformRegister } from "@/lib/platform";
 import MonitorWindow from "@/components/MonitorWindow.vue";
 import { useFmoStore } from "@/stores/fmo";
@@ -2542,15 +2542,28 @@ async function doUpdate() {
   }
 }
 
+async function askConfirm(msg: string): Promise<boolean> {
+  // wry 未启用 dialog feature，window.confirm 在应用内静默返回 false，必须走原生对话框
+  try {
+    return await dialogConfirm(msg, { title: "NRL互联", kind: "warning" });
+  } catch {
+    return window.confirm(msg);
+  }
+}
+
 async function requestDeleteAccount() {
   if (!platform.loggedIn || deleteBusy.value) return;
-  if (!window.confirm(t.value.deleteAccountConfirm)) return;
-  if (!window.confirm(t.value.deleteAccountConfirm2)) return;
+  if (!(await askConfirm(t.value.deleteAccountConfirm))) return;
+  if (!(await askConfirm(t.value.deleteAccountConfirm2))) return;
   deleteBusy.value = true;
   deleteError.value = "";
   try {
     await platformDeleteAccount(platform.apiBase, platform.token);
-    alert(t.value.deleteAccountDone);
+    try {
+      await dialogMessage(t.value.deleteAccountDone, { title: "NRL互联" });
+    } catch {
+      /* 浏览器预览忽略 */
+    }
     await platform.logout();
   } catch (err) {
     deleteError.value = String(err);
