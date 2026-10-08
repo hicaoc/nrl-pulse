@@ -328,6 +328,17 @@ pub async fn delete_account(api_base: String, token: String) -> Result<String, S
             message
         });
     }
+    // 服务端可能返回 20000 但实际未删除（如权限逻辑拒绝）；
+    // 用同一 token 复查 /user/info：仍可访问则判定删除未生效
+    if get_data::<Value>(&client, &api_base, "/user/info", Some(&token))
+        .await
+        .is_ok()
+    {
+        return Err(format!(
+            "删除未生效（服务器响应: {}）。请稍后重试或联系支持。",
+            if message.is_empty() { "无附加信息" } else { &message }
+        ));
+    }
     Ok(message)
 }
 
