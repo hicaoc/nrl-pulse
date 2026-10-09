@@ -1,4 +1,7 @@
 //! FMO/RAW 语音帧构造与解析（发射侧构造 + 接收侧解析）。
+//!
+//! V4 布局：偏移 [6..10] 是发送方 UID（u32 小端，服务器身份控制按此校验，
+//! 必须与 SAS 认证证书 uid 一致）；早期逆向曾误判为「16 位会话号 + 2 字节填充」。
 
 pub const CONST5: [u8; 5] = [0x3d, 0x14, 0x00, 0xe0, 0x3d];
 
@@ -20,7 +23,7 @@ fn crc32(data: &[u8]) -> u32 {
 
 fn pack(
     callsign: &str,
-    session: u16,
+    uid: u32,
     ts1: u32,
     ts2: u32,
     blocks: &[u8],
@@ -35,8 +38,7 @@ fn pack(
     }
     let mut hdr = Vec::with_capacity(64);
     hdr.extend_from_slice(&[0x01, 0, 0, 0, 0, 0]);
-    hdr.extend_from_slice(&session.to_le_bytes());
-    hdr.extend_from_slice(&[0, 0]);
+    hdr.extend_from_slice(&uid.to_le_bytes());
     hdr.extend_from_slice(&cs);
     hdr.extend_from_slice(&[0; 6]);
     hdr.extend_from_slice(&ts1.to_le_bytes());
@@ -72,7 +74,7 @@ fn make_block(idx: u8, inner_type: u8, payload: &[u8]) -> Vec<u8> {
 /// 把若干 Opus 包（SILK NB 40ms）打包成一帧 FMO/RAW（老格式 0x01 块）。
 pub fn build_frame(
     callsign: &str,
-    session: u16,
+    uid: u32,
     ts1: u32,
     ts2: u32,
     opus_packets: &[Vec<u8>],
@@ -84,7 +86,7 @@ pub fn build_frame(
     }
     pack(
         callsign,
-        session,
+        uid,
         ts1,
         ts2,
         &blocks,
@@ -96,7 +98,7 @@ pub fn build_frame(
 /// 把若干 IMA ADPCM 块（328B：8B 头 + 320B 数据）打包成一帧（新格式 0x02 块）。
 pub fn build_frame_adpcm(
     callsign: &str,
-    session: u16,
+    uid: u32,
     ts1: u32,
     ts2: u32,
     payloads: &[Vec<u8>],
@@ -108,7 +110,7 @@ pub fn build_frame_adpcm(
     }
     pack(
         callsign,
-        session,
+        uid,
         ts1,
         ts2,
         &blocks,
@@ -119,7 +121,8 @@ pub fn build_frame_adpcm(
 
 #[derive(Debug, Clone)]
 pub struct ParsedFrame {
-    pub session: u16,
+    /// 包头 [6..10]：发送方 UID（u32 小端）
+    pub uid: u32,
     pub callsign: String,
     pub ts1: u32,
     pub ts2: u32,
@@ -175,7 +178,7 @@ pub fn parse_frame(f: &[u8]) -> Option<ParsedFrame> {
         pos += blen;
     }
     Some(ParsedFrame {
-        session: u16::from_le_bytes([f[6], f[7]]),
+        uid: u32::from_le_bytes(f[6..10].try_into().ok()?),
         callsign: String::from_utf8_lossy(&f[10..16])
             .trim_end_matches('\x00')
             .to_string(),
@@ -209,17 +212,20 @@ mod tests {
         );
         let p = parse_frame(&frame).unwrap();
         assert_eq!(p.callsign, "BG9JYT");
-        assert_eq!(p.session, 0x1234);
+        assert_eq!(p.uid, 0x1234);
         assert_eq!(p.packets.len(), 2);
-        let rebuilt = build_frame(
-            &p.callsign,
-            p.session,
-            p.ts1,
-            p.ts2,
-            &p.packets,
-            p.buf_depth,
-        );
+        let rebuilt = build_frame(&p.callsign, p.uid, p.ts1, p.ts2, &p.packets, p.buf_depth);
         assert_eq!(rebuilt, frame);
+    }
+
+    #[test]
+    fn header_uid_is_u32_at_offset_6() {
+        // V4 布局：包头 [6..10] = 发送方 UID（u32 小端），服务器身份控制按此校验
+        let frame = build_frame("BG9JYT", 5200, 0, 0, &[vec![0x80; 12]], 9);
+        assert_eq!(&frame[6..10], &5200u32.to_le_bytes());
+        // 超过 16 位的 uid 也必须完整写入（旧布局只写 u16 会话号会截断）
+        let frame = build_frame("BG9JYT", 43671 + 0x1_0000, 0, 0, &[vec![0x80; 12]], 9);
+        assert_eq!(parse_frame(&frame).unwrap().uid, 43671 + 0x1_0000);
     }
 
     #[test]

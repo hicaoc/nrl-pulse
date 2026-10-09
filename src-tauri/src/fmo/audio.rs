@@ -103,7 +103,8 @@ pub const ADPCM_MARKER: u8 = 0xAA;
 pub struct TxSession {
     pub callsign: String,
     pub mode: String, // "opus" | "adpcm"
-    pub session: u16,
+    /// 发送方 UID（证书 subject.uid），写入 FMO/RAW 包头 [6..10]
+    pub uid: u32,
     pub ts1: u32,
     pub packets_sent: Arc<std::sync::Mutex<usize>>,
     pub frames_sent: Arc<std::sync::Mutex<usize>>,
@@ -124,11 +125,10 @@ impl TxSession {
     pub fn new(
         mqtt: Arc<FmoMqttClient>,
         callsign: &str,
+        uid: u32,
         mode: &str,
         total_tx_counter: Option<Arc<std::sync::atomic::AtomicU64>>,
     ) -> Result<Self, String> {
-        let session = (chrono::Utc::now().timestamp_micros() & 0xFFFF) as u16;
-        let session = if session == 0 { 1 } else { session };
         let ts1 = (chrono::Utc::now().timestamp_millis() & 0xFFFFFFFF) as u32;
         Ok(Self {
             callsign: callsign.to_string(),
@@ -137,7 +137,7 @@ impl TxSession {
             } else {
                 "opus".into()
             },
-            session,
+            uid,
             ts1,
             packets_sent: Arc::new(std::sync::Mutex::new(0)),
             frames_sent: Arc::new(std::sync::Mutex::new(0)),
@@ -168,23 +168,9 @@ impl TxSession {
             (ts2, buf_depth)
         };
         let frame = if self.mode == "adpcm" {
-            fmo_frame::build_frame_adpcm(
-                &self.callsign,
-                self.session,
-                self.ts1,
-                ts2 as u32,
-                &packets,
-                buf_depth,
-            )
+            fmo_frame::build_frame_adpcm(&self.callsign, self.uid, self.ts1, ts2 as u32, &packets, buf_depth)
         } else {
-            fmo_frame::build_frame(
-                &self.callsign,
-                self.session,
-                self.ts1,
-                ts2 as u32,
-                &packets,
-                buf_depth,
-            )
+            fmo_frame::build_frame(&self.callsign, self.uid, self.ts1, ts2 as u32, &packets, buf_depth)
         };
         let _ = self.mqtt.publish("FMO/RAW", frame, 0).await;
         if let Some(counter) = &self.total_tx_counter {

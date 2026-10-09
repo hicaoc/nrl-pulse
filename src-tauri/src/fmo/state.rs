@@ -938,9 +938,11 @@ impl FmoState {
             return Err("MQTT 未连接，不能发射".into());
         }
         let callsign = self.current_callsign();
+        let uid = self.current_uid();
         let ts = Arc::new(TxSession::new(
             self.mqtt_client.clone(),
             &callsign,
+            uid,
             mode,
             Some(self.stats.tx_frames.clone()),
         )?);
@@ -1011,9 +1013,11 @@ impl FmoState {
             return false;
         }
         let callsign = self.current_callsign();
+        let uid = self.current_uid();
         let Ok(ts) = TxSession::new(
             self.mqtt_client.clone(),
             &callsign,
+            uid,
             mode,
             Some(self.stats.tx_frames.clone()),
         ) else {
