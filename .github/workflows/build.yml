@@ -196,7 +196,7 @@ jobs:
         run: pnpm install --no-frozen-lockfile
 
       - name: Clean stale bundle artifacts
-        run: find src-tauri/target -maxdepth 3 -type d -name bundle -exec rm -rf {} +
+        run: find src-tauri/target -maxdepth 3 -type d -name bundle -exec rm -rf {} + || true
 
       - name: Build
         env:
@@ -270,7 +270,7 @@ jobs:
         run: pnpm install --no-frozen-lockfile
 
       - name: Clean stale bundle artifacts
-        run: find src-tauri/target -maxdepth 3 -type d -name bundle -exec rm -rf {} +
+        run: find src-tauri/target -maxdepth 3 -type d -name bundle -exec rm -rf {} + || true
 
       - name: Build ARM
         env:
@@ -457,7 +457,13 @@ jobs:
           mkdir -p ~/.appstoreconnect/private_keys
           echo "$ASC_API_KEY_P8_BASE64" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_${ASC_API_KEY_ID}.p8
           PKG=$(find src-tauri/target/mas -name "*.pkg" | head -1)
-          xcrun altool --validate-app -f "$PKG" -t macos --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER_ID"
+          set +e
+          xcrun altool --validate-app -f "$PKG" -t macos --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER_ID" 2>&1 | tee /tmp/altool-validate.log
+          VRC=${PIPESTATUS[0]}
+          set -e
+          if [ "$VRC" -ne 0 ] && ! grep -q "already been used" /tmp/altool-validate.log; then
+            exit "$VRC"
+          fi
           set +e
           xcrun altool --upload-app -f "$PKG" -t macos --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER_ID" 2>&1 | tee /tmp/altool-upload.log
           RC=${PIPESTATUS[0]}
