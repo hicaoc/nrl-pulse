@@ -3984,6 +3984,13 @@ watch(
               <span class="fmo-conn-label">{{ language === "zh" ? "本机 MAC" : "Device MAC" }}</span>
               <span class="fmo-conn-value">{{ fmoActivateMac || "-" }}</span>
             </div>
+            <small v-if="!fmoActivateMac" class="fmo-conn-hint">
+              {{
+                language === "zh"
+                  ? "无法读取真实网卡 MAC（macOS 系统隐私限制，仅返回占位值）：自动获取证书（MAC 绑定）不可用，请改用手动导入证书"
+                  : "Real NIC MAC unreadable (macOS privacy restriction, placeholder only): auto activation (MAC binding) unavailable; import certificates manually."
+              }}
+            </small>
             <div class="fmo-conn-row">
               <span class="fmo-conn-label">{{ language === "zh" ? "证书服务器" : "Cert Server" }}</span>
               <input

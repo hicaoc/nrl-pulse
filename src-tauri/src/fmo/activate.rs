@@ -63,6 +63,15 @@ pub fn local_mac() -> Result<[u8; 6], String> {
     let mac = mac_address::get_mac_address()
         .map_err(|e| format!("读取本机 MAC 地址失败: {e}"))?
         .ok_or_else(|| "未找到可用网卡的 MAC 地址，无法激活".to_string())?;
+    // macOS 10.15+ 隐私限制：无 networkextension 权限的进程只能拿到占位值
+    // 02:00:00:00:00:00（沙盒应用同样），据此判定 MAC 绑定类功能不可用
+    #[cfg(target_os = "macos")]
+    if mac.bytes() == [0x02, 0, 0, 0, 0, 0] {
+        return Err(
+            "macOS 隐私限制：系统禁止应用读取真实网卡 MAC（仅返回占位值 02:00:00:00:00:00），基于 MAC 绑定的自动获取证书不可用，请改用手动导入证书"
+                .to_string(),
+        );
+    }
     Ok(mac.bytes())
 }
 

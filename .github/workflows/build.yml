@@ -458,7 +458,17 @@ jobs:
           echo "$ASC_API_KEY_P8_BASE64" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_${ASC_API_KEY_ID}.p8
           PKG=$(find src-tauri/target/mas -name "*.pkg" | head -1)
           xcrun altool --validate-app -f "$PKG" -t macos --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER_ID"
-          xcrun altool --upload-app -f "$PKG" -t macos --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER_ID"
+          set +e
+          xcrun altool --upload-app -f "$PKG" -t macos --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER_ID" 2>&1 | tee /tmp/altool-upload.log
+          RC=${PIPESTATUS[0]}
+          set -e
+          if [ "$RC" -ne 0 ]; then
+            if grep -q "already been used" /tmp/altool-upload.log; then
+              echo "同版本构建已存在，跳过上传（ASC 保留现有构建）"
+            else
+              exit "$RC"
+            fi
+          fi
 
   release:
     name: Release
