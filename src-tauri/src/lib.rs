@@ -7,6 +7,7 @@ mod audio_aec_win;
 mod config;
 mod fmo;
 mod g711;
+mod machine_id;
 mod models;
 mod nrl;
 mod opus;

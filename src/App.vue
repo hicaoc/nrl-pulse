@@ -3981,14 +3981,14 @@ watch(
               <span>{{ language === "zh" ? "自动获取证书" : "Auto Activate" }}</span>
             </div>
             <div class="fmo-conn-row">
-              <span class="fmo-conn-label">{{ language === "zh" ? "本机 MAC" : "Device MAC" }}</span>
+              <span class="fmo-conn-label">{{ language === "zh" ? "本机 ID" : "Device ID" }}</span>
               <span class="fmo-conn-value">{{ fmoActivateMac || "-" }}</span>
             </div>
             <small v-if="!fmoActivateMac" class="fmo-conn-hint">
               {{
                 language === "zh"
-                  ? "无法读取真实网卡 MAC（macOS 系统隐私限制，仅返回占位值）：自动获取证书（MAC 绑定）不可用，请改用手动导入证书"
-                  : "Real NIC MAC unreadable (macOS privacy restriction, placeholder only): auto activation (MAC binding) unavailable; import certificates manually."
+                  ? "无法读取本机稳定 ID（硬件 UUID/machine-id/MachineGuid），自动获取证书不可用，请改用手动导入证书"
+                  : "Stable device ID unreadable (hardware UUID / machine-id / MachineGuid); auto activation unavailable; import certificates manually."
               }}
             </small>
             <div class="fmo-conn-row">
@@ -4020,8 +4020,8 @@ watch(
             <small class="fmo-cert-msg">
               {{
                 language === "zh"
-                  ? "前提：本机 MAC 需已在 hamptt.com 登记并绑定用户，否则返回未登记/未绑定"
-                  : "Requires this MAC registered & bound on hamptt.com first"
+                  ? "前提：本机 ID 需已在 hamptt.com 登记并绑定用户，否则返回未登记/未绑定"
+                  : "Requires this Device ID registered & bound on hamptt.com first"
               }}
             </small>
           </div>

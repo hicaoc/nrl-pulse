@@ -134,7 +134,7 @@ xcrun altool --upload-app  -f src-tauri/target/mas/NRL-Pulse_<版本>.pkg -t mac
 | 功能 | 商店版行为 |
 | --- | --- |
 | 串口透传 | 沙盒禁止访问 `/dev/cu.*`，不可用 |
-| FMO 自动获取证书（绑定 MAC） | macOS 10.15+ 隐私限制：所有渠道构建均只能读到占位 MAC `02:00:00:00:00:00`（沙盒亦然）；应用已识别占位值并在界面提示改用手动导入证书 |
+| FMO 自动获取证书（绑定 MAC） | macOS 读不到真实 MAC（系统隐私限制）；三平台统一改用 48 位派生 ID（`machine_id.rs`，算法固定为绑定契约），需在 hamptt.com 登记该 ID |
 | 本地录音 | 仅可写入应用容器目录或用户通过对话框授权的目录 |
 | PTT 悬浮窗 | 不透明（透明依赖私有 API） |
 | 自动更新 | 由 App Store 托管 |

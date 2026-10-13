@@ -48,38 +48,13 @@ pub fn set_server(data_dir: &Path, server: &str) -> Result<(), String> {
     std::fs::write(config_path(data_dir), text).map_err(|e| format!("保存激活配置失败: {e}"))
 }
 
-/// Snapshot returned to the UI: configured server + this machine's MAC (the
-/// address that must be registered/bound on the platform).
+/// Snapshot returned to the UI: configured server + this machine's binding ID
+/// (48-bit derived ID, MAC-shaped; see crate::machine_id).
 pub fn config(data_dir: &Path) -> Value {
     json!({
         "server": get_server(data_dir),
-        "mac": local_mac_string(),
+        "mac": crate::machine_id::stable_machine_id_string(),
     })
-}
-
-/// MAC of the default network interface; this is the address the user
-/// registers/binds on the platform.
-pub fn local_mac() -> Result<[u8; 6], String> {
-    let mac = mac_address::get_mac_address()
-        .map_err(|e| format!("读取本机 MAC 地址失败: {e}"))?
-        .ok_or_else(|| "未找到可用网卡的 MAC 地址，无法激活".to_string())?;
-    // macOS 10.15+ 隐私限制：无 networkextension 权限的进程只能拿到占位值
-    // 02:00:00:00:00:00（沙盒应用同样），据此判定 MAC 绑定类功能不可用
-    #[cfg(target_os = "macos")]
-    if mac.bytes() == [0x02, 0, 0, 0, 0, 0] {
-        return Err(
-            "macOS 隐私限制：系统禁止应用读取真实网卡 MAC（仅返回占位值 02:00:00:00:00:00），基于 MAC 绑定的自动获取证书不可用，请改用手动导入证书"
-                .to_string(),
-        );
-    }
-    Ok(mac.bytes())
-}
-
-/// Uppercase 12-hex-digit MAC for display; empty string when unavailable.
-pub fn local_mac_string() -> String {
-    local_mac()
-        .map(|m| hex::encode(m).to_uppercase())
-        .unwrap_or_default()
 }
 
 /// Load the device Ed25519 key from the cert store, generating and persisting a
@@ -196,7 +171,7 @@ fn code_message(code: i64) -> Option<&'static str> {
 /// Run one activation round. Returns a human-readable success message; errors
 /// are already mapped to Chinese hints.
 pub async fn run(fmo: &FmoState) -> Result<String, String> {
-    let mac = local_mac()?;
+    let mac = crate::machine_id::stable_machine_id()?;
     let (seed, pub_key) = ensure_device_key(&fmo.cert_store).await?;
 
     let fields = ActivateFields {

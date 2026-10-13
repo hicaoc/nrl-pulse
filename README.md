@@ -25,7 +25,7 @@
 
 - **APRS-IS 服务器发现**：连接 rotate.aprs2.net 实时解析 FMO-V4 STATION 广播，自动维护服务器表
 - **证书导入**：上传 `cert_user.json` / `cert_int.json` / `cert_root.json` / `cert_devicekey.json`，即设当前身份（证书需要使用备份工具从 FMO 上备份）
-- **自动获取证书**：绑定本机 MAC，在 `hamptt.com` 已登记的前提下，一键从证书服务器拉取并激活身份
+- **自动获取证书**：绑定本机 48 位派生 ID（硬件 UUID/machine-id/MachineGuid 经 SHA-256 派生，MAC 形态；macOS 因系统隐私限制无法读取真实 MAC），在 `hamptt.com` 已登记的前提下，一键从证书服务器拉取并激活身份
 - **SAS 认证**：基于 Ed25519 / CBOR 证书指纹自动构建 MQTT 凭据
 - **服务器列表 / 收藏**：按在线人数排序，☆ 收藏后一键切换
 
