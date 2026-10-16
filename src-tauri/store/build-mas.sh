@@ -81,7 +81,7 @@ echo "==> 校验签名"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
 echo "==> 打包 pkg ($APPLE_INSTALLER_IDENTITY)"
-rm -f "$PKG"
+rm -f "$OUT_DIR"/NRL-Pulse_*.pkg
 productbuild --component "$APP" /Applications \
   --sign "$APPLE_INSTALLER_IDENTITY" --timestamp "$PKG"
 

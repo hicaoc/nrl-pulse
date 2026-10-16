@@ -456,7 +456,7 @@ jobs:
           if [ -z "$ASC_API_KEY_ID" ]; then echo "skip: ASC_API_KEY_ID 未配置"; exit 0; fi
           mkdir -p ~/.appstoreconnect/private_keys
           echo "$ASC_API_KEY_P8_BASE64" | base64 -d > ~/.appstoreconnect/private_keys/AuthKey_${ASC_API_KEY_ID}.p8
-          PKG=$(find src-tauri/target/mas -name "*.pkg" | head -1)
+          PKG=$(ls -t src-tauri/target/mas/*.pkg | head -1)
           set +e
           xcrun altool --validate-app -f "$PKG" -t macos --apiKey "$ASC_API_KEY_ID" --apiIssuer "$ASC_API_ISSUER_ID" 2>&1 | tee /tmp/altool-validate.log
           VRC=${PIPESTATUS[0]}
