@@ -239,7 +239,9 @@ pub fn parse_qso_member_json(payload: &[u8]) -> Option<serde_json::Value> {
 
 /// 解析 FMO/QSO/UID/{uid} 通联记录（264B）：
 /// [0:4]u32 类型(1) [12:16]u32 uid [16:20]u32 Unix时间戳
-/// [24:36]对方呼号12B [40:52]Maidenhead网格12B [48:60]中继/服务器名UTF-8
+/// [24:36]对方呼号12B [36:40]保留0 [40:48]Maidenhead网格8B [48:60]中继名UTF-8 12B
+/// [60:64]保留0（实网样本核实：网格 8B——8 字符扩展网格占满时若按 12B 读
+/// 会吞掉中继名前 4 字节）。
 pub fn parse_qso(payload: &[u8]) -> String {
     // JSON 载荷：完整通联记录（含 QSO 祝福 toComment）或成员 JSON 两种格式
     if let Some(rec) = parse_qso_record_json(payload) {
@@ -281,7 +283,7 @@ pub fn parse_qso(payload: &[u8]) -> String {
     let uid = u32::from_le_bytes(payload[12..16].try_into().unwrap_or([0; 4]));
     let ts = u32::from_le_bytes(payload[16..20].try_into().unwrap_or([0; 4]));
     let callsign = cstr_field(payload, 24, 12);
-    let grid = cstr_field(payload, 40, 12);
+    let grid = cstr_field(payload, 40, 8);
     let name = cstr_field(payload, 48, 12);
     let mut out = format!("通联 uid={uid} 对方 {callsign}");
     if !grid.is_empty() {
@@ -877,6 +879,16 @@ mod tests {
         assert!(out.contains("BI1FRI"), "应含对方呼号: {out}");
         assert!(out.contains("OM89av"), "应含网格: {out}");
         assert!(out.contains("时间 08-"), "应含人类可读时间: {out}");
+    }
+
+    #[test]
+    fn qso_parse_extended_8char_grid_no_overlap() {
+        // 8 字符扩展网格占满 [40:48]（无零填充）：按 8B 读网格才不会吞掉
+        // 中继名前 4 字节（旧的 12B 读法会把"如"的首字节吃进网格）。
+        let s = "01000000000000000000000015060000c30f796a00000000424931465249000000000000000000004f4d383961763031e5a682e6848fe79498e8828300000000";
+        let out = parse_qso(&hex::decode(s).unwrap());
+        assert!(out.contains("网格[OM89av01]"), "8 字符网格应完整: {out}");
+        assert!(out.contains("中继[如意甘肃]"), "中继名不应被网格吞掉: {out}");
     }
 
     /// 固定向量：固件完整通联记录 JSON（QSO 祝福在 toComment）
