@@ -79,6 +79,8 @@ pub struct FmoState {
     pub beacon: Arc<BeaconEngine>,
     /// 在线数/峰值自动统计花名册（LATE 心跳，持久化 presence.json）
     pub presence: Arc<PresenceTracker>,
+    /// 服务器登录探测引擎（独立 MQTT 会话，结果持久化 probe_results.json）
+    pub probe: Arc<crate::fmo::probe::ProbeEngine>,
     pub rx_play_enabled: Arc<std::sync::Mutex<bool>>,
     pub selected_server: Arc<Mutex<serde_json::Value>>,
     pub favorites: Arc<Mutex<Vec<serde_json::Value>>>,
@@ -227,6 +229,14 @@ impl FmoState {
             broadcast.cfg_handle(),
         ));
         broadcast.set_beacon(beacon.clone());
+        // 服务器登录探测引擎（扫描服务器表，独立 MQTT 会话验证可登录性）
+        let probe = Arc::new(crate::fmo::probe::ProbeEngine::new(
+            emit.clone(),
+            &data_dir,
+            server_table.clone(),
+            mqtt_client.state.clone(),
+            selected_server.clone(),
+        ));
         // APRS 信令消息 → QSO 引擎（主全馈连接与上行连接都会投递，引擎内去重）
         {
             let qso_handler = qso.clone();
@@ -253,6 +263,7 @@ impl FmoState {
             broadcast,
             beacon,
             presence,
+            probe,
             rx_play_enabled: Arc::new(std::sync::Mutex::new(true)),
             selected_server,
             favorites: Arc::new(Mutex::new(favorites)),
@@ -651,6 +662,8 @@ impl FmoState {
         self.qso.start_tick_task();
         self.broadcast.start();
         self.beacon.start();
+        // 服务器登录探测周期扫描
+        self.probe.start();
     }
 
     /// 证书身份巡检：启动即查一次，之后每 10 分钟复查。

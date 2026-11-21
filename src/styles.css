@@ -2375,6 +2375,29 @@ input[type="range"] {
   white-space: nowrap;
 }
 
+/* 服务器行：名称与 host:port 完整显示（不省略隐藏），空间不足时换行。
+   仅限服务器行，用户行仍保持单行省略。 */
+.fmo-server-row .fmo-server-main {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
+.fmo-server-row .fmo-server-main strong,
+.fmo-server-row .fmo-server-main span {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.fmo-server-row .fmo-server-main strong {
+  flex: 0 0 auto;
+}
+
+.fmo-server-row .fmo-server-main span {
+  flex: 0 1 auto;
+}
+
 .fmo-server-actions {
   display: flex;
   align-items: center;
@@ -2563,6 +2586,57 @@ input[type="range"] {
 .fmo-server-meta.online-count.has-online {
   color: #66e7a3;
   background: rgba(102, 227, 163, 0.12);
+}
+
+/* 服务器分栏标题（已验证 / 未验证） */
+.fmo-server-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 2px 0;
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.45);
+  letter-spacing: 0.02em;
+}
+
+.fmo-probe-retry-all {
+  border: 1px solid rgba(255, 145, 87, 0.35);
+  background: rgba(255, 145, 87, 0.12);
+  color: var(--accent);
+  font-size: 0.68rem;
+  padding: 1px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.fmo-probe-retry-all:hover {
+  background: rgba(255, 145, 87, 0.22);
+}
+
+/* 登录验证徽标 */
+.fmo-server-meta.fmo-probe-badge.probe-ok {
+  color: #66e7a3;
+  background: rgba(102, 227, 163, 0.12);
+}
+
+.fmo-server-meta.fmo-probe-badge.probe-fail {
+  color: #ff9a9a;
+  background: rgba(255, 106, 106, 0.14);
+}
+
+.fmo-server-meta.fmo-probe-badge.probe-probing {
+  color: #ffd27a;
+  background: rgba(255, 210, 122, 0.12);
+}
+
+.fmo-server-meta.fmo-probe-badge.probe-none {
+  color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.fmo-server-subline .fmo-probe-error-text {
+  color: #ff9a9a;
 }
 
 .fmo-toggle-row {

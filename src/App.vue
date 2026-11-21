@@ -2112,6 +2112,74 @@ const filteredFmoClients = computed(() => {
   );
 });
 
+// ---------------------------------------------------------------- FMO 登录探测（服务器分栏）
+
+// 探测结果的键 = host:port（与后端 probe_results 一致）
+function fmoServerKey(s: FmoServer): string {
+  return `${s.host}:${s.port ?? 1883}`;
+}
+function fmoProbeOf(s: FmoServer) {
+  return fmo.state.probes[fmoServerKey(s)];
+}
+function fmoProbeStatusText(s: FmoServer): string {
+  const zh = language.value === "zh";
+  switch (fmoProbeOf(s)?.status) {
+    case "ok":
+      return zh ? "已验证" : "Verified";
+    case "probing":
+      return zh ? "验证中…" : "Probing…";
+    case "fail":
+      return zh ? "验证失败" : "Failed";
+    default:
+      return zh ? "未验证" : "Unverified";
+  }
+}
+// 分栏：已验证可登录在上，未验证/验证失败在下
+const verifiedFmoServers = computed(() =>
+  filteredFmoServers.value.filter((s) => fmoProbeOf(s)?.status === "ok"),
+);
+const unverifiedFmoServers = computed(() =>
+  filteredFmoServers.value.filter((s) => fmoProbeOf(s)?.status !== "ok"),
+);
+const failedProbeCount = computed(
+  () => unverifiedFmoServers.value.filter((s) => fmoProbeOf(s)?.status === "fail").length,
+);
+type FmoServerListItem = { header: string; count: number; retryAll?: boolean } | { server: FmoServer };
+const fmoServerListItems = computed<FmoServerListItem[]>(() => {
+  const zh = language.value === "zh";
+  const items: FmoServerListItem[] = [];
+  if (verifiedFmoServers.value.length) {
+    items.push({
+      header: zh ? "已验证可登录" : "Verified login",
+      count: verifiedFmoServers.value.length,
+    });
+    verifiedFmoServers.value.forEach((server) => items.push({ server }));
+  }
+  if (unverifiedFmoServers.value.length) {
+    items.push({
+      header: zh ? "未验证 / 验证失败" : "Unverified / failed",
+      count: unverifiedFmoServers.value.length,
+      retryAll: failedProbeCount.value > 0,
+    });
+    unverifiedFmoServers.value.forEach((server) => items.push({ server }));
+  }
+  return items;
+});
+async function retryFmoProbe(s: FmoServer) {
+  try {
+    await fmo.probeServer(fmoServerKey(s));
+  } catch (e) {
+    alert(String(e));
+  }
+}
+async function retryAllFailedProbes() {
+  try {
+    await fmo.probeRetryFailed();
+  } catch (e) {
+    alert(String(e));
+  }
+}
+
 // FMO 用户信标时间显示（last_seen 为 unix 秒）
 function fmtClientTime(ts?: number): string {
   if (!ts) return "—";
@@ -2172,16 +2240,45 @@ const fmoUserDetailRows = computed(() => {
   return rows;
 });
 
-// 服务器行内联概要：呼号 + 状态文本 + 频率/高度/电台/天线/位置
-function fmoServerDetailLine(s: FmoServer): string {
+// APRS 坐标（"3037.60N" / "10404.26E"）→ 十进制度
+function aprsCoordToDeg(v?: string): number | null {
+  if (!v) return null;
+  const hemi = v.slice(-1).toUpperCase();
+  if (!["N", "S", "E", "W"].includes(hemi)) return null;
+  const num = parseFloat(v.slice(0, -1));
+  if (!isFinite(num)) return null;
+  const deg = Math.floor(num / 100);
+  const minutes = num - deg * 100;
+  if (minutes >= 60) return null;
+  const dec = deg + minutes / 60;
+  return hemi === "S" || hemi === "W" ? -dec : dec;
+}
+
+// 服务器距离（本机 QTH = 广播配置经纬度 → 服务器 APRS 位置，大圆距离，整数 km）
+function serverDistanceKm(s: FmoServer): number | null {
+  const lat = aprsCoordToDeg(s.lat);
+  const lon = aprsCoordToDeg(s.lon);
+  const own = fmo.broadcast;
+  if (lat == null || lon == null) return null;
+  if (!isFinite(own.lat) || !isFinite(own.lon)) return null;
+  if (Math.abs(own.lat) > 90 || Math.abs(own.lon) > 180) return null;
+  const rad = (x: number) => (x * Math.PI) / 180;
+  const dLat = rad(lat - own.lat);
+  const dLon = rad(lon - own.lon);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(own.lat)) * Math.cos(rad(lat)) * Math.sin(dLon / 2) ** 2;
+  const meters = 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.floor((meters + 500) / 1000);
+}
+
+// 服务器行第二行：呼号(含 SSID) · 距离 · 收到的 APRS 报文时间
+function fmoServerSubline(s: FmoServer): string {
   const parts: string[] = [];
-  if (s.callsign && s.callsign !== s.name) parts.push(s.callsign);
-  if (s.status_text) parts.push(s.status_text);
-  if (s.freq) parts.push(`${s.freq.toFixed(4)} MHz`);
-  if (s.height != null) parts.push(`${s.height}m`);
-  if (s.rig) parts.push(s.rig);
-  if (s.ant) parts.push(s.ant);
-  if (s.lat && s.lon) parts.push(`${s.lat} ${s.lon}`);
+  if (s.callsign) parts.push(s.callsign);
+  const d = serverDistanceKm(s);
+  if (d != null) parts.push(language.value === "zh" ? `距离 ${d}km` : `${d} km`);
+  if (s.last_seen) parts.push(fmtClientTime(s.last_seen));
   return parts.join(" · ");
 }
 
@@ -2217,6 +2314,18 @@ const fmoServerDetailRows = computed(() => {
   push(zh ? "版本" : "Version", [s.subtype, s.version].filter(Boolean).join(" / ") || undefined);
   push(zh ? "来源" : "Source", s.source);
   push(zh ? "最后出现" : "Last seen", s.last_seen ? fmtClientDateTime(s.last_seen) : undefined);
+  const probe = fmo.state.probes[s.key];
+  const probeStatusMap: Record<string, string> = {
+    ok: zh ? "已验证可登录" : "Verified",
+    probing: zh ? "验证中…" : "Probing…",
+    fail: zh ? "验证失败" : "Failed",
+  };
+  push(
+    zh ? "登录验证" : "Login probe",
+    probe ? probeStatusMap[probe.status] ?? (zh ? "未验证" : "Unverified") : undefined,
+  );
+  push(zh ? "失败原因" : "Failure reason", probe?.status === "fail" ? probe.error : undefined);
+  push(zh ? "验证时间" : "Probe time", probe?.ts ? fmtClientDateTime(probe.ts) : undefined);
   return rows;
 });
 
@@ -3578,49 +3687,86 @@ watch(
             {{ language === "zh" ? "无匹配服务器" : "No matching servers" }}
           </div>
           <div class="fmo-server-list" v-if="filteredFmoServers.length">
-            <article
-              v-for="s in filteredFmoServers"
-              :key="s.key"
-              class="fmo-server-row"
-              :class="{ selected: fmo.selectedServer()?.key === s.key }"
-              @click="selectFmoServerAndConnect(s)"
-            >
-              <div class="fmo-server-main">
-                <strong>{{ s.name || s.callsign }}</strong>
-                <span>{{ s.host }}:{{ s.port }}</span>
-              </div>
-              <div class="fmo-server-actions">
-                <span
-                  class="fmo-server-meta online-count"
-                  :class="{ 'has-online': (s.online ?? 0) > 0 }"
-                >
-                  {{ language === "zh" ? "在线" : "Online" }} {{ s.online ?? 0 }}/{{ s.total ?? "?" }}
-                </span>
-                <span v-if="s.cover_km" class="fmo-server-meta">{{ s.cover_km }}km</span>
+            <template v-for="(item, i) in fmoServerListItems" :key="i">
+              <div v-if="'header' in item" class="fmo-server-section">
+                <span>{{ item.header }}（{{ item.count }}）</span>
                 <button
-                  class="icon-btn"
-                  :title="language === 'zh' ? '查看详情' : 'Details'"
-                  @click.stop="openFmoServerPopup(s)"
+                  v-if="item.retryAll"
+                  class="fmo-probe-retry-all"
+                  :title="language === 'zh' ? '重新验证全部失败的服务器' : 'Re-verify all failed servers'"
+                  @click.stop="retryAllFailedProbes"
                 >
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-                    <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 4.5a1.4 1.4 0 1 1 0 2.8 1.4 1.4 0 0 1 0-2.8zM10.8 11h2.4v7h-2.4z"/>
-                  </svg>
-                </button>
-                <button
-                  class="icon-btn fmo-star-btn"
-                  :class="{ active: isFmoServerFavorited(s) }"
-                  :title="language === 'zh' ? '收藏' : 'Favorite'"
-                  @click.stop="toggleFmoServerFavorite(s)"
-                >
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
-                    <path d="M12 17.3l-6.2 3.7 1.6-7-5.4-4.7 7.1-.6L12 2l2.9 6.7 7.1.6-5.4 4.7 1.6 7z"/>
-                  </svg>
+                  {{ language === "zh" ? "全部复验" : "Retry all" }}
                 </button>
               </div>
-              <div v-if="fmoServerDetailLine(s)" class="fmo-user-recent">
-                <span>{{ fmoServerDetailLine(s) }}</span>
-              </div>
-            </article>
+              <article
+                v-else
+                class="fmo-server-row"
+                :class="{ selected: fmo.selectedServer()?.key === item.server.key }"
+                @click="selectFmoServerAndConnect(item.server)"
+              >
+                <div class="fmo-server-main">
+                  <strong>{{ item.server.name || item.server.callsign }}</strong>
+                  <span>{{ item.server.host }}:{{ item.server.port }}</span>
+                </div>
+                <div class="fmo-server-actions">
+                  <span
+                    class="fmo-server-meta fmo-probe-badge"
+                    :class="`probe-${fmoProbeOf(item.server)?.status ?? 'none'}`"
+                  >
+                    {{ fmoProbeStatusText(item.server) }}
+                  </span>
+                  <span
+                    class="fmo-server-meta online-count"
+                    :class="{ 'has-online': (item.server.online ?? 0) > 0 }"
+                  >
+                    {{ language === "zh" ? "在线" : "Online" }} {{ item.server.online ?? 0 }}/{{ item.server.total ?? "?" }}
+                  </span>
+                  <span v-if="item.server.cover_km" class="fmo-server-meta">{{ item.server.cover_km }}km</span>
+                  <button
+                    v-if="fmoProbeOf(item.server)?.status === 'fail'"
+                    class="icon-btn"
+                    :title="language === 'zh' ? '重新验证' : 'Re-verify'"
+                    @click.stop="retryFmoProbe(item.server)"
+                  >
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                      <path d="M12 5V1L7 6l5 5V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/>
+                    </svg>
+                  </button>
+                  <button
+                    class="icon-btn"
+                    :title="language === 'zh' ? '查看详情' : 'Details'"
+                    @click.stop="openFmoServerPopup(item.server)"
+                  >
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                      <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 4.5a1.4 1.4 0 1 1 0 2.8 1.4 1.4 0 0 1 0-2.8zM10.8 11h2.4v7h-2.4z"/>
+                    </svg>
+                  </button>
+                  <button
+                    class="icon-btn fmo-star-btn"
+                    :class="{ active: isFmoServerFavorited(item.server) }"
+                    :title="language === 'zh' ? '收藏' : 'Favorite'"
+                    @click.stop="toggleFmoServerFavorite(item.server)"
+                  >
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                      <path d="M12 17.3l-6.2 3.7 1.6-7-5.4-4.7 7.1-.6L12 2l2.9 6.7 7.1.6-5.4 4.7 1.6 7z"/>
+                    </svg>
+                  </button>
+                </div>
+                <div
+                  v-if="fmoServerSubline(item.server) || fmoProbeOf(item.server)?.status === 'fail'"
+                  class="fmo-user-recent fmo-server-subline"
+                >
+                  <span v-if="fmoServerSubline(item.server)">{{ fmoServerSubline(item.server) }}</span>
+                  <span
+                    v-if="fmoProbeOf(item.server)?.status === 'fail'"
+                    class="fmo-probe-error-text"
+                  >
+                    {{ (language === "zh" ? "失败原因：" : "Reason: ") + fmoProbeOf(item.server)?.error }}
+                  </span>
+                </div>
+              </article>
+            </template>
           </div>
           <div class="fmo-favorites" v-if="fmo.state.favorites.length">
             <article

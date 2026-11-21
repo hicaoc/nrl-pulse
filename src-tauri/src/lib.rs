@@ -428,6 +428,7 @@ async fn fmo_state_snapshot(
         "certs": fmo.cert_store.list().await,
         "favorites": fmo.favorites_list().await,
         "servers": fmo.server_table.to_list().await,
+        "probes": fmo.probe.results().await,
         "clients": fmo.server_table.client_list().await,
         "mqttState": fmo.mqtt_client.state_str().await,
         "mqttDetail": fmo.mqtt_client.detail.lock().await.clone(),
@@ -570,6 +571,24 @@ async fn fmo_server_select(
     };
     fmo.select_server(server).await;
     Ok(())
+}
+
+/// 手动复验单台服务器的可登录性（清除旧结果重新探测；当前登录的服务器拒绝）
+#[tauri::command]
+async fn fmo_probe_server(state: tauri::State<'_, RuntimeState>, key: String) -> Result<(), String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未启用".into());
+    };
+    fmo.probe.probe_manual(&key).await
+}
+
+/// 手动复验全部验证失败的服务器；返回触发的复验数量
+#[tauri::command]
+async fn fmo_probe_failed(state: tauri::State<'_, RuntimeState>) -> Result<usize, String> {
+    let Some(fmo) = state.fmo_state().await else {
+        return Err("FMO 未启用".into());
+    };
+    Ok(fmo.probe.probe_failed().await)
 }
 
 #[tauri::command]
@@ -906,6 +925,8 @@ pub fn run() {
             fmo_aprs_disconnect,
             fmo_aprs_set_server,
             fmo_server_select,
+            fmo_probe_server,
+            fmo_probe_failed,
             fmo_mqtt_connect,
             fmo_mqtt_disconnect,
             fmo_favorites_add,

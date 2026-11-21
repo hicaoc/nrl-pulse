@@ -217,6 +217,16 @@ export async function fmoServerSelect(server: Record<string, unknown>): Promise<
   return invoke("fmo_server_select", { server });
 }
 
+/** 手动复验单台服务器的可登录性（key = host:port） */
+export async function fmoProbeServer(key: string): Promise<void> {
+  return invoke("fmo_probe_server", { key });
+}
+
+/** 手动复验全部验证失败的服务器；返回触发的复验数量 */
+export async function fmoProbeRetryFailed(): Promise<number> {
+  return invoke<number>("fmo_probe_failed");
+}
+
 export async function fmoMqttConnect(tls?: boolean): Promise<void> {
   return invoke("fmo_mqtt_connect", { tls: tls ?? false });
 }

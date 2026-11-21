@@ -25,6 +25,8 @@ import {
   fmoMqttConnect,
   fmoMqttDisconnect,
   fmoMqttNoLocal,
+  fmoProbeRetryFailed,
+  fmoProbeServer,
   fmoQsoAnswer,
   fmoQsoCall,
   fmoQsoCancel,
@@ -47,6 +49,7 @@ const initial: FmoStateSnapshot = {
   certs: [],
   favorites: [],
   servers: [],
+  probes: {},
   clients: [],
   mqttState: "disconnected",
   mqttDetail: "",
@@ -166,6 +169,9 @@ export const useFmoStore = defineStore("fmo", () => {
     switch (ev.type) {
       case "server_list":
         state.value.servers = (ev.servers as FmoServer[]) ?? [];
+        break;
+      case "probe_results":
+        state.value.probes = (ev.probes as FmoStateSnapshot["probes"]) ?? {};
         break;
       case "client_list":
         state.value.clients = (ev.clients as FmoStateSnapshot["clients"]) ?? [];
@@ -338,6 +344,16 @@ export const useFmoStore = defineStore("fmo", () => {
     await runAction(() => fmoServerSelect(server as unknown as Record<string, unknown>));
   }
 
+  /** 手动复验单台服务器的可登录性（key = host:port） */
+  async function probeServer(key: string) {
+    await runAction(() => fmoProbeServer(key));
+  }
+
+  /** 手动复验全部验证失败的服务器 */
+  async function probeRetryFailed() {
+    await runAction(fmoProbeRetryFailed);
+  }
+
   async function connectMqtt() {
     await runAction(() => fmoMqttConnect(false));
   }
@@ -462,6 +478,8 @@ export const useFmoStore = defineStore("fmo", () => {
     disconnectAprs,
     setAprsServer,
     selectServer,
+    probeServer,
+    probeRetryFailed,
     connectMqtt,
     disconnectMqtt,
     importCert,

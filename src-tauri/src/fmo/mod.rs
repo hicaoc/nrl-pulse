@@ -12,6 +12,7 @@ pub mod fmo_frame;
 pub mod ima_adpcm;
 pub mod mqtt_client;
 pub mod presence;
+pub mod probe;
 pub mod protocol;
 pub mod qso;
 pub mod state;

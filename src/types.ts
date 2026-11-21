@@ -299,6 +299,14 @@ export interface FmoClient {
   last_seen?: number;
 }
 
+/** 服务器登录探测结果（key = host:port） */
+export interface FmoProbeRecord {
+  /** "ok" 可登录 | "fail" 验证失败 | "probing" 验证中 */
+  status: string;
+  error?: string;
+  ts?: number;
+}
+
 export interface FmoStateSnapshot {
   identity: FmoIdentity;
   certCallsign: string;
@@ -306,6 +314,8 @@ export interface FmoStateSnapshot {
   certs: FmoCertEntry[];
   favorites: FmoFavorite[];
   servers: FmoServer[];
+  /** 服务器登录探测结果（key = host:port） */
+  probes: Record<string, FmoProbeRecord>;
   clients: FmoClient[];
   mqttState: string;
   mqttDetail: string;
