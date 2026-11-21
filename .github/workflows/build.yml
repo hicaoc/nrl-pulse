@@ -200,6 +200,8 @@ jobs:
 
       - name: Build
         env:
+          # 同 macOS：audiopus_sys 内置 opus 与老 CMake 声明的兼容（CMake 4.x 移除 <3.5 兼容）
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: pnpm build && ./node_modules/.bin/tauri build --target x86_64-unknown-linux-gnu --no-bundle
