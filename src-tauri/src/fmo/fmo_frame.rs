@@ -161,7 +161,9 @@ pub fn parse_frame(f: &[u8]) -> Option<ParsedFrame> {
         let ilen = (inner[1] as usize) | ((inner[2] as usize) << 8);
         let body_end = (3 + ilen).min(inner.len());
         let body = &inner[3..body_end];
-        if body.len() < 5 || body[..5] != CONST5 {
+        // V4 设备把内层 5 字节同步标记从 CONST5 改成了全零（实网抓包核实，
+        // 其余结构与 CONST5 格式一致），两种标记都接受；其它垃圾值仍拒绝。
+        if body.len() < 5 || (body[..5] != CONST5 && body[..5] != [0u8; 5]) {
             return None;
         }
         let pkt = &body[5..];
@@ -245,6 +247,45 @@ mod tests {
         let mut frame = build_frame("TEST", 1, 0, 0, &[vec![0x90; 30]], 9);
         frame[10] = b'X';
         frame[36..40].copy_from_slice(&0u32.to_le_bytes());
+        assert!(parse_frame(&frame).is_none());
+    }
+
+    /// 辅助：把帧块区内的 CONST5 标记替换为指定值并重算 CRC（模拟对端设备）。
+    fn rewrite_marker(frame: &mut Vec<u8>, marker: [u8; 5]) {
+        let mut blocks = frame[64..].to_vec();
+        let mut i = 0;
+        while i + 5 <= blocks.len() {
+            if blocks[i..i + 5] == CONST5 {
+                blocks[i..i + 5].copy_from_slice(&marker);
+                i += 5;
+            } else {
+                i += 1;
+            }
+        }
+        let crc = crc32(&blocks);
+        frame[36..40].copy_from_slice(&crc.to_le_bytes());
+        frame[64..].copy_from_slice(&blocks);
+    }
+
+    #[test]
+    fn v4_zero_marker_accepted() {
+        // V4 设备回归：内层 5 字节同步标记为全零的帧也必须可解析。
+        // 实网抓包（58.240.80.50，87 帧）核实：失败帧标记均为 00*5，
+        // 外层块长/内层长度/Opus TOC 与 CONST5 格式完全一致。
+        let packets = vec![vec![0x10; 57], vec![0x10; 63], vec![0x10; 25]];
+        let mut frame = build_frame("BD4XGT", 5200, 1000, 1240, &packets, 9);
+        rewrite_marker(&mut frame, [0u8; 5]);
+        let p = parse_frame(&frame).expect("V4 全零标记的帧必须可解析");
+        assert_eq!(p.callsign, "BD4XGT");
+        assert_eq!(p.uid, 5200);
+        assert_eq!(p.packets, packets);
+    }
+
+    #[test]
+    fn garbage_marker_rejected() {
+        // 全零以外的非法标记仍整帧拒绝
+        let mut frame = build_frame("BD4XGT", 1, 0, 0, &[vec![0x10; 57]], 0);
+        rewrite_marker(&mut frame, [0xAA; 5]);
         assert!(parse_frame(&frame).is_none());
     }
 }
