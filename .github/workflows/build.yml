@@ -117,6 +117,8 @@ jobs:
               $bundle = Join-Path $_.FullName "release/bundle"
               Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $bundle
             }
+          # cargo 缓存会恢复历史 msix，导致 artifact 混入旧版本、Release 收集时互相覆盖
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue src-tauri/target/msix
 
       - name: Write MSIX signing certificate
         id: msix_cert
