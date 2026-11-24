@@ -16,19 +16,30 @@ pub const SUBSCRIBE_TOPICS: &[&str] = &[
     "FMO/TELE",
     "FMO/SERVER_INFO",
     "FMO/PROFILE",
-    "FMO/LATE/UID_V1/#",
     "FMO/QSO/UID/#",
 ];
 
-fn subscription_filters(no_local: bool) -> Vec<Filter> {
-    SUBSCRIBE_TOPICS
+/// LATE 心跳主题：服务端已不再放行 `FMO/LATE/UID_V1/#` 通配订阅，
+/// 只能订阅本机证书 uid 对应的 `FMO/LATE/UID_V1/<uid>`。
+fn late_heartbeat_topic(uid: u32) -> String {
+    format!("FMO/LATE/UID_V1/{uid}")
+}
+
+fn subscription_filters(no_local: bool, uid: Option<u32>) -> Vec<Filter> {
+    let mut filters: Vec<Filter> = SUBSCRIBE_TOPICS
         .iter()
         .map(|topic| {
             let mut filter = Filter::new((*topic).to_string(), QoS::AtMostOnce);
             filter.nolocal = no_local;
             filter
         })
-        .collect()
+        .collect();
+    if let Some(uid) = uid {
+        let mut filter = Filter::new(late_heartbeat_topic(uid), QoS::AtMostOnce);
+        filter.nolocal = no_local;
+        filters.push(filter);
+    }
+    filters
 }
 
 pub fn client_id_for(callsign: &str, uid: u32, suffix: &str) -> String {
@@ -336,6 +347,8 @@ pub struct FmoMqttClient {
     pub client_suffix: String,
     /// Full client ID of the current or most recent MQTT session.
     pub current_client_id: Arc<Mutex<String>>,
+    /// 本机证书 uid（最近一次 connect 使用值），用于 LATE 心跳专属主题订阅。
+    pub current_uid: Arc<Mutex<Option<u32>>>,
     /// MQTT 5 No Local subscription option; enabled by default.
     pub no_local: Arc<std::sync::atomic::AtomicBool>,
     pub traffic: Arc<Mutex<std::collections::BTreeMap<String, ServerTraffic>>>,
@@ -365,6 +378,7 @@ impl FmoMqttClient {
             current_host: Arc::new(Mutex::new(String::new())),
             client_suffix: new_client_suffix(),
             current_client_id: Arc::new(Mutex::new(String::new())),
+            current_uid: Arc::new(Mutex::new(None)),
             no_local: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             traffic: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             cnt_tele: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -414,6 +428,7 @@ impl FmoMqttClient {
         let cs = callsign.unwrap_or_default();
         let cid = client_id_for(&cs, uid, &self.client_suffix);
         *self.current_client_id.lock().await = cid.clone();
+        *self.current_uid.lock().await = Some(uid);
         // 连接前预检：解析 host 并测试 TCP 连通，失败快速返回明确错误
         {
             let addr_str = format!("{host}:{port}");
@@ -590,7 +605,7 @@ impl FmoMqttClient {
                                       "role": cur_role}));
                         (emit)(json!({"type": "log", "level": "info",
                         "msg": format!("MQTT 已连接 {host}:{port}，client id={cid}，订阅 {} 个 topic{}",
-                                       SUBSCRIBE_TOPICS.len(),
+                                       SUBSCRIBE_TOPICS.len() + 1,
                                        if cur_role != ROLE_SEQ[0] {
                                            format!("（角色 {cur_role}）")
                                        } else {
@@ -599,6 +614,7 @@ impl FmoMqttClient {
                         if !subscribed {
                             let filters = subscription_filters(
                                 no_local.load(std::sync::atomic::Ordering::Relaxed),
+                                Some(uid),
                             );
                             let _ = client.subscribe_many(filters).await;
                             subscribed = true;
@@ -740,8 +756,9 @@ impl FmoMqttClient {
         self.no_local
             .store(enabled, std::sync::atomic::Ordering::Relaxed);
         if let Some(client) = self.client.lock().await.clone() {
+            let uid = *self.current_uid.lock().await;
             client
-                .subscribe_many(subscription_filters(enabled))
+                .subscribe_many(subscription_filters(enabled, uid))
                 .await
                 .map_err(|error| error.to_string())?;
         }
