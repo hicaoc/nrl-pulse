@@ -1021,7 +1021,7 @@ const messages = {
     registerPhotoHint: "超出 512KB 时会自动压缩后上传。",
     registerPendingHint: "注册成功后需等待管理员审核。",
     enterLoginServer: "请输入登录服务器",
-    invalidCallsign: "呼号只能包含 5-6 位大写字母和数字",
+    invalidCallsign: "呼号需为 4-6 位大写字母或数字，且至少包含一位数字",
     enterName: "请输入姓名",
     invalidPhone: "请输入 11 位以上数字的手机号",
     enterPassword: "请输入密码",
@@ -1197,7 +1197,7 @@ const messages = {
     registerPhotoHint: "Images over 512KB are compressed before upload.",
     registerPendingHint: "Registration requires admin approval before login.",
     enterLoginServer: "Enter a login server",
-    invalidCallsign: "Callsign must be 5-6 uppercase letters or digits",
+    invalidCallsign: "Callsign must be 4-6 uppercase letters or digits with at least one digit",
     enterName: "Enter your name",
     invalidPhone: "Enter a valid phone number with at least 11 digits",
     enterPassword: "Enter a password",
@@ -1759,7 +1759,7 @@ async function submitRegister() {
     mail: registerForm.value.mail.trim(),
   };
 
-  if (!/^[A-Z0-9]{5,6}$/.test(payload.callsign)) {
+  if (!/^(?=.*\d)[A-Z0-9]{4,6}$/.test(payload.callsign)) {
     registerError.value = t.value.invalidCallsign;
     return;
   }

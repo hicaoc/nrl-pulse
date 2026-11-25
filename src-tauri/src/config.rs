@@ -106,6 +106,9 @@ pub fn save(app: &AppHandle, config: &RuntimeConfig) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
     let mut normalized = config.clone();
+    // 呼号在归一化/截断之前校验原始输入：非法呼号（如 7 位的 BII1LUI）
+    // 直接拒绝并给出原因，不再静默截断进 6 字节包头。
+    normalized.callsign = normalize_callsign(&config.callsign)?;
     normalized.ssid = 110;
     if normalized.ptt_key.trim().is_empty() {
         normalized.ptt_key = "Space".into();
@@ -163,9 +166,69 @@ fn normalize_serial_tunnel(config: &mut SerialTunnelConfig) {
     }
 }
 
+/// 呼号校验与归一化：基础呼号 4-6 位、仅字母数字（小写自动转大写）、
+/// 至少一位数字；可带 `-数字` SSID 后缀（0-15）。空值表示未设置，直接放行。
+/// 非法输入返回具体原因，由调用方拒绝保存。
+pub fn normalize_callsign(input: &str) -> Result<String, String> {
+    let cs = input.trim().to_uppercase();
+    if cs.is_empty() {
+        return Ok(cs);
+    }
+    let (base, ssid) = match cs.split_once('-') {
+        Some((b, s)) => (b, Some(s)),
+        None => (cs.as_str(), None),
+    };
+    if !(4..=6).contains(&base.len())
+        || !base.bytes().all(|b| b.is_ascii_alphanumeric())
+        || !base.bytes().any(|b| b.is_ascii_digit())
+    {
+        return Err(format!(
+            "呼号 {input} 不合法：基础呼号需为 4-6 位字母或数字，且至少包含一位数字（如 BG9JYT）"
+        ));
+    }
+    if let Some(s) = ssid {
+        let valid = !s.is_empty()
+            && s.bytes().all(|b| b.is_ascii_digit())
+            && s.parse::<u8>().map(|v| v <= 15).unwrap_or(false);
+        if !valid {
+            return Err(format!(
+                "呼号 {input} 的 SSID 后缀不合法：应为 -0 到 -15 的数字"
+            ));
+        }
+    }
+    Ok(cs)
+}
+
 fn config_path(app: &AppHandle) -> PathBuf {
     app.path()
         .app_config_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
         .join("runtime.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_callsign;
+
+    #[test]
+    fn callsign_valid() {
+        assert_eq!(normalize_callsign("BG9JYT").unwrap(), "BG9JYT");
+        assert_eq!(normalize_callsign("bg9jyt").unwrap(), "BG9JYT");
+        assert_eq!(normalize_callsign("W1AW").unwrap(), "W1AW");
+        assert_eq!(normalize_callsign("BI1LUI").unwrap(), "BI1LUI");
+        assert_eq!(normalize_callsign(" BD4XGT-7 ").unwrap(), "BD4XGT-7");
+        assert_eq!(normalize_callsign("").unwrap(), "");
+        assert_eq!(normalize_callsign("  ").unwrap(), "");
+    }
+
+    #[test]
+    fn callsign_invalid() {
+        assert!(normalize_callsign("BII1LUI").is_err()); // 7 位，拒绝而非截断
+        assert!(normalize_callsign("B1N").is_err()); // 3 位
+        assert!(normalize_callsign("ABCDEF").is_err()); // 无数字
+        assert!(normalize_callsign("BG9JYT-16").is_err()); // SSID 超范围
+        assert!(normalize_callsign("BG9JYT-X").is_err()); // SSID 非数字
+        assert!(normalize_callsign("BG9JYT-").is_err()); // SSID 为空
+        assert!(normalize_callsign("BG9J*").is_err()); // 非法字符
+    }
 }

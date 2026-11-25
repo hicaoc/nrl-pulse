@@ -2,6 +2,7 @@ import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { flog } from "@/lib/tauri";
+import { callsignError, normalizeCallsign } from "@/lib/callsign";
 import {
   bootstrapRuntime,
   connectSession,
@@ -289,8 +290,15 @@ export const useRuntimeStore = defineStore("runtime", () => {
   }
 
   async function saveConfig(next: RuntimeConfig) {
-    config.value = next;
-    await runAction(() => saveRuntimeConfig(next));
+    // 呼号保存前校验（与后端规则一致）：非法呼号直接提示并拒绝保存，
+    // 不静默截断；小写自动转大写后写回。
+    const err = callsignError(next.callsign);
+    if (err) {
+      window.alert(err);
+      return;
+    }
+    config.value = { ...next, callsign: normalizeCallsign(next.callsign) };
+    await runAction(() => saveRuntimeConfig(config.value));
   }
 
   async function reconnectWithConfig(next: RuntimeConfig) {

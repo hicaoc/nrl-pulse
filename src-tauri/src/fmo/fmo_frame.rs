@@ -161,9 +161,11 @@ pub fn parse_frame(f: &[u8]) -> Option<ParsedFrame> {
         let ilen = (inner[1] as usize) | ((inner[2] as usize) << 8);
         let body_end = (3 + ilen).min(inner.len());
         let body = &inner[3..body_end];
-        // V4 设备把内层 5 字节同步标记从 CONST5 改成了全零（实网抓包核实，
-        // 其余结构与 CONST5 格式一致），两种标记都接受；其它垃圾值仍拒绝。
-        if body.len() < 5 || (body[..5] != CONST5 && body[..5] != [0u8; 5]) {
+        // V4 设备内层 5 字节同步标记存在多种变体：CONST5、全零，以及 ADPCM 块的
+        // 首字节为块序号 seq、低 4 字节补零（实网 BI1LUI 抓包核实，均为 burst 首块
+        // idx=01，其余结构与 CONST5 格式自洽）。统一规则：CONST5 或低 4 字节全零
+        //（首字节任意，兼容 seq 前缀与全零）；低 4 字节非零的垃圾值仍拒绝。
+        if body.len() < 5 || (body[..5] != CONST5 && body[1..5] != [0u8; 4]) {
             return None;
         }
         let pkt = &body[5..];
@@ -278,6 +280,18 @@ mod tests {
         let p = parse_frame(&frame).expect("V4 全零标记的帧必须可解析");
         assert_eq!(p.callsign, "BD4XGT");
         assert_eq!(p.uid, 5200);
+        assert_eq!(p.packets, packets);
+    }
+
+    #[test]
+    fn v4_seq_marker_accepted() {
+        // V4 ADPCM 块回归：marker = 01 00 00 00 00（首字节块序号 seq，低 4 字节补零）
+        // 必须可解析；首字节任意、低 4 字节全零的变体同样接受。
+        let packets = vec![vec![0x10; 57]];
+        let mut frame = build_frame("BI1LUI", 5201, 1000, 1240, &packets, 9);
+        rewrite_marker(&mut frame, [0x01, 0, 0, 0, 0]);
+        let p = parse_frame(&frame).expect("seq 前缀标记的帧必须可解析");
+        assert_eq!(p.callsign, "BI1LUI");
         assert_eq!(p.packets, packets);
     }
 
